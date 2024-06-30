@@ -13,7 +13,9 @@ FetchContent_MakeAvailable(argparse)
 set(CMAKE_CXX_STANDARD 17)
 
 list(APPEND Targets "CMSketchbookFixedCounters" "CMSketchbookAdaptiveCounters" "CMSketchbookAdaptiveCountersPQ"
-                    "StingyCM")
+                    "StingyCM"
+                    "CSketchbookAdaptiveCountersPQ"
+                    "StingyC")
 
 function(compile_bench ds)
     if (NOT ds IN_LIST Targets)
@@ -37,6 +39,14 @@ function(compile_bench ds)
                                        ./sketches_benchmark/include/params.h)
         set_target_properties(StingyCMLib PROPERTIES LINKER_LANGUAGE CXX)
         target_link_libraries(bench_${ds} StingyCMLib)
+    elseif (ds MATCHES "CSketchbookAdaptiveCountersPQ")
+        target_link_libraries(bench_${ds} CSketchbookAdaptiveCountersPQLib)
+    elseif (ds MATCHES "StingyC")
+        add_library(StingyCLib STATIC ./sketches_benchmark/include/StingyC.hpp 
+                                      ./sketches_benchmark/include/MurmurHash.h 
+                                      ./sketches_benchmark/include/params.h)
+        set_target_properties(StingyCLib PROPERTIES LINKER_LANGUAGE CXX)
+        target_link_libraries(bench_${ds} StingyCLib)
     endif()
 endfunction(compile_bench)
 

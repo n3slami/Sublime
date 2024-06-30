@@ -38,6 +38,28 @@ target_include_directories(CMSketchbookAdaptiveCountersPQLib PUBLIC ./include)
 target_compile_options(CMSketchbookAdaptiveCountersPQLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
 
+
+add_library(CSketchbookFixedCountersLib STATIC ./include/CSketchbookFixedCounters.hpp)
+set_target_properties(CSketchbookFixedCountersLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(CSketchbookFixedCountersLib PUBLIC ./include)
+target_compile_options(CSketchbookFixedCountersLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+
+add_library(CSketchbookSemiAdaptiveCountersLib STATIC ./include/CSketchbookSemiAdaptiveCounters.hpp)
+set_target_properties(CSketchbookSemiAdaptiveCountersLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(CSketchbookSemiAdaptiveCountersLib PUBLIC ./include)
+target_compile_options(CSketchbookSemiAdaptiveCountersLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+
+add_library(CSketchbookAdaptiveCountersLib STATIC ./include/CSketchbookAdaptiveCounters.hpp)
+set_target_properties(CSketchbookAdaptiveCountersLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(CSketchbookAdaptiveCountersLib PUBLIC ./include)
+target_compile_options(CSketchbookAdaptiveCountersLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+
+add_library(CSketchbookAdaptiveCountersPQLib STATIC ./include/CSketchbookAdaptiveCountersPQ.hpp)
+set_target_properties(CSketchbookAdaptiveCountersPQLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(CSketchbookAdaptiveCountersPQLib PUBLIC ./include)
+target_compile_options(CSketchbookAdaptiveCountersPQLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+
+
 if (BUILD_TESTS)
     message(STATUS "Building tests")
     add_subdirectory(tests)
