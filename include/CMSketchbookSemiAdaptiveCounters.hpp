@@ -32,6 +32,8 @@ public:
     }
     
     // Should probably write a copy constructor...
+    CMSketchbookSemiAdaptiveCounters(const CMSketchbookSemiAdaptiveCounters&) = delete;
+    CMSketchbookSemiAdaptiveCounters& operator=(const CMSketchbookSemiAdaptiveCounters&) = delete;
 
     ~CMSketchbookSemiAdaptiveCounters() {
         for (uint8_t *ptr : sketches) {
@@ -52,6 +54,17 @@ public:
         n++;
     }
 
+    void Insert(const char *elem, const uint32_t length) {
+        if (n == expansion_lim)
+            expand();
+        uint8_t *sketch = sketches.back();
+        for (int i = 0; i < row_count; i++) {
+            const uint64_t val = get_counter(sketch, col_count * i + hash_string_key(elem, length, i));
+            set_counter(sketch, col_count * i + hash_string_key(elem, length, i), val + 1);
+        }
+        n++;
+    }
+
     void Delete(const uint64_t elem) {
         uint8_t *sketch = sketches.back();
         for (int i = 0; i < row_count; i++) {
@@ -63,11 +76,30 @@ public:
             contract();
     }
 
-    uint64_t Query(const uint64_t elem) {
+    void Delete(const char *elem, const uint32_t length) {
+        uint8_t *sketch = sketches.back();
+        for (int i = 0; i < row_count; i++) {
+            const uint64_t val = get_counter(sketch, col_count * i + hash_string_key(elem, length, i));
+            set_counter(sketch, col_count * i + hash_string_key(elem, length, i), val - 1);
+        }
+        n--;
+        if (n == contraction_lim)
+            contract();
+    }
+
+    uint64_t Query(const uint64_t elem) const {
         uint64_t res = MAX_VALUE(8 * sizeof(uint32_t));
         uint8_t *sketch = sketches.back();
         for (int i = 0; i < row_count; i++)
             res = std::min(res, get_counter(sketch, col_count * i + hash_key(elem, i)));
+        return res;
+    }
+
+    uint64_t Query(const char *elem, const uint32_t length) const {
+        uint64_t res = MAX_VALUE(8 * sizeof(uint32_t));
+        uint8_t *sketch = sketches.back();
+        for (int i = 0; i < row_count; i++)
+            res = std::min(res, get_counter(sketch, col_count * i + hash_string_key(elem, length, i)));
         return res;
     }
 
@@ -84,7 +116,7 @@ private:
     std::vector<uint8_t *> sketches;
 
     //__attribute__((always_inline))
-    inline uint64_t get_counter(const uint8_t *sketch, const uint32_t pos, const uint32_t width) {
+    inline uint64_t get_counter(const uint8_t *sketch, const uint32_t pos, const uint32_t width) const {
         const uint32_t bit_pos = pos * width;
         const uint64_t *p = reinterpret_cast<const uint64_t *>(sketch + bit_pos / 8);
         // you cannot just do *p to get the value, undefined behavior
@@ -94,7 +126,7 @@ private:
     }
 
     //__attribute__((always_inline))
-    inline uint64_t get_counter(const uint8_t *sketch, const uint32_t pos) {
+    inline uint64_t get_counter(const uint8_t *sketch, const uint32_t pos) const {
         return get_counter(sketch, pos, counter_width);
     }
 
@@ -139,8 +171,18 @@ private:
             seeds[i] = rng();
     }
 
-    inline uint32_t hash_key(const uint64_t key, const int seed_ind) {
+    inline uint32_t hash_key(const uint64_t key, const int seed_ind) const {
         const uint64_t original_hash = MurmurHash64B(&key, sizeof(key), seeds[seed_ind]);
+        uint32_t hash = original_hash & BITMASK(init_col_count_lg);
+        hash = fast_reduce(hash << (8 * sizeof(uint32_t) - init_col_count_lg),
+                            init_col_count);
+        hash += ((original_hash >> init_col_count_lg) & BITMASK(col_count_lg - init_col_count_lg))
+                * init_col_count;
+        return hash;
+    }
+
+    inline uint32_t hash_string_key(const char *key, const uint32_t length, const int seed_ind) const {
+        const uint64_t original_hash = MurmurHash64B(key, length, seeds[seed_ind]);
         uint32_t hash = original_hash & BITMASK(init_col_count_lg);
         hash = fast_reduce(hash << (8 * sizeof(uint32_t) - init_col_count_lg),
                             init_col_count);

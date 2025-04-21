@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -32,6 +33,8 @@ public:
     }
     
     // Should probably write a copy constructor...
+    CMSketchbookFixedCounters(const CMSketchbookFixedCounters&) = delete;
+    CMSketchbookFixedCounters& operator= (const CMSketchbookFixedCounters&) = delete;
 
     ~CMSketchbookFixedCounters() {
         for (uint8_t *ptr : sketches) {
@@ -54,8 +57,11 @@ public:
         if (n == expansion_lim)
             expand();
         T * sketch = reinterpret_cast<T *>(sketches.back());
-        for (int i = 0; i < row_count; i++)
-            sketch[col_count * i + hash_string_key(elem, length, i)]++;
+        for (int i = 0; i < row_count; i++) {
+            const uint32_t pos = col_count * i + hash_string_key(elem, length, i);
+            assert(pos < col_count * row_count);
+            sketch[pos]++;
+        }
         n++;
     }
 
@@ -78,7 +84,7 @@ public:
     }
 
 
-    T Query(const uint64_t elem) {
+    T Query(const uint64_t elem) const {
         T res = MAX_VALUE(8 * sizeof(T) - 1);
         T * sketch = reinterpret_cast<T *>(sketches.back());
         for (int i = 0; i < row_count; i++)
@@ -86,12 +92,16 @@ public:
         return res;
     }
 
-    T Query(const char *elem, const uint32_t length) {
+    T Query(const char *elem, const uint32_t length) const {
         T res = MAX_VALUE(8 * sizeof(T) - 1);
         T * sketch = reinterpret_cast<T *>(sketches.back());
         for (int i = 0; i < row_count; i++)
             res = std::min(res, sketch[col_count * i + hash_string_key(elem, length, i)]);
         return res;
+    }
+
+    size_t Size() const {
+        return col_count * row_count * sizeof(T);
     }
 
 private:
@@ -119,7 +129,7 @@ private:
             seeds[i] = rng();
     }
 
-    inline uint32_t hash_key(const uint64_t key, const int seed_ind) {
+    inline uint32_t hash_key(const uint64_t key, const int seed_ind) const {
         const uint64_t original_hash = MurmurHash64B(&key, sizeof(key), seeds[seed_ind]);
         uint32_t hash = original_hash & BITMASK(init_col_count_lg);
         hash = fast_reduce(hash << (8 * sizeof(uint32_t) - init_col_count_lg),
@@ -129,7 +139,7 @@ private:
         return hash;
     }
 
-    inline uint32_t hash_string_key(const char *key, const uint32_t length, const int seed_ind) {
+    inline uint32_t hash_string_key(const char *key, const uint32_t length, const int seed_ind) const {
         const uint64_t original_hash = MurmurHash64B(key, length, seeds[seed_ind]);
         uint32_t hash = original_hash & BITMASK(init_col_count_lg);
         hash = fast_reduce(hash << (8 * sizeof(uint32_t) - init_col_count_lg),

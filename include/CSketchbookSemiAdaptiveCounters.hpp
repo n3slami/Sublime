@@ -33,6 +33,8 @@ public:
     }
     
     // Should probably write a copy constructor...
+    CSketchbookSemiAdaptiveCounters(const CSketchbookSemiAdaptiveCounters&) = delete;
+    CSketchbookSemiAdaptiveCounters& operator=(const CSketchbookSemiAdaptiveCounters&) = delete;
 
     ~CSketchbookSemiAdaptiveCounters() {
         for (uint8_t *ptr : sketches) {
@@ -98,7 +100,7 @@ public:
             contract();
     }
 
-    int64_t Query(const uint64_t elem) {
+    int64_t Query(const uint64_t elem) const {
         int64_t res[row_count];
         uint8_t *sketch = sketches.back();
         uint64_t sign_hash = get_sign_hash(elem);
@@ -111,7 +113,7 @@ public:
         return res[row_count / 2];
     }
 
-    int64_t Query(const char *elem, const uint32_t length) {
+    int64_t Query(const char *elem, const uint32_t length) const {
         int64_t res[row_count];
         uint8_t *sketch = sketches.back();
         uint64_t sign_hash = get_string_sign_hash(elem, length);
@@ -137,7 +139,7 @@ private:
     std::vector<uint8_t *> sketches;
 
     //__attribute__((always_inline))
-    inline int64_t get_counter(const uint8_t *sketch, const uint32_t pos, const uint32_t width) {
+    inline int64_t get_counter(const uint8_t *sketch, const uint32_t pos, const uint32_t width) const {
         const uint32_t bit_pos = pos * width;
         const int64_t *p = reinterpret_cast<const int64_t *>(sketch + bit_pos / 8);
         // you cannot just do *p to get the value, undefined behavior
@@ -149,7 +151,7 @@ private:
     }
 
     //__attribute__((always_inline))
-    inline int64_t get_counter(const uint8_t *sketch, const uint32_t pos) {
+    inline int64_t get_counter(const uint8_t *sketch, const uint32_t pos) const {
         return get_counter(sketch, pos, counter_width);
     }
 
@@ -195,7 +197,7 @@ private:
         sign_seed = rng();
     }
 
-    inline uint32_t hash_key(const uint64_t key, const int seed_ind) {
+    inline uint32_t hash_key(const uint64_t key, const int seed_ind) const {
         const uint64_t original_hash = MurmurHash64B(&key, sizeof(key), seeds[seed_ind]);
         uint32_t hash = original_hash & BITMASK(init_col_count_lg);
         hash = fast_reduce(hash << (8 * sizeof(uint32_t) - init_col_count_lg),
@@ -205,7 +207,7 @@ private:
         return hash;
     }
 
-    inline uint32_t hash_string_key(const char *key, const uint32_t length, const int seed_ind) {
+    inline uint32_t hash_string_key(const char *key, const uint32_t length, const int seed_ind) const {
         const uint64_t original_hash = MurmurHash64B(key, length, seeds[seed_ind]);
         uint32_t hash = original_hash & BITMASK(init_col_count_lg);
         hash = fast_reduce(hash << (8 * sizeof(uint32_t) - init_col_count_lg),
@@ -215,11 +217,11 @@ private:
         return hash;
     }
 
-    inline uint64_t get_sign_hash(const uint64_t key) {
+    inline uint64_t get_sign_hash(const uint64_t key) const {
         return MurmurHash64B(&key, sizeof(key), sign_seed);
     }
 
-    inline uint64_t get_string_sign_hash(const char *key, const uint32_t length) {
+    inline uint64_t get_string_sign_hash(const char *key, const uint32_t length) const {
         return MurmurHash64B(key, length, sign_seed);
     }
 

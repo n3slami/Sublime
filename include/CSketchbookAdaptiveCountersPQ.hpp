@@ -54,6 +54,8 @@ public:
     }
     
     // Should probably write a copy constructor...
+    CSketchbookAdaptiveCountersPQ(const CSketchbookAdaptiveCountersPQ&) = delete;
+    CSketchbookAdaptiveCountersPQ& operator=(const CSketchbookAdaptiveCountersPQ&) = delete;
 
     ~CSketchbookAdaptiveCountersPQ() {
         for (uint32_t i = 0; i < sketches.size(); i++) {
@@ -210,7 +212,7 @@ public:
             contract();
     }
 
-    int64_t Query(const uint64_t elem) {
+    int64_t Query(const uint64_t elem) const {
         int64_t res[row_count];
         const uint8_t *sketch = sketches.back();
         uint64_t sign_hash = get_sign_hash(elem);
@@ -223,7 +225,7 @@ public:
         return res[(row_count - 1) / 2];
     }
 
-    int64_t Query(const char *elem, const uint32_t length) {
+    int64_t Query(const char *elem, const uint32_t length) const {
         int64_t res[row_count];
         const uint8_t *sketch = sketches.back();
         uint64_t sign_hash = get_string_sign_hash(elem, length);
@@ -323,17 +325,17 @@ private:
                   "Word size must be divisible by the extension size, at least for now");
 
     //__attribute__((always_inline))
-    inline uint32_t get_cache_line_ind(const uint32_t pos) {
+    inline uint32_t get_cache_line_ind(const uint32_t pos) const {
         return static_cast<int32_t>(pos) / counter_per_cache_line;
     }
 
     //__attribute__((always_inline))
-    inline uint64_t get_extension_mask(const uint64_t val) {
+    inline uint64_t get_extension_mask(const uint64_t val) const {
         return (val & (val >> 1)) & select_mask;
     }
 
     //__attribute__((always_inline))
-    inline uint32_t get_extension_pos(const uint64_t extensions[], const uint32_t rank) {
+    inline uint32_t get_extension_pos(const uint64_t extensions[], const uint32_t rank) const {
         const uint64_t masks[2] = {get_extension_mask(extensions[0]), get_extension_mask(extensions[1])};
         int32_t extension_pos = (rank == 0 ? -2 : bit_select(masks[0], rank - 1));
         const int32_t other_attempt = bit_select(masks[1], rank - 1 - __builtin_popcountll(masks[0]));
@@ -342,14 +344,14 @@ private:
     }
 
     //__attribute__((always_inline))
-    inline uint32_t get_extension_length(uint64_t extensions[]) {
+    inline uint32_t get_extension_length(uint64_t extensions[]) const {
         const uint32_t a = highbit_pos(extensions[1]);
         const uint32_t b = highbit_pos(extensions[0]);
         return (a ? a + 64 : b) + 1;
     }
 
     //__attribute__((always_inline))
-    inline void shift_extensions_left_from_pos(uint64_t extensions[], const uint32_t pos, const uint32_t shamt) {
+    inline void shift_extensions_left_from_pos(uint64_t extensions[], const uint32_t pos, const uint32_t shamt) const {
         if (pos < 64) {
             const uint64_t a = extensions[0] & BITMASK(pos);
             const uint64_t b = extensions[0] >> pos;
@@ -367,7 +369,7 @@ private:
     }
 
     //__attribute__((always_inline))
-    inline void shift_extensions_right_from_pos(uint64_t extensions[], const uint32_t pos, const uint32_t shamt) {
+    inline void shift_extensions_right_from_pos(uint64_t extensions[], const uint32_t pos, const uint32_t shamt) const {
         if (pos < 64) {
             const uint64_t a = extensions[1] & BITMASK(shamt);
             const uint64_t b = extensions[0] >> (pos + shamt);
@@ -384,7 +386,7 @@ private:
     }
 
     //__attribute__((always_inline))
-    inline int64_t get_counter(const uint8_t *sketch, const uint32_t pos) {
+    inline int64_t get_counter(const uint8_t *sketch, const uint32_t pos) const {
         const uint32_t cache_line_ind = get_cache_line_ind(pos);
         const uint32_t inter_cache_line_ind = pos - cache_line_ind * counter_per_cache_line;
         const uint8_t *cache_line_ptr = sketch + cache_line_ind * cache_line_size_bytes;
@@ -861,7 +863,7 @@ private:
         sign_seed = rng();
     }
 
-    inline uint32_t hash_key(const uint64_t key, const int seed_ind) {
+    inline uint32_t hash_key(const uint64_t key, const int seed_ind) const {
         const uint64_t original_hash = MurmurHash64B(&key, sizeof(key), seeds[seed_ind]);
         uint32_t hash = original_hash & BITMASK(init_col_count_lg);
         hash = fast_reduce(hash << (8 * sizeof(uint32_t) - init_col_count_lg),
@@ -871,7 +873,7 @@ private:
         return hash;
     }
 
-    inline uint32_t hash_string_key(const char *key, const uint32_t length, const int seed_ind) {
+    inline uint32_t hash_string_key(const char *key, const uint32_t length, const int seed_ind) const {
         const uint64_t original_hash = MurmurHash64B(key, length, seeds[seed_ind]);
         uint32_t hash = original_hash & BITMASK(init_col_count_lg);
         hash = fast_reduce(hash << (8 * sizeof(uint32_t) - init_col_count_lg),
@@ -881,11 +883,11 @@ private:
         return hash;
     }
 
-    inline uint64_t get_sign_hash(const uint64_t key) {
+    inline uint64_t get_sign_hash(const uint64_t key) const {
         return MurmurHash64B(&key, sizeof(key), sign_seed);
     }
 
-    inline uint64_t get_string_sign_hash(const char *key, const uint32_t length) {
+    inline uint64_t get_string_sign_hash(const char *key, const uint32_t length) const {
         return MurmurHash64B(key, length, sign_seed);
     }
 

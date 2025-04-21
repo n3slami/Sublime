@@ -1,12 +1,12 @@
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+
+#include <doctest/doctest.h>
+
 #include <cstdint>
 #include <iostream>
 #include <assert.h>
-#include <string>
 
 #include "CSketchbookAdaptiveCounters.hpp"
-
-const std::string ansi_green = "\033[0;32m";
-const std::string ansi_white = "\033[0;97m";
 
 class CSketchbookAdaptiveCountersTest {
 public:
@@ -17,39 +17,45 @@ public:
         sketch.set_counter(sketch.sketches.back(), 2, 5);
         sketch.set_counter(sketch.sketches.back(), 2, 129);
         sketch.set_counter(sketch.sketches.back(), 0, 130);
-        assert(sketch.get_counter(sketch.sketches.back(), 0) == 130);
-        assert(sketch.get_counter(sketch.sketches.back(), 1) == 0);
-        assert(sketch.get_counter(sketch.sketches.back(), 2) == 129);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 0), 130);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 0);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 2), 129);
+
         sketch.set_counter(sketch.sketches.back(), 0, 3);
-        assert(sketch.get_counter(sketch.sketches.back(), 0) == 3);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 0), 3);
+
         sketch.set_counter(sketch.sketches.back(), 1, 1500);
         sketch.set_counter(sketch.sketches.back(), 0, 900);
-        assert(sketch.get_counter(sketch.sketches.back(), 0) == 900);
-        assert(sketch.get_counter(sketch.sketches.back(), 1) == 1500);
-        assert(sketch.get_counter(sketch.sketches.back(), 2) == 129);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 0), 900);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 1500);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 2), 129);
+
         for (int i = 3; i < 20; i++)
             sketch.set_counter(sketch.sketches.back(), i, 65);
         sketch.set_counter(sketch.sketches.back(), 0, 10);
         assert(sketch.get_counter(sketch.sketches.back(), 0) == 10);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 0), 10);
+
         sketch.set_counter(sketch.sketches.back(), 0, 900);
         sketch.set_counter(sketch.sketches.back(), 1, 100);
-        assert(sketch.get_counter(sketch.sketches.back(), 0) == 900);
-        assert(sketch.get_counter(sketch.sketches.back(), 1) == 100);
-        assert(sketch.get_counter(sketch.sketches.back(), 2) == 129);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 0), 900);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 100);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 2), 129);
+
         sketch.set_counter(sketch.sketches.back(), 1, 1500);
-        assert(sketch.get_counter(sketch.sketches.back(), 0) == 900);
-        assert(sketch.get_counter(sketch.sketches.back(), 1) == 1500);
-        assert(sketch.get_counter(sketch.sketches.back(), 2) == 129);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 0), 900);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 1500);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 2), 129);
+
         for (int i = 20; i < 30; i++)
             sketch.set_counter(sketch.sketches.back(), i, 65);
-
-        assert(sketch.get_counter(sketch.sketches.back(), 0) == 900);
-        assert(sketch.get_counter(sketch.sketches.back(), 1) == 1500);
-        assert(sketch.get_counter(sketch.sketches.back(), 2) == 129);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 0), 900);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 1500);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 2), 129);
         for (int i = 3; i < 20; i++)
-            assert(sketch.get_counter(sketch.sketches.back(), i) == 65);
+            REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), i), 65);
         for (int i = 30; i < 60; i++)
-            assert(sketch.get_counter(sketch.sketches.back(), i) == 0);
+            REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), i), 0);
     }
 
     static void CounterRW2() {
@@ -59,11 +65,11 @@ public:
         for (int i = 0; i < 25; i++)
             sketch.set_counter(sketch.sketches.back(), i, 65);
         sketch.set_counter(sketch.sketches.back(), 0, 1000000000);
-        assert(sketch.get_counter(sketch.sketches.back(), 0) == 1000000000);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 0), 1000000000);
         for (int i = 1; i < 25; i++)
-            assert(sketch.get_counter(sketch.sketches.back(), i) == 65);
+            REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), i), 65);
         for (int i = 25; i < 100; i++)
-            assert(sketch.get_counter(sketch.sketches.back(), i) == 0);
+            REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), i), 0);
     }
 
     static void CounterIncrement1() {
@@ -71,31 +77,31 @@ public:
         CSketchbookAdaptiveCounters sketch(10, 10, f, 1);
 
         for (int i = 0; i < 63; i++) {
-            assert(sketch.get_counter(sketch.sketches.back(), 1) == i);
+            REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), i);
             sketch.increment_counter(sketch.sketches.back(), 1);
         }
-        assert(sketch.get_counter(sketch.sketches.back(), 1) == 63);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 63);
         sketch.increment_counter(sketch.sketches.back(), 1);
         for (int i = 0; i < 63; i++) {
-            assert(sketch.get_counter(sketch.sketches.back(), 1) == 64 + i);
+            REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 64 + i);
             sketch.increment_counter(sketch.sketches.back(), 1);
         }
         sketch.increment_counter(sketch.sketches.back(), 1);
 
         for (int i = 0; i < 64; i++)
             sketch.increment_counter(sketch.sketches.back(), 0);
-        assert(sketch.get_counter(sketch.sketches.back(), 0) == 64);
-        assert(sketch.get_counter(sketch.sketches.back(), 1) == 128);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 0), 64);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 128);
 
         for (int i = 2; i < 28; i++)
             sketch.set_counter(sketch.sketches.back(), i, 64 * 3 - 1);
         sketch.increment_counter(sketch.sketches.back(), 2);
-        assert(sketch.get_counter(sketch.sketches.back(), 2) == 64 * 3);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 2), 64 * 3);
         for (int i = 64 * 3; i < 10000; i++) {
-            assert(sketch.get_counter(sketch.sketches.back(), 2) == i);
+            REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 2), i);
             sketch.increment_counter(sketch.sketches.back(), 2);
         }
-        assert(sketch.get_counter(sketch.sketches.back(), 2) == 10000);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 2), 10000);
     }
 
     static void CounterIncrement2() {
@@ -106,14 +112,14 @@ public:
             sketch.set_counter(sketch.sketches.back(), i, 64 * 3 - 1);
         sketch.increment_counter(sketch.sketches.back(), 25);
         for (int i = 0; i < 27; i++)
-            assert(sketch.get_counter(sketch.sketches.back(), i) == 64 * 3 - (i != 25));
+            REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), i), 64 * 3 - (i != 25));
         for (int i = 64 * 3; i < 64 * 9; i++) {
-            assert(sketch.get_counter(sketch.sketches.back(), 25) == i);
+            REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 25), i);
             sketch.increment_counter(sketch.sketches.back(), 25);
         }
         //PrintSketch(sketch);
         for (int i = 64 * 9; i < 64 * 27; i++) {
-            assert(sketch.get_counter(sketch.sketches.back(), 25) == i);
+            REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 25), i);
             sketch.increment_counter(sketch.sketches.back(), 25);
         }
     }
@@ -125,32 +131,35 @@ public:
         for (int i = 0; i < 25; i++)
             sketch.set_counter(sketch.sketches.back(), i, 65);
         sketch.set_counter(sketch.sketches.back(), 1, 64 * 9);
-        assert(sketch.get_counter(sketch.sketches.back(), 1) == 64 * 9);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 64 * 9);
         sketch.decrement_counter(sketch.sketches.back(), 1);
-        assert(sketch.get_counter(sketch.sketches.back(), 1) == 64 * 9 - 1);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 64 * 9 - 1);
         for (int i = 64 * 9 - 1; i > 64 * 3; i--) {
-            assert(sketch.get_counter(sketch.sketches.back(), 1) == i);
+            REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), i);
             sketch.decrement_counter(sketch.sketches.back(), 1);
         }
-        assert(sketch.get_counter(sketch.sketches.back(), 1) == 64 * 3);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 64 * 3);
         sketch.decrement_counter(sketch.sketches.back(), 1);
-        assert(sketch.get_counter(sketch.sketches.back(), 1) == 64 * 3 - 1);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 64 * 3 - 1);
 
         sketch.decrement_counter(sketch.sketches.back(), 23);
-        assert(sketch.get_counter(sketch.sketches.back(), 23) == 64);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 23), 64);
         sketch.decrement_counter(sketch.sketches.back(), 23);
-        assert(sketch.get_counter(sketch.sketches.back(), 23) == 63);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 23), 63);
 
         for (int i = 25; i < 99; i++)
-            assert(sketch.get_counter(sketch.sketches.back(), i) == 0);
+            REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), i), 0);
         sketch.set_counter(sketch.sketches.back(), 40, 10000000);
-        assert(sketch.get_counter(sketch.sketches.back(), 40) == 10000000);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 40), 10000000);
+
         sketch.decrement_counter(sketch.sketches.back(), 40);
-        assert(sketch.get_counter(sketch.sketches.back(), 40) == 9999999);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 40), 9999999);
+
         sketch.decrement_counter(sketch.sketches.back(), 22);
-        assert(sketch.get_counter(sketch.sketches.back(), 22) == 64);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 22), 64);
+
         sketch.decrement_counter(sketch.sketches.back(), 22);
-        assert(sketch.get_counter(sketch.sketches.back(), 22) == 63);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 22), 63);
     }
 
     static void CounterNegative() {
@@ -160,45 +169,55 @@ public:
         for (int i = 0; i < 25; i++)
             sketch.set_counter(sketch.sketches.back(), i, (i & 1) ? 65 : -65);
         sketch.set_counter(sketch.sketches.back(), 1, 64 * 9);
-        assert(sketch.get_counter(sketch.sketches.back(), 1) == 64 * 9);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 64 * 9);
         sketch.decrement_counter(sketch.sketches.back(), 1);
-        assert(sketch.get_counter(sketch.sketches.back(), 1) == 64 * 9 - 1);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 64 * 9 - 1);
         for (int i = 64 * 9 - 1; i > 64 * 3; i--) {
-            assert(sketch.get_counter(sketch.sketches.back(), 1) == i);
+            REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), i);
             sketch.decrement_counter(sketch.sketches.back(), 1);
         }
         assert(sketch.get_counter(sketch.sketches.back(), 1) == 64 * 3);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 64 * 3);
         sketch.decrement_counter(sketch.sketches.back(), 1);
-        assert(sketch.get_counter(sketch.sketches.back(), 1) == 64 * 3 - 1);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), 64 * 3 - 1);
 
         sketch.decrement_counter(sketch.sketches.back(), 26);
-        assert(sketch.get_counter(sketch.sketches.back(), 26) == -1);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 26), -1);
+
         sketch.decrement_counter(sketch.sketches.back(), 26);
-        assert(sketch.get_counter(sketch.sketches.back(), 26) == -2);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 26), -2);
+
         sketch.increment_counter(sketch.sketches.back(), 26);
-        assert(sketch.get_counter(sketch.sketches.back(), 26) == -1);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 26), -1);
+
         sketch.increment_counter(sketch.sketches.back(), 26);
-        assert(sketch.get_counter(sketch.sketches.back(), 26) == 0);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 26), 0);
+
         sketch.increment_counter(sketch.sketches.back(), 26);
-        assert(sketch.get_counter(sketch.sketches.back(), 26) == 1);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 26), 1);
+
         sketch.decrement_counter(sketch.sketches.back(), 26);
-        assert(sketch.get_counter(sketch.sketches.back(), 26) == 0);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 26), 0);
 
         sketch.decrement_counter(sketch.sketches.back(), 23);
-        assert(sketch.get_counter(sketch.sketches.back(), 23) == 64);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 23), 64);
+
         sketch.decrement_counter(sketch.sketches.back(), 23);
-        assert(sketch.get_counter(sketch.sketches.back(), 23) == 63);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 23), 63);
 
         for (int i = 25; i < 99; i++)
-            assert(sketch.get_counter(sketch.sketches.back(), i) == 0);
+            REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), i), 0);
         sketch.set_counter(sketch.sketches.back(), 40, -10000000);
-        assert(sketch.get_counter(sketch.sketches.back(), 40) == -10000000);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 40), -10000000);
+
         sketch.increment_counter(sketch.sketches.back(), 40);
-        assert(sketch.get_counter(sketch.sketches.back(), 40) == -9999999);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 40), -9999999);
+
         sketch.increment_counter(sketch.sketches.back(), 22);
-        assert(sketch.get_counter(sketch.sketches.back(), 22) == -64);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 22), -64);
+
         sketch.increment_counter(sketch.sketches.back(), 22);
-        assert(sketch.get_counter(sketch.sketches.back(), 22) == -63);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 22), -63);
     }
 
     static void ExpandAndContract() {
@@ -276,15 +295,19 @@ private:
     }
 };
 
-int main(int argc, char **argv) {
-    std::cerr << ansi_green << "===== [ Running Tests ]" << ansi_white << std::endl;
-    CSketchbookAdaptiveCountersTest::CounterRW1();
-    CSketchbookAdaptiveCountersTest::CounterRW2();
-    CSketchbookAdaptiveCountersTest::CounterIncrement1();
-    CSketchbookAdaptiveCountersTest::CounterIncrement2();
-    CSketchbookAdaptiveCountersTest::CounterDecrement();
-    CSketchbookAdaptiveCountersTest::CounterNegative();
-    std::cerr << ansi_green << "===== [ Done ]" << ansi_white << std::endl;
+TEST_SUITE("CSketchbookAdaptiveCounters") {
+    TEST_CASE("counter read/write") {
+        CSketchbookAdaptiveCountersTest::CounterRW1();
+        CSketchbookAdaptiveCountersTest::CounterRW2();
+    }
 
-    return 0;
+    TEST_CASE("counter increment") {
+        CSketchbookAdaptiveCountersTest::CounterIncrement1();
+        CSketchbookAdaptiveCountersTest::CounterIncrement2();
+    }
+
+    TEST_CASE("counter decrement") {
+        CSketchbookAdaptiveCountersTest::CounterDecrement();
+    }
 }
+

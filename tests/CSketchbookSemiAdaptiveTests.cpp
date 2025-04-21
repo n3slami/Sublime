@@ -1,12 +1,12 @@
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+
+#include <doctest/doctest.h>
+
 #include <cstdint>
 #include <iostream>
 #include <assert.h>
-#include <string>
 
 #include "CSketchbookSemiAdaptiveCounters.hpp"
-
-const std::string ansi_green = "\033[0;32m";
-const std::string ansi_white = "\033[0;97m";
 
 class CSketchbookSemiAdaptiveCountersTest {
 public:
@@ -18,25 +18,30 @@ public:
         for (int i = 0; i < one_count; i++)
             sketch.Insert(1);
         const uint64_t sign_hash = sketch.get_sign_hash(1);
-        assert(sketch.Query(1) == one_count);
-        assert(sketch.Query(2) == 0);
+        REQUIRE_EQ(sketch.Query(1), one_count);
+        REQUIRE_EQ(sketch.Query(2), 0);
+
         int pos = -1;
         for (int i = 0; i < sketch.col_count; i++) {
             if (sketch.get_counter(sketch.sketches.back(), i) != 0) {
                 pos = i;
-                assert(sketch.get_counter(sketch.sketches.back(), pos) == 100 * ((sign_hash & 1) ? 1 : -1));
+                REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), pos), 100 * ((sign_hash & 1) ? 1 : -1));
             }
             else
-                assert(sketch.get_counter(sketch.sketches.back(), i) == 0);
+                REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), i), 0);
         }
-        assert(pos != -1);
+        REQUIRE_NE(pos, -1);
+
         sketch.Insert(1);
-        assert(sketch.row_count == 10 && sketch.col_count == 20);
-        assert(sketch.get_counter(sketch.sketches.back(), pos) == 101 * ((sign_hash & 1) ? 1 : -1)
-                && sketch.get_counter(sketch.sketches.back(), 10 + pos) == 100 * ((sign_hash & 1) ? 1 : -1));
+        REQUIRE_EQ(sketch.row_count, 10);
+        REQUIRE_EQ(sketch.col_count, 20);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), pos), 101 * ((sign_hash & 1) ? 1 : -1));
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 10 + pos), 100 * ((sign_hash & 1) ? 1 : -1));
+
         sketch.Delete(1);
-        assert(sketch.row_count == 10 && sketch.col_count == 10);
-        assert(sketch.get_counter(sketch.sketches.back(), pos) == 100 * ((sign_hash & 1) ? 1 : -1));
+        REQUIRE_EQ(sketch.row_count, 10);
+        REQUIRE_EQ(sketch.col_count, 10);
+        REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), pos), 100 * ((sign_hash & 1) ? 1 : -1));
     }
 
 private:
@@ -54,11 +59,9 @@ private:
     }
 };
 
-int main(int argc, char **argv) {
-    std::cerr << ansi_green << "===== [ Running Tests ]" << ansi_white << std::endl;
-    CSketchbookSemiAdaptiveCountersTest::ExpandAndContract();
-    std::cerr << ansi_green << "===== [ Done ]" << ansi_white << std::endl;
-
-    return 0;
+TEST_SUITE("CSketchbookSemiAdaptiveCounters") {
+    TEST_CASE("expand and contract") {
+        CSketchbookSemiAdaptiveCountersTest::ExpandAndContract();
+    }
 }
 

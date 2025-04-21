@@ -6,129 +6,278 @@
 #include <cstring>
 #include <iostream>
 #include <argparse/argparse.hpp>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include "bench_utils.hpp"
 
-#define start_timer(t) \
-    auto t_start_##t = timer::now(); \
+#define pass_fun(f) ([](auto... args){ return f(args...); })
+#define pass_ref(fun) ([](auto& f, auto... args){ return fun(f, args...); })
 
-#define stop_timer(t) \
-    auto t_end_##t = timer::now(); \
-    test_out.add_measure(#t, std::chrono::duration_cast<std::chrono::milliseconds>(t_end_##t - t_start_##t).count());
+inline auto test_out = TestOutput();
 
-TestOutput test_out = TestOutput();
-bool test_verbose = true, print_csv = false;
-std::string csv_file = "";
+inline std::string json_file = "";
+inline uint64_t memory_budget;
+inline uint64_t kill_exec_time_threshold = 1ULL * 3600ULL * 1000000ULL;
 
-argparse::ArgumentParser init_parser(const std::string &name)
-{
+inline WorkloadIO wio;
+inline InputKeys<uint64_t> initial_int_keys;
+inline InputKeys<std::string> initial_string_keys;
+inline timer::time_point time_points[std::numeric_limits<uint8_t>::max()];
+inline uint64_t timer_results[std::numeric_limits<uint8_t>::max()];
+
+
+template <typename Sketch, typename InsertFun, typename DeleteFun, typename QueryFun, typename SizeFun>
+void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun query_f, SizeFun size_f) {
+    std::unordered_map<uint64_t, uint32_t> actual_freq;
+    std::vector<std::unordered_map<uint64_t, uint32_t>> freq_checkpoints;
+    uint32_t n_keys = 0;
+
+    timer::time_point op_start_time = timer::now();
+    while (!wio.Done()) {
+        WorkloadIO::opcode opcode = wio.GetOpcode();
+        switch (opcode) {
+            case WorkloadIO::opcode::Insert: {
+                actual_freq[wio.ReadValue<uint64_t>()]++;
+                n_keys++;
+                break;
+            }
+            case WorkloadIO::opcode::Delete: {
+                actual_freq[wio.ReadValue<uint64_t>()]--;
+                n_keys--;
+                break;
+            }
+            case WorkloadIO::opcode::Flush: {
+                freq_checkpoints.push_back(actual_freq);
+                break;
+            }
+            default: {
+                break;
+            }
+        }
+    }
+
+    wio.Reset();
+    uint32_t checkpoint_ind = 0;
+    n_keys = 0;
+    while (!wio.Done()) {
+        WorkloadIO::opcode opcode = wio.GetOpcode();
+        switch (opcode) {
+            case WorkloadIO::opcode::Insert: {
+                insert_f(sketch, wio.ReadValue<uint64_t>());
+                n_keys++;
+                break;
+            }
+            case WorkloadIO::opcode::Delete: {
+                const uint64_t value = wio.ReadValue<uint64_t>();
+                delete_f(sketch, value);
+                n_keys--;
+                break;
+            }
+            case WorkloadIO::opcode::Timer: {
+                char timer_key = wio.ReadValue<char>();
+                if (timer_results[timer_key] == 0) {
+                    time_points[timer_key] = timer::now();
+                    timer_results[timer_key] = -1;
+                }
+                else
+                    timer_results[timer_key] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points[timer_key]).count();
+                break;
+            }
+            case WorkloadIO::opcode::Flush: {
+                double aae = 0, are = 0, con = 0;
+                time_points['q'] = timer::now();
+                for (auto& it : freq_checkpoints[checkpoint_ind]) {
+                    const int64_t est_val = query_f(sketch, it.first);
+                    const int64_t real_val = it.second;
+                    const double dist = std::abs(static_cast<double>(est_val - real_val));
+
+                    are += dist / real_val;
+                    aae += dist;
+                    con += est_val != real_val;
+                }
+                timer_results['q'] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points['q']).count();
+                const uint32_t n_distinct_keys = freq_checkpoints[checkpoint_ind].size();
+                aae /= n_distinct_keys;
+                are /= n_distinct_keys;
+                con /= n_distinct_keys;
+
+                test_out.AddMeasure("n_keys", n_keys);
+                test_out.AddMeasure("aae", aae);
+                test_out.AddMeasure("are", are);
+                test_out.AddMeasure("size", size_f(sketch));
+                for (int32_t i = 0; i < std::numeric_limits<uint8_t>::max(); i++) {
+                    if (timer_results[i] > 0) {
+                        std::string measure_name = "time_";
+                        measure_name += static_cast<char>(i);
+                        test_out.AddMeasure(measure_name, timer_results[i]);
+                    }
+                }
+
+                std::cout << test_out.ToJson() << ',' << std::endl;
+
+                memset(timer_results, 0, sizeof(timer_results));
+                test_out.Clear();
+
+                if (std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - op_start_time).count() 
+                            > kill_exec_time_threshold)
+                    return;
+                break;
+            }
+        }
+    }
+}
+
+
+template <typename Sketch, typename InsertFun, typename DeleteFun, typename QueryFun, typename SizeFun>
+void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun query_f, SizeFun size_f) {
+    uint16_t buf_len;
+    uint8_t buf[std::numeric_limits<uint16_t>::max()];
+
+    std::unordered_map<std::string, uint32_t> actual_freq;
+    std::vector<std::unordered_map<std::string, uint32_t>> freq_checkpoints;
+    uint32_t n_keys = 0;
+
+    timer::time_point op_start_time = timer::now();
+    while (!wio.Done()) {
+        WorkloadIO::opcode opcode = wio.GetOpcode();
+        switch (opcode) {
+            case WorkloadIO::opcode::Insert: {
+                wio.GetStringKey(buf_len, buf);
+                const std::string key(buf, buf + buf_len);
+                actual_freq[key]++;
+                n_keys++;
+                break;
+            }
+            case WorkloadIO::opcode::Delete: {
+                wio.GetStringKey(buf_len, buf);
+                const std::string key(buf, buf + buf_len);
+                actual_freq[key]--;
+                n_keys--;
+                break;
+            }
+            case WorkloadIO::opcode::Flush: {
+                freq_checkpoints.push_back(actual_freq);
+                break;
+            }
+            default: {
+                break;
+            }
+        }
+    }
+
+    wio.Reset();
+    uint32_t checkpoint_ind = 0;
+    n_keys = 0;
+    while (!wio.Done()) {
+        WorkloadIO::opcode opcode = wio.GetOpcode();
+        switch (opcode) {
+            case WorkloadIO::opcode::Insert: {
+                wio.GetStringKey(buf_len, buf);
+                const std::string key(buf, buf + buf_len);
+                insert_f(sketch, key);
+                n_keys++;
+                break;
+            }
+            case WorkloadIO::opcode::Delete: {
+                wio.GetStringKey(buf_len, buf);
+                const std::string key(buf, buf + buf_len);
+                delete_f(sketch, key);
+                n_keys--;
+                break;
+            }
+            case WorkloadIO::opcode::Timer: {
+                char timer_key = wio.ReadValue<char>();
+                if (timer_results[timer_key] == 0) {
+                    time_points[timer_key] = timer::now();
+                    timer_results[timer_key] = -1;
+                }
+                else
+                    timer_results[timer_key] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points[timer_key]).count();
+                break;
+            }
+            case WorkloadIO::opcode::Flush: {
+                double aae = 0, are = 0, con = 0;
+                time_points['q'] = timer::now();
+                for (auto& it : freq_checkpoints[checkpoint_ind]) {
+                    const int64_t est_val = query_f(sketch, it.first);
+                    const int64_t real_val = it.second;
+                    const double dist = std::abs(static_cast<double>(est_val - real_val));
+
+                    are += dist / real_val;
+                    aae += dist;
+                    con += est_val != real_val;
+                }
+                timer_results['q'] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points['q']).count();
+                aae /= freq_checkpoints[checkpoint_ind].size();
+                are /= freq_checkpoints[checkpoint_ind].size();
+                con /= freq_checkpoints[checkpoint_ind].size();
+
+                test_out.AddMeasure("n_keys", n_keys);
+                test_out.AddMeasure("aae", aae);
+                test_out.AddMeasure("are", are);
+                test_out.AddMeasure("size", size_f(sketch));
+                for (int32_t i = 0; i < std::numeric_limits<uint8_t>::max(); i++) {
+                    if (timer_results[i] > 0) {
+                        std::string measure_name = "time_";
+                        measure_name += static_cast<char>(i);
+                        test_out.AddMeasure(measure_name, timer_results[i]);
+                    }
+                }
+
+                std::cout << test_out.ToJson() << ',' << std::endl;
+
+                memset(timer_results, 0, sizeof(timer_results));
+                test_out.Clear();
+
+                if (std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - op_start_time).count() 
+                            > kill_exec_time_threshold)
+                    return;
+                break;
+            }
+        }
+    }
+}
+
+
+argparse::ArgumentParser init_parser(const std::string& name) {
     argparse::ArgumentParser parser(name);
 
     parser.add_argument("arg")
             .help("the initial memory budget of the sketch, in bytes")
             .nargs(1)
-            .scan<'i', int>();
+            .scan<'u', uint64_t>();
+
+    parser.add_argument("--expansion-power")
+            .help("the exponent of n in the expansion rate function")
+            .nargs(1)
+            .default_value(static_cast<double>(0.0))
+            .scan<'g', double>();
 
     parser.add_argument("-r", "--rows")
             .help("the number of rows in the sketch")
             .nargs(1)
-            .default_value(4)
-            .scan<'i', int>();
+            .default_value(static_cast<uint32_t>(3))
+            .scan<'u', uint32_t>();
 
     parser.add_argument("-w", "--workload")
             .help("pass the workload from file")
-            .nargs(2, 3);
+            .nargs(1);
 
     parser.add_argument("-k", "--keys")
             .help("pass the keys from file")
             .nargs(1);
 
-    parser.add_argument("--csv")
-            .help("prints the output in csv")
-            .nargs(1);
-
     return parser;
 }
 
-std::tuple<InputKeys<std::string>, int, int> read_parser_arguments(argparse::ArgumentParser &parser) 
-{
-    auto memory = parser.get<int>("arg");
-    auto rows = parser.get<int>("rows");
-    auto keys_filename = parser.get<std::string>("keys");
-    uint32_t key_len_binary = 0;
-    if (keys_filename == "CAIDA.dat")
-        key_len_binary = 13;
-    auto keys = read_data_binary(keys_filename, key_len_binary);
 
-    if (keys.empty())
-        throw std::runtime_error("error, keys file is empty.");
-
-    if (auto arg_csv = parser.present<std::string>("--csv")) {
-        print_csv = true;
-        csv_file = *arg_csv;
-    }
-
-    std::cout << "[+] nkeys=" << keys.size() << std::endl;
-    std::cout << "[+] Read keys, starting test." << std::endl;
-    return std::make_tuple(keys, memory, rows);
+inline void read_workload(const std::string& workload_file) {
+    wio = WorkloadIO(workload_file, WorkloadIO::iomode::Read);
 }
 
-std::unordered_map<std::string, uint32_t> actual_freq;
 
-template<typename Sketch, typename InsertFun, typename QueryFun, typename SizeFun>
-void experiment(Sketch &sketch, InsertFun insert_f, QueryFun query_f, SizeFun size_f, 
-                InputKeys<std::string> &keys)
-{
-    for (auto &i : keys)
-        actual_freq[i]++;
-
-    start_timer(insert_time);
-    int cnt = 0;
-    for (auto &i : keys) {
-        insert_f(sketch, i);
-    }
-    stop_timer(insert_time);
-    std::cout << "[+] Keys inserted in " << test_out["insert_time"] << "ms, checking accuracy" << std::endl;
-
-    double ARE = 0, AAE = 0, CON = 0;
-    start_timer(query_time);
-    for (auto &it : actual_freq) {
-        const uint32_t est_val = query_f(sketch, it.first);
-        const uint32_t real_val = it.second;
-        const double dist = std::abs(static_cast<double>(est_val - real_val));
-
-        ARE += dist / real_val;
-        AAE += dist;
-        CON += est_val != real_val;
-    }
-    stop_timer(query_time);
-	ARE /= actual_freq.size();
-    AAE /= actual_freq.size();
-    CON /= actual_freq.size();
-    std::cout << "[+] Queries processed in " << test_out["query_time"] << "ms" << std::endl;
-
-    auto size = size_f(sketch);
-    test_out.add_measure("size", size);
-    test_out.add_measure("ARE", ARE);
-    test_out.add_measure("AAE", AAE);
-    test_out.add_measure("AAE", CON);
-    std::cout << "[+] Test executed successfully, printing stats and closing." << std::endl;
-}
-
-void print_test() 
-{
-    if (test_verbose)
-        test_out.print();
-
-    if (print_csv) {
-        std::cout << "[+] writing results in " << csv_file << std::endl;
-        std::filesystem::path path_csv(csv_file);
-        std::string s = (!std::filesystem::exists(path_csv) || std::filesystem::is_empty(path_csv))
-                            ? test_out.to_csv(true) : test_out.to_csv(false);
-        std::ofstream outFile(path_csv, std::ios::app);
-        outFile << s;
-        outFile.close();
-    }
+inline void print_test() {
+    std::cout << test_out.ToJson() << std::endl;
 }
 

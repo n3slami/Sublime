@@ -14,8 +14,9 @@ set(CMAKE_CXX_STANDARD 17)
 
 list(APPEND Targets "CMSketchbookFixedCounters" "CMSketchbookAdaptiveCounters" "CMSketchbookAdaptiveCountersPQ"
                     "StingyCM"
-                    "CSketchbookAdaptiveCountersPQ"
-                    "StingyC")
+                    "CSketchbookFixedCounters" "CSketchbookAdaptiveCountersPQ"
+                    "StingyC"
+                    "MGDummy")
 
 function(compile_bench ds)
     if (NOT ds IN_LIST Targets)
@@ -38,15 +39,21 @@ function(compile_bench ds)
                                        ./sketches_benchmark/include/MurmurHash.h 
                                        ./sketches_benchmark/include/params.h)
         set_target_properties(StingyCMLib PROPERTIES LINKER_LANGUAGE CXX)
+        target_compile_options(StingyCMLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
         target_link_libraries(bench_${ds} StingyCMLib)
     elseif (ds MATCHES "CSketchbookAdaptiveCountersPQ")
         target_link_libraries(bench_${ds} CSketchbookAdaptiveCountersPQLib)
+    elseif (ds MATCHES "CSketchbookFixedCounters")
+        target_link_libraries(bench_${ds} CSketchbookFixedCountersLib)
     elseif (ds MATCHES "StingyC")
         add_library(StingyCLib STATIC ./sketches_benchmark/include/StingyC.hpp 
                                       ./sketches_benchmark/include/MurmurHash.h 
                                       ./sketches_benchmark/include/params.h)
         set_target_properties(StingyCLib PROPERTIES LINKER_LANGUAGE CXX)
+        target_compile_options(StingyCLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
         target_link_libraries(bench_${ds} StingyCLib)
+    elseif (ds MATCHES "MGDummy")
+        target_link_libraries(bench_${ds} MGDummyLib)
     endif()
 endfunction(compile_bench)
 
@@ -54,3 +61,7 @@ foreach(ds ${Targets})
     compile_bench(${ds})
 endforeach()
 
+
+# Setup workload generation binary
+add_executable(workload_gen workload_gen.cpp zipf/zipf.h zipf/zipf.c)
+target_link_libraries(workload_gen argparse)

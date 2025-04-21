@@ -1,12 +1,12 @@
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+
+#include <doctest/doctest.h>
+
 #include <cstdint>
 #include <iostream>
 #include <assert.h>
-#include <string>
 
 #include "CSketchbookFixedCounters.hpp"
-
-const std::string ansi_green = "\033[0;32m";
-const std::string ansi_white = "\033[0;97m";
 
 class CSketchbookFixedCountersTest {
 public:
@@ -17,27 +17,31 @@ public:
         const uint32_t one_count = 100;
         for (int i = 0; i < one_count; i++)
             sketch.Insert(1);
-        assert(sketch.Query(1) == one_count);
-        assert(sketch.Query(2) == 0);
+        REQUIRE_EQ(sketch.Query(1), one_count);
+        REQUIRE_EQ(sketch.Query(2), 0);
 
         int pos = -1;
         const uint64_t sign_hash = sketch.get_sign_hash(1);
         for (int i = 0; i < sketch.col_count; i++) {
             if (get_counter(sketch, i) != 0) {
                 pos = i;
-                assert(get_counter(sketch, pos) == (sign_hash & 1ULL) ? 100 : -100);
+                REQUIRE_EQ(get_counter(sketch, pos), (sign_hash & 1ULL) ? 100 : -100);
             }
             else 
-                assert(get_counter(sketch, i) == 0);
+                REQUIRE_EQ(get_counter(sketch, i), 0);
         }
-        assert(pos != -1);
+        REQUIRE_NE(pos, -1);
         sketch.Insert(1);
-        assert(sketch.row_count == 10 && sketch.col_count == 20);
-        assert(get_counter(sketch, pos) == ((sign_hash & 1ULL) ? 101 : -101)
-                && get_counter(sketch, 10 + pos) == ((sign_hash & 1ULL) ? 100 : -100));
+        REQUIRE_EQ(sketch.row_count, 10);
+        REQUIRE_EQ(sketch.col_count, 20);
+        REQUIRE_EQ(get_counter(sketch, pos), ((sign_hash & 1ULL) ? 101 : -101));
+        REQUIRE_EQ(get_counter(sketch, 10 + pos), ((sign_hash & 1ULL) ? 100 : -100));
+
         sketch.Delete(1);
         assert(sketch.row_count == 10 && sketch.col_count == 10);
-        assert(get_counter(sketch, pos) == ((sign_hash & 1ULL) ? 100 : -100));
+        REQUIRE_EQ(sketch.row_count, 10);
+        REQUIRE_EQ(sketch.col_count, 10);
+        REQUIRE_EQ(get_counter(sketch, pos), ((sign_hash & 1ULL) ? 100 : -100));
     }
 
 private:
@@ -60,10 +64,10 @@ private:
     }
 };
 
-int main(int argc, char **argv) {
-    std::cerr << ansi_green << "===== [ Running Tests ]" << ansi_white << std::endl;
-    CSketchbookFixedCountersTest::ExpandAndContract();
-    std::cerr << ansi_green << "===== [ Done ]" << ansi_white << std::endl;
 
-    return 0;
+TEST_SUITE("CSketchbookFixedCounters") {
+    TEST_CASE("expand and contract") {
+        CSketchbookFixedCountersTest::ExpandAndContract();
+    }
 }
+

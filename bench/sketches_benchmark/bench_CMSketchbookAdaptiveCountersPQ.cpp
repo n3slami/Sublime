@@ -1,50 +1,81 @@
 #include <cstdint>
+#include <functional>
 
 #include "../bench_template.hpp"
 #include "CMSketchbookAdaptiveCountersPQ.hpp"
 
 #define TOF
 
-inline CMSketchbookAdaptiveCountersPQ init_sketch(const uint32_t memory_budget,
-                                                const uint32_t row_count)
-{
+inline CMSketchbookAdaptiveCountersPQ *init_sketch(const uint32_t memory_budget,
+                                                   const uint32_t row_count,
+                                                   std::function<uint64_t(size_t)> f) {
     const uint32_t counter_count = memory_budget * (63.0 / 64.0);
     const uint32_t col_count = (counter_count + row_count - 1) / row_count;
-    auto f = [](uint64_t x) { return x * x; };
     const uint32_t seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()) \
                                 .time_since_epoch().count();
-    CMSketchbookAdaptiveCountersPQ sketch(col_count, row_count, f, seed);
+    CMSketchbookAdaptiveCountersPQ *sketch = new CMSketchbookAdaptiveCountersPQ(col_count, row_count, f, seed);
     return sketch;
 }
 
 int cnt = 0;
 
-inline void insert_sketch(CMSketchbookAdaptiveCountersPQ &sketch, const std::string &key)
-{
+inline void insert_sketch(CMSketchbookAdaptiveCountersPQ *sketch, const std::string& key) {
 #ifdef TOF
-    sketch.InsertTofHashing(key.c_str(), key.size());
+    sketch->InsertTofHashing(key.c_str(), key.size());
 #else
-    sketch.Insert(key.c_str(), key.size());
+    sketch->Insert(key.c_str(), key.size());
 #endif
 }
 
-inline uint32_t query_sketch(CMSketchbookAdaptiveCountersPQ &sketch, const std::string &key)
-{
+template<typename T>
+inline void insert_sketch(CMSketchbookAdaptiveCountersPQ *sketch, T key) {
 #ifdef TOF
-    return sketch.QueryTofHashing(key.c_str(), key.size());
+    sketch->InsertTofHashing(reinterpret_cast<char *>(&key), sizeof(key));
 #else
-    return sketch.Query(key.c_str(), key.size());
+    sketch->Insert(key);
 #endif
 }
 
-inline uint32_t size_of_sketch(CMSketchbookAdaptiveCountersPQ &sketch)
-{
-    return sketch.Size();
+inline void delete_sketch(CMSketchbookAdaptiveCountersPQ *sketch, const std::string& key) {
+#ifdef TOF
+    sketch->DeleteTofHashing(key.c_str(), key.size());
+#else
+    sketch->Delete(key.c_str(), key.size());
+#endif
+}
+
+template<typename T>
+inline void delete_sketch(CMSketchbookAdaptiveCountersPQ *sketch, T key) {
+#ifdef TOF
+    sketch->DeleteTofHashing(reinterpret_cast<char *>(&key), sizeof(key));
+#else
+    sketch->Delete(key);
+#endif
+}
+
+inline int32_t query_sketch(CMSketchbookAdaptiveCountersPQ *sketch, const std::string& key) {
+#ifdef TOF
+    return sketch->QueryTofHashing(key.c_str(), key.size());
+#else
+    return sketch->Query(key.c_str(), key.size());
+#endif
+}
+
+template<typename T>
+inline int32_t query_sketch(CMSketchbookAdaptiveCountersPQ *sketch, T key) {
+#ifdef TOF
+    return sketch->QueryTofHashing(reinterpret_cast<char *>(&key), sizeof(key));
+#else
+    return sketch->Query(key);
+#endif
+}
+
+inline uint32_t size_of_sketch(CMSketchbookAdaptiveCountersPQ *sketch) {
+    return sketch->Size();
 }
 
 
-int main(int argc, char const *argv[]) 
-{
+int main(int argc, char const *argv[]) {
     auto parser = init_parser("bench-CMSketchbookAdaptiveCountersPQ");
 
     try {
@@ -56,13 +87,17 @@ int main(int argc, char const *argv[])
         std::exit(1);
     }
 
-    auto insert_fun = [](auto &f, const std::string &key) { insert_sketch(f, key); };
-    auto query_fun = [](auto &f, const std::string &key) { return query_sketch(f, key); };
-    auto size_fun = [](auto &f) { return size_of_sketch(f); };
+    memory_budget = parser.get<uint64_t>("arg");
+    read_workload(parser.get<std::string>("--workload"));
 
-    auto [ keys, memory, rows ] = read_parser_arguments(parser);
-    auto sketch = init_sketch(memory, rows);
-    experiment(sketch, insert_fun, query_fun, size_fun, keys);
-    print_test();
+    const uint32_t n_rows = parser.get<uint32_t>("--rows");
+    const double expansion_power = parser.get<double>("--expansion-power");
+    auto f = [&](size_t x) { return expansion_power == 0.0 ? std::numeric_limits<uint64_t>::max()
+                                    : static_cast<uint64_t>(pow(x, 1.0 / expansion_power)); };
+    auto sketch = init_sketch(memory_budget, n_rows, f);
+    if (wio.StringKeys())
+        experiment_string(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch));
+    else 
+        experiment(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch));
 }
 
