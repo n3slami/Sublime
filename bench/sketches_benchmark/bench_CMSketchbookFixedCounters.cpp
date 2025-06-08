@@ -71,7 +71,7 @@ int main(int argc, char const *argv[]) {
     const double expansion_power = parser.get<double>("--expansion-power");
     auto f = [&](size_t x) { return expansion_power == 0.0 ? std::numeric_limits<uint64_t>::max()
                                     : static_cast<uint64_t>(pow(x, 1.0 / expansion_power)); };
-    auto sketch = init_sketch<uint16_t>(memory_budget, n_rows, f);
+    auto sketch = init_sketch<uint32_t>(memory_budget, n_rows, f);
     if (wio.StringKeys())
         experiment_string(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch));
     else 

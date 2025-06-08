@@ -1,9 +1,9 @@
 #pragma once
-#include "params.h"
 #include <cstdint>
 #include <string.h>
 #include <iostream>
 #include "MurmurHash.h"
+#include "params/stingy.h"
 #include <random>
 #include <mmintrin.h>
 #include <algorithm>

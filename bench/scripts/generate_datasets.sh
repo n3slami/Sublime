@@ -46,8 +46,10 @@ generate_classical_comparison_bench() {
     x=.10
     while [ $i -le 20 ]
     do
-        $WORKLOAD_GEN_PATH -t standard --fdist zipf ${x} -o zipf_${x}
-        x=$(echo $x + 0.1 | bc)
+        if ! test -f zipf_${x}; then
+            $WORKLOAD_GEN_PATH -t standard --fdist zipf ${x} -o zipf_${x}
+        fi
+        x=$(echo $x + 0.2 | bc)
         i=$(($i + 1))
     done
 }

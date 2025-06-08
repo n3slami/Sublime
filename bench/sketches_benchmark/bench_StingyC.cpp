@@ -2,7 +2,7 @@
 #include <stdexcept>
 
 #include "../bench_template.hpp"
-#include "./include/StingyC.hpp"
+#include "include/StingyC.hpp"
 
 inline StingyC *init_sketch(const uint32_t memory_budget, const uint32_t row_count) {
     const uint32_t counter_count = memory_budget;

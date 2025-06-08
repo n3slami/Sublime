@@ -75,10 +75,10 @@ def plot_classical_comparison(result_dir, output_dir):
     sketches = ["CMSketchbookFixedCounters", "CSketchbookFixedCounters", "MGDummy"]
     memory_powers = range(15, 21)
     memory_footprints = [2 ** i for i in memory_powers]
-    memory_footprint_labels = ["$2^{" + str(i) + "}$" for i in memory_powers]
-    char_exps = [0.10 * (i + 1) for i in range(21)]
+    memory_footprint_labels = [f"${2 ** (i - (20 if i == 20 else 10))}${'KB' if i < 20 else 'MB'}" for i in memory_powers]
+    char_exps = [0.10 + 0.20 * i for i in range(13)]
     CHAR_EXP = 1.00
-    MEMORY_FOOTPRINT = 2 ** 16
+    MEMORY_FOOTPRINT = 2 ** 17
 
     fig, axes = plt.subplots(nrows=1, ncols=2, sharey=True, figsize=(WIDTH, HEIGHT))
 
@@ -99,8 +99,8 @@ def plot_classical_comparison(result_dir, output_dir):
                 aae_data[sketch].append((result[-1]["size"], result[-1]["aae"]))
                 are_data[sketch].append((result[-1]["size"], result[-1]["are"]))
     for sketch in sketches:
-        axes[0].plot(*zip(*aae_data[sketch]), **CLASSIC_SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
-        #axes[0].plot(*zip(*are_data[sketch]), **CLASSIC_SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE, linestyle=':')
+        axes[1].plot(*zip(*aae_data[sketch]), **CLASSIC_SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
+        #axes[1].plot(*zip(*are_data[sketch]), **CLASSIC_SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE, linestyle=':')
 
     aae_data = {sketch: [] for sketch in sketches}
     are_data = {sketch: [] for sketch in sketches}
@@ -121,20 +121,21 @@ def plot_classical_comparison(result_dir, output_dir):
                 aae_data[sketch].append((char_exp, result[-1]["aae"]))
                 are_data[sketch].append((char_exp, result[-1]["are"]))
     for sketch in sketches:
-        axes[1].plot(*zip(*aae_data[sketch]), **CLASSIC_SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
-        #axes[1].plot(*zip(*are_data[sketch]), **CLASSIC_SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE, linestyle=':')
+        axes[0].plot(*zip(*aae_data[sketch]), **CLASSIC_SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
+        #axes[0].plot(*zip(*are_data[sketch]), **CLASSIC_SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE, linestyle=':')
     
-    axes[0].set_xlabel("Memory Footprint [Bytes]", fontsize=XLABEL_FONT_SIZE)
-    axes[1].set_xlabel("Char. Exponent ($a$)", fontsize=XLABEL_FONT_SIZE)
+    axes[1].set_xlabel("Memory Footprint [Bytes]", fontsize=XLABEL_FONT_SIZE)
+    axes[0].set_xlabel("Char. Exponent ($a$)", fontsize=XLABEL_FONT_SIZE)
     axes[0].set_ylabel(f"{DATASET_NAMES['zipf']} AAE", fontsize=YLABEL_FONT_SIZE)
-    axes[0].set_title("Char. Exponent ($a=1.0$)", fontsize=TITLE_FONT_SIZE)
-    axes[1].set_title("Memory Footprint=64KB", fontsize=TITLE_FONT_SIZE)
+    axes[1].set_title("Char. Exponent ($a=1.0$)", fontsize=TITLE_FONT_SIZE)
+    axes[0].set_title("Memory Footprint=128KB", fontsize=TITLE_FONT_SIZE)
 
-    axes[0].set_xscale("log")
-    axes[0].set_xticks(memory_footprints, memory_footprint_labels, fontsize=XTICK_FONT_SIZE)
-    axes[0].minorticks_off()
-    axes[1].set_xticks(char_exps[::4], [f"{val:.2f}" for val in char_exps[::4]], fontsize=XTICK_FONT_SIZE)
+    axes[1].set_xscale("log")
+    axes[1].set_xticks(memory_footprints, memory_footprint_labels, fontsize=0.93*XTICK_FONT_SIZE)
+    axes[1].minorticks_off()
+    axes[0].set_xticks(char_exps[::2], [f"{val:.2f}" for val in char_exps[::2]], fontsize=XTICK_FONT_SIZE)
     for i in range(2):
+        axes[i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(1000))
         axes[i].autoscale_view()
         axes[i].margins(0.04)
     fig.subplots_adjust(hspace=0.05, wspace=0.1)

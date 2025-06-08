@@ -2,53 +2,60 @@
 #include <stdexcept>
 
 #include "../bench_template.hpp"
-#include "include/StingyCM.hpp"
+#include "include/CodingC.hpp"
 
-inline StingyCM *init_sketch(const uint32_t memory_budget, const uint32_t row_count) {
+inline BIT_C *init_sketch(const uint32_t memory_budget, const uint32_t row_count) {
     const uint32_t counter_count = memory_budget;
     const uint32_t col_count = (counter_count + row_count - 1) / row_count;
     auto f = [](uint64_t x) { return x * x; };
     const uint32_t seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()) \
                                 .time_since_epoch().count();
-    StingyCM *sketch = new StingyCM(col_count * row_count, row_count, seed);
+    BIT_C *sketch = new BIT_C(col_count, row_count, seed);
     return sketch;
 }
 
-inline void insert_sketch(StingyCM *sketch, const std::string& key) {
+inline void insert_sketch(BIT_C *sketch, const std::string& key) {
     sketch->Insert(key.c_str(), key.size());
 }
 
 template<typename T>
-inline void insert_sketch(StingyCM *sketch, T key) {
+inline void insert_sketch(BIT_C *sketch, T key) {
     sketch->Insert(reinterpret_cast<char *>(&key), sizeof(key));
 }
 
 template<typename T>
-inline void delete_sketch(StingyCM *sketch, const std::string&  key) {
+inline void delete_sketch(BIT_C *sketch, const std::string&  key) {
     throw std::runtime_error("Deletes not implemented");
 }
 
 template<typename T>
-inline void delete_sketch(StingyCM *sketch, T key) {
+inline void delete_sketch(BIT_C *sketch, T key) {
     throw std::runtime_error("Deletes not implemented");
 }
 
-inline int32_t query_sketch(StingyCM *sketch, const std::string& key) {
+inline int32_t query_sketch(BIT_C *sketch, const std::string& key) {
     return sketch->Query(key.c_str(), key.size());
 }
 
 template<typename T>
-inline int32_t query_sketch(StingyCM *sketch, T key) {
+inline int32_t query_sketch(BIT_C *sketch, T key) {
     return sketch->Query(reinterpret_cast<char *>(&key), sizeof(key));
 }
 
-inline uint32_t size_of_sketch(StingyCM *sketch) {
-    return sketch->Size();
+inline uint32_t size_of_sketch(BIT_C *sketch) {
+    // Uses parameters and expressions that seem to be hard-coded into the implementation...
+    uint32_t res = sketch->layer[0].Len() * 4 / 8 + 8 + sketch->layer[0].Len() / 8 + 8;
+    res += sketch->layer[1].Len() * 4 / 8 + 8 + sketch->layer[1].Len() / 8 + 8;
+    res += sketch->layer[2].Len() * 4 / 8 + 8 + sketch->layer[2].Len() / 8 + 8;
+    res += sketch->layer[3].Len() * 3 / 8 + 8 + sketch->layer[3].Len() / 8 + 8;
+    res += sketch->layer[4].Len() * 3 / 8 + 8 + sketch->layer[4].Len() / 8 + 8;
+    res += sketch->layer[5].Len() * 10 / 8 + 8 + sketch->layer[5].Len() / 8 + 8;
+    return res;
 }
 
 
 int main(int argc, char const *argv[]) {
-    auto parser = init_parser("bench-StingyCM");
+    auto parser = init_parser("bench-CodingC");
 
     try {
         parser.parse_args(argc, argv);

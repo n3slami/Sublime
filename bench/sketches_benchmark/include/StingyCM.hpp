@@ -1,10 +1,9 @@
-#include "params.h"
 #include <cstddef>
 #include <cstdint>
 #include <string.h>
 #include <iostream>
 #include "MurmurHash.h"
-#include "params.h"
+#include "params/stingy.h"
 #include <random>
 #include <mmintrin.h>
 #define Min(a,b) 	((a) < (b) ? (a) : (b))

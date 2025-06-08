@@ -29,7 +29,29 @@ def execute_benchmark(build_dir, output_base, workload_subdir, workload, filter,
 def classical_bench():
     sketches = ["CMSketchbookFixedCounters", "CSketchbookFixedCounters", "MGDummy"]
     memory_footprints = [2 ** i for i in range(15, 21)]
+    MEMORY_FOOTPRINT = 2 ** 17
     workload_subdir = "classical_comparison_bench"
+    output_base = Path(f"./{output_prefix}/{workload_subdir}/")
+    output_base.mkdir(parents=True, exist_ok=True)
+
+    workload_path = Path(f"{workload_dir}/{workload_subdir}")
+    for workload in workload_path.iterdir():
+        for sketch, bpk in itertools.product(sketches, memory_footprints):
+            if bpk == MEMORY_FOOTPRINT or "1.00" in workload.name:
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, bpk)
+
+def accuracy_bench():
+    sketches = ["CMSketchbookFixedCounters", "CSketchbookFixedCounters", "MGDummy",
+                "CMSketchbookAdaptiveCounters", "CMSketchbookAdaptiveCountersPQ",
+                "CSketchbookAdaptiveCounters", "CSketchbookAdaptiveCountersPQ",
+                "StingyCM", "StingyC",
+                "CodingCM", "CodingC",
+                "BitSenseCM", "BitSenseC",
+                "SEADCM", "SEADC",
+                "Switch",
+                "Tailored", "OTailored"]
+    memory_footprints = [2 ** i for i in range(17, 18)]
+    workload_subdir = "accuracy_bench"
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
 
@@ -39,7 +61,8 @@ def classical_bench():
             execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, bpk)
 
 
-RUNNERS = {"classical": classical_bench}
+RUNNERS = {"classical": classical_bench,
+           "accuracy": accuracy_bench}
 
 
 if __name__ == "__main__":
