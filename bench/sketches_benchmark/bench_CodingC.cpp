@@ -6,11 +6,9 @@
 
 inline BIT_C *init_sketch(const uint32_t memory_budget, const uint32_t row_count) {
     const uint32_t counter_count = memory_budget;
-    const uint32_t col_count = (counter_count + row_count - 1) / row_count;
-    auto f = [](uint64_t x) { return x * x; };
     const uint32_t seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()) \
                                 .time_since_epoch().count();
-    BIT_C *sketch = new BIT_C(col_count, row_count, seed);
+    BIT_C *sketch = new BIT_C(counter_count, row_count, seed);
     return sketch;
 }
 
