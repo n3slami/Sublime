@@ -7,3 +7,5 @@ git submodule update --init simulator/third_party/fmt
 git submodule update --init simulator/third_party/toml
 cd -
 
+git submodule update --init ../sketches_benchmark/include/sead_counter/
+
