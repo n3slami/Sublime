@@ -68,7 +68,7 @@ function(compile_bench ds)
                                          ./sketches_benchmark/include/bitsense/simulator/src/common/utils.h
                                          ./sketches_benchmark/include/bitsense/simulator/src/common/logger.h)
         set_target_properties(BitSenseCMLib PROPERTIES LINKER_LANGUAGE CXX)
-        target_compile_options(BitSenseCMLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+        target_compile_options(BitSenseCMLib PUBLIC ${BITHACKING_COMPILE_FLAGS} -mno-avx512f -mno-avx512pf)
         target_link_libraries(bench_${ds} BitSenseCMLib BitSenseOmniTools)
     elseif (ds MATCHES "SEADCM")
         add_library(SEADCMLib STATIC ./sketches_benchmark/include/sead_counter/SEAD_Counter_Sketch/cmsketch.h
@@ -109,7 +109,7 @@ function(compile_bench ds)
                                         ./sketches_benchmark/include/bitsense/simulator/src/common/utils.h
                                         ./sketches_benchmark/include/bitsense/simulator/src/common/logger.h)
         set_target_properties(BitSenseCLib PROPERTIES LINKER_LANGUAGE CXX)
-        target_compile_options(BitSenseCLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+        target_compile_options(BitSenseCLib PUBLIC ${BITHACKING_COMPILE_FLAGS} -mno-avx512f -mno-avx512pf)
         target_link_libraries(bench_${ds} BitSenseCLib BitSenseOmniTools)
     elseif (ds MATCHES "SEADC")
         add_library(SEADCLib STATIC ./sketches_benchmark/include/sead_counter/SEAD_Counter_Sketch/csketch.h)
@@ -141,6 +141,10 @@ add_subdirectory(./sketches_benchmark/include/bitsense/simulator/third_party/tom
 # Configuring tomlplusplus & eigen needs a bit more work
 include_directories(./sketches_benchmark/include/bitsense/simulator/third_party/toml/include)
 include_directories(./sketches_benchmark/include/bitsense/simulator/third_party/eigen)
+
+find_package(Boost REQUIRED)
+include_directories(${Boost_INCLUDE_DIRS})
+
 add_library(BitSenseOmniTools ./sketches_benchmark/include/bitsense/simulator/src/impl/utils.cpp
                               ./sketches_benchmark/include/bitsense/simulator/src/impl/logger.cpp
                               ./sketches_benchmark/include/bitsense/simulator/src/impl/data.cpp

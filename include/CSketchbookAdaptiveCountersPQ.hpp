@@ -868,7 +868,6 @@ private:
         for (int i = 0; i < row_count; i++)
             seeds[i] = rng();
         sign_seed = rng();
-        seeds[0] = 1366608281ULL;
     }
 
     inline uint32_t hash_key(const uint64_t key, const int seed_ind) const {
