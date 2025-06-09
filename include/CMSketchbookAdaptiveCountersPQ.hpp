@@ -314,9 +314,9 @@ private:
             const uint64_t a = extensions[0] & BITMASK(pos);
             const uint64_t b = extensions[0] >> pos;
             extensions[1] <<= shamt;
-            extensions[1] |= b >> (64 - pos - shamt);
+            extensions[1] |= (64 < pos + shamt ? b << (pos + shamt - 64) : b >> (64 - pos - shamt));
             extensions[0] &= BITMASK(pos);
-            extensions[0] |= (b << (pos + shamt));
+            extensions[0] |= (pos + shamt >= 64 ? 0ULL : (b << (pos + shamt)));
         }
         else {
             const uint32_t new_pos = pos - 64;
@@ -330,7 +330,7 @@ private:
     inline void shift_extensions_right_from_pos(uint64_t extensions[], const uint32_t pos, const uint32_t shamt) const {
         if (pos < 64) {
             const uint64_t a = extensions[1] & BITMASK(shamt);
-            const uint64_t b = extensions[0] >> (pos + shamt);
+            const uint64_t b = (pos + shamt >= 64 ? 0ULL : extensions[0] >> (pos + shamt));
             extensions[1] >>= shamt;
             extensions[0] &= BITMASK(pos);
             extensions[0] |= ((a << (64 - shamt)) | (b << pos));

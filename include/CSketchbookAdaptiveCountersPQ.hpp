@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -35,22 +36,26 @@ public:
             prefetch_queue_cache_line_offset[i] = new uint64_t[row_count];
             prefetch_queue_sign[i] = new int64_t[row_count];
             for (uint32_t j = 0; j < row_count; j++) {
-                prefetch_queue[i][j] = counter_count + 1000;
-                prefetch_queue_cache_line[i][j] = get_cache_line_ind(counter_count + 1000);
+                prefetch_queue[i][j] = std::numeric_limits<uint64_t>::max();
+                prefetch_queue_cache_line[i][j] = std::numeric_limits<uint64_t>::max();
             }
             memset(prefetch_queue_cache_line_offset[i], 0, sizeof(uint64_t) * row_count);
             memset(prefetch_queue_sign[i], 0, sizeof(int64_t) * row_count);
         }
 		bias_range = std::min(static_cast<uint32_t>(((64 - ceil(log2(counter_count)))) / (row_count - 1)), 8U);
         bias_mask = BITMASK(bias_range);
+        const uint32_t converted_counter_count = ((counter_count - (((row_count - 1) << bias_range) + 0x10)) >> bias_range) << bias_range;
         index_range	= std::min(static_cast<uint32_t>(64 - bias_range * row_count),
-                               static_cast<uint32_t>(ceil(log2(counter_count)) - bias_range));
+                               static_cast<uint32_t>(ceil(log2(converted_counter_count)) - bias_range));
 		index_mask = BITMASK(index_range);
 
         sketches.push_back(allocate_sketch(row_count, col_count));
         gen_seeds();
 
         setup_lookup_tables();
+
+        sanity_counters = new int64_t[2 * col_count * row_count];
+        memset(sanity_counters, 0, 2 * col_count * row_count * sizeof(int64_t));
     }
     
     // Should probably write a copy constructor...
@@ -135,7 +140,7 @@ public:
             hash_value >>= bias_range;
             increment_counter(sketch, prefetch_queue[prefetch_clock][i]);
             */
-            const uint32_t counter_pos = index + (i << bias_range) + (hash_value & bias_mask);
+            const uint32_t counter_pos = index + (static_cast<int8_t>(i) << bias_range) + (hash_value & bias_mask);
             prefetch_queue_cache_line[old_prefetch_clock][i] = get_cache_line_ind(counter_pos);
             prefetch_queue_cache_line_offset[old_prefetch_clock][i] = counter_pos - counter_per_cache_line 
                                                                                     * prefetch_queue_cache_line[old_prefetch_clock][i];
@@ -143,12 +148,12 @@ public:
             hash_value >>= bias_range;
             prefetch_queue_sign[old_prefetch_clock][i] = hash_value & 1ULL;
             hash_value >>= 1;
-            const uint64_t tmp_pos = prefetch_queue_cache_line[prefetch_clock][i] * counter_per_cache_line 
-                                   + prefetch_queue_cache_line_offset[prefetch_clock][i];
-            incdec_counter(sketch,
-                           prefetch_queue_cache_line[prefetch_clock][i],
-                           prefetch_queue_cache_line_offset[prefetch_clock][i],
-                           prefetch_queue_sign[prefetch_clock][i]);
+            if (prefetch_queue_cache_line[prefetch_clock][i] != std::numeric_limits<uint64_t>::max()) {
+                incdec_counter(sketch,
+                               prefetch_queue_cache_line[prefetch_clock][i],
+                               prefetch_queue_cache_line_offset[prefetch_clock][i],
+                               prefetch_queue_sign[prefetch_clock][i]);
+            }
         }
         n++;
     }
@@ -239,7 +244,7 @@ public:
     }
 
     uint64_t QueryTofHashing(const char *elem, const uint32_t length) {
-        uint64_t res[row_count];
+        int64_t res[row_count];
         const uint8_t *sketch = sketches.back();
         uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
 		uint32_t index = ((hash_value & index_mask) << bias_range);
@@ -286,6 +291,7 @@ private:
     uint32_t init_col_count_lg, col_count_lg;
     std::function<uint64_t(size_t)> expansion_f;
     std::vector<uint8_t *> sketches;
+    int64_t *sanity_counters = nullptr;
 
     // Stingy Tofs
     static const uint64_t prefetch_queue_len = 16;
@@ -356,9 +362,9 @@ private:
             const uint64_t a = extensions[0] & BITMASK(pos);
             const uint64_t b = extensions[0] >> pos;
             extensions[1] <<= shamt;
-            extensions[1] |= b >> (64 - pos - shamt);
+            extensions[1] |= (64 < pos + shamt ? b << (pos + shamt - 64) : b >> (64 - pos - shamt));
             extensions[0] &= BITMASK(pos);
-            extensions[0] |= (b << (pos + shamt));
+            extensions[0] |= (pos + shamt >= 64 ? 0ULL : (b << (pos + shamt)));
         }
         else {
             const uint32_t new_pos = pos - 64;
@@ -372,7 +378,7 @@ private:
     inline void shift_extensions_right_from_pos(uint64_t extensions[], const uint32_t pos, const uint32_t shamt) const {
         if (pos < 64) {
             const uint64_t a = extensions[1] & BITMASK(shamt);
-            const uint64_t b = extensions[0] >> (pos + shamt);
+            const uint64_t b = (pos + shamt >= 64 ? 0ULL : extensions[0] >> (pos + shamt));
             extensions[1] >>= shamt;
             extensions[0] &= BITMASK(pos);
             extensions[0] |= ((a << (64 - shamt)) | (b << pos));
@@ -703,6 +709,7 @@ private:
     inline void incdec_counter(uint8_t *sketch, const uint32_t cache_line_ind, const uint32_t inter_cache_line_ind,
                                const int32_t inc) {
         const uint64_t tmp_pos = cache_line_ind * counter_per_cache_line + inter_cache_line_ind;
+        sanity_counters[tmp_pos] += inc ? 1 : -1;
         uint8_t *cache_line_ptr = sketch + cache_line_ind * cache_line_size_bytes;
 
         // Set the base counter
@@ -861,6 +868,7 @@ private:
         for (int i = 0; i < row_count; i++)
             seeds[i] = rng();
         sign_seed = rng();
+        seeds[0] = 1366608281ULL;
     }
 
     inline uint32_t hash_key(const uint64_t key, const int seed_ind) const {

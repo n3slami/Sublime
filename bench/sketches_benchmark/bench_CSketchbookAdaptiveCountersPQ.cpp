@@ -19,11 +19,11 @@ inline CSketchbookAdaptiveCountersPQ *init_sketch(const uint32_t memory_budget,
 
 int cnt = 0;
 
-inline void insert_sketch(CSketchbookAdaptiveCountersPQ& sketch, const std::string &key) {
+inline void insert_sketch(CSketchbookAdaptiveCountersPQ *sketch, const std::string &key) {
 #ifdef TOF
-    sketch.InsertTofHashing(key.c_str(), key.size());
+    sketch->InsertTofHashing(key.c_str(), key.size());
 #else
-    sketch.Insert(key.c_str(), key.size());
+    sketch->Insert(key.c_str(), key.size());
 #endif
 }
 

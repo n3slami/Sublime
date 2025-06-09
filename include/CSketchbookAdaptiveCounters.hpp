@@ -101,7 +101,7 @@ public:
     }
 
     uint64_t Query(const uint64_t elem) const {
-        uint64_t res[row_count];
+        int64_t res[row_count];
         uint8_t *sketch = sketches.back();
         uint64_t sign_hash = ~get_sign_hash(elem);
         for (int i = 0; i < row_count; i++) {
@@ -114,7 +114,7 @@ public:
     }
 
     uint64_t Query(const char *elem, const uint32_t length) const {
-        uint64_t res[col_count];
+        int64_t res[col_count];
         uint8_t *sketch = sketches.back();
         uint64_t sign_hash = get_string_sign_hash(elem, length);
         for (int i = 0; i < row_count; i++) {

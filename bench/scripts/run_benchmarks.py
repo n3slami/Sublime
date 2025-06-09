@@ -42,8 +42,7 @@ def classical_bench():
 
 def accuracy_bench():
     sketches = ["CMSketchbookFixedCounters", "CSketchbookFixedCounters", "MGDummy",
-                "CMSketchbookAdaptiveCounters", "CMSketchbookAdaptiveCountersPQ",
-                "CSketchbookAdaptiveCounters", "CSketchbookAdaptiveCountersPQ",
+                "CMSketchbookAdaptiveCountersPQ", "CSketchbookAdaptiveCountersPQ",
                 "StingyCM", "StingyC",
                 "CodingCM", "CodingC",
                 "BitSenseCM", "BitSenseC",

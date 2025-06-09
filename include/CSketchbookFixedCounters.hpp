@@ -98,7 +98,7 @@ public:
 
 
     T Query(const uint64_t elem) const {
-        T res[row_count];
+        int64_t res[row_count];
         T * sketch = reinterpret_cast<T *>(sketches.back());
         uint64_t sign_hash = get_sign_hash(elem);
         for (int i = 0; i < row_count; i++) {
@@ -112,7 +112,7 @@ public:
     }
 
     T Query(const char *elem, const uint32_t length) const {
-        T res[row_count];
+        int64_t res[row_count];
         T * sketch = reinterpret_cast<T *>(sketches.back());
         uint64_t sign_hash = get_string_sign_hash(elem, length);
         for (int i = 0; i < row_count; i++) {
