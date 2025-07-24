@@ -52,6 +52,9 @@ generate_classical_comparison_bench() {
         x=$(echo $x + 0.2 | bc)
         i=$(($i + 1))
     done
+    if ! test -f zipf_1.00; then
+        $WORKLOAD_GEN_PATH -t standard --fdist zipf 1.00 -o zipf_1.00
+    fi
 }
 
 generate_real_bench() {
