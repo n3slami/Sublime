@@ -75,7 +75,7 @@ def plot_classical_comparison(result_dir, output_dir):
     sketches = ["CMSketchbookFixedCounters", "CSketchbookFixedCounters", "MGDummy"]
     memory_powers = range(15, 21)
     memory_footprints = [2 ** i for i in memory_powers]
-    memory_footprint_labels = [f"${2 ** (i - (20 if i == 20 else 10))}${'KB' if i < 20 else 'MB'}" for i in memory_powers]
+    memory_footprint_labels = [f"${2 ** (i - (20 if i >= 20 else 10))}${'KB' if i < 19 else 'MB'}" for i in memory_powers]
     char_exps = [0.10 + 0.20 * i for i in range(13)]
     CHAR_EXP = 1.00
     MEMORY_FOOTPRINT = 2 ** 17
@@ -124,7 +124,7 @@ def plot_classical_comparison(result_dir, output_dir):
         axes[0].plot(*zip(*aae_data[sketch]), **CLASSIC_SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
         #axes[0].plot(*zip(*are_data[sketch]), **CLASSIC_SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE, linestyle=':')
     
-    axes[1].set_xlabel("Memory Footprint [Bytes]", fontsize=XLABEL_FONT_SIZE)
+    axes[1].set_xlabel("Memory Footprint", fontsize=XLABEL_FONT_SIZE)
     axes[0].set_xlabel("Char. Exponent ($a$)", fontsize=XLABEL_FONT_SIZE)
     axes[0].set_ylabel(f"{DATASET_NAMES['zipf']} AAE", fontsize=YLABEL_FONT_SIZE)
     axes[1].set_title("Char. Exponent ($a=1.0$)", fontsize=TITLE_FONT_SIZE)

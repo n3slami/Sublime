@@ -7,6 +7,7 @@
 #include <iostream>
 #include <argparse/argparse.hpp>
 #include <limits>
+#include <queue>
 #include <string>
 #include <unordered_map>
 #include "bench_utils.hpp"
@@ -25,6 +26,7 @@ inline InputKeys<uint64_t> initial_int_keys;
 inline InputKeys<std::string> initial_string_keys;
 inline timer::time_point time_points[std::numeric_limits<uint8_t>::max()];
 inline uint64_t timer_results[std::numeric_limits<uint8_t>::max()];
+inline uint32_t top_aae_are_count = std::numeric_limits<uint32_t>::max();
 
 
 template <typename Sketch, typename InsertFun, typename DeleteFun, typename QueryFun, typename SizeFun>
@@ -106,6 +108,38 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                 test_out.AddMeasure("aae", aae);
                 test_out.AddMeasure("are", are);
                 test_out.AddMeasure("size", size_f(sketch));
+
+                if (top_aae_are_count != std::numeric_limits<uint32_t>::max()) {
+                    std::priority_queue<std::pair<int64_t, uint64_t>> top_pq;
+                    for (auto& it : freq_checkpoints[checkpoint_ind]) {
+                        top_pq.push({-it.second, it.first});
+                        if (top_pq.size() > top_aae_are_count)
+                            top_pq.pop();
+                    }
+                    aae = 0;
+                    are = 0;
+                    con = 0;
+                    const uint32_t total_count = top_pq.size();
+                    time_points['t'] = timer::now();
+                    while (!top_pq.empty()) {
+                        const int64_t est_val = query_f(sketch, top_pq.top().second);
+                        const int64_t real_val = top_pq.top().first;
+                        const double dist = std::abs(static_cast<double>(est_val - real_val));
+
+                        are += dist / real_val;
+                        aae += dist;
+                        con += est_val != real_val;
+                        top_pq.pop();
+                    }
+                    timer_results['t'] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points['t']).count();
+                    aae /= total_count;
+                    are /= total_count;
+                    con /= total_count;
+
+                    test_out.AddMeasure("top_aae", aae);
+                    test_out.AddMeasure("top_are", are);
+                }
+
                 for (int32_t i = 0; i < std::numeric_limits<uint8_t>::max(); i++) {
                     if (timer_results[i] > 0) {
                         std::string measure_name = "time_";
@@ -217,6 +251,38 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
                 test_out.AddMeasure("aae", aae);
                 test_out.AddMeasure("are", are);
                 test_out.AddMeasure("size", size_f(sketch));
+
+                if (top_aae_are_count != std::numeric_limits<uint32_t>::max()) {
+                    std::priority_queue<std::pair<int64_t, std::string>> top_pq;
+                    for (auto& it : freq_checkpoints[checkpoint_ind]) {
+                        top_pq.push({-it.second, it.first});
+                        if (top_pq.size() > top_aae_are_count)
+                            top_pq.pop();
+                    }
+                    aae = 0;
+                    are = 0;
+                    con = 0;
+                    const uint32_t total_count = top_pq.size();
+                    time_points['t'] = timer::now();
+                    while (!top_pq.empty()) {
+                        const int64_t est_val = query_f(sketch, top_pq.top().second);
+                        const int64_t real_val = top_pq.top().first;
+                        const double dist = std::abs(static_cast<double>(est_val - real_val));
+
+                        are += dist / real_val;
+                        aae += dist;
+                        con += est_val != real_val;
+                        top_pq.pop();
+                    }
+                    timer_results['t'] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points['t']).count();
+                    aae /= total_count;
+                    are /= total_count;
+                    con /= total_count;
+
+                    test_out.AddMeasure("top_aae", aae);
+                    test_out.AddMeasure("top_are", are);
+                }
+
                 for (int32_t i = 0; i < std::numeric_limits<uint8_t>::max(); i++) {
                     if (timer_results[i] > 0) {
                         std::string measure_name = "time_";
