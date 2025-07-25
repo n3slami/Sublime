@@ -9,7 +9,7 @@
 template<typename K, typename T>
 inline MGDummy<K, T> *init_sketch(const uint32_t memory_budget, std::function<uint64_t(size_t)> f) {
     const float load_factor = 0.95;
-    const uint32_t counter_count = memory_budget / ((sizeof(uint64_t) + sizeof(uint32_t) + sizeof(off_t)) * (1 / load_factor) + sizeof(uint64_t));
+    const uint32_t counter_count = memory_budget / ((sizeof(K) + sizeof(T) + sizeof(uint32_t)) * (1 / load_factor) + sizeof(K));
     top_aae_are_count = counter_count;  // No. of top items to compute AAE and ARE for 
 
     MGDummy<K, T> *sketch = new MGDummy<K, T>(counter_count, f);
@@ -55,7 +55,7 @@ int main(int argc, char const *argv[]) {
     const double expansion_power = parser.get<double>("--expansion-power");
     auto f = [&](size_t x) { return expansion_power == 0.0 ? std::numeric_limits<uint64_t>::max()
                                     : static_cast<uint64_t>(pow(x, 1.0 / expansion_power)); };
-    auto sketch = init_sketch<uint64_t, uint32_t>(memory_budget, f);
+    auto sketch = init_sketch<uint64_t, uint64_t>(memory_budget, f);
     experiment(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch));
 }
 

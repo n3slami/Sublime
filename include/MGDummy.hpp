@@ -44,11 +44,9 @@ public:
         }
         else {
             lazy_decrement++;
-            if (freq_pos[heap[1]].first <= lazy_decrement) {
+            while (heap.size() > 1 && freq_pos[heap[1]].first <= lazy_decrement) {
                 freq_pos.erase(heap[1]);
-                heap[1] = elem;
-                freq_pos[elem] = {lazy_decrement + 1, 1};
-                bubble_down_heap();
+                delete_heap();
             }
         }
         n++;
@@ -61,7 +59,7 @@ public:
     T Query(const K elem) const {
         auto it = freq_pos.find(elem);
         if (it != freq_pos.end())
-            return lazy_decrement < it->second.first ? it->second.first - lazy_decrement : 0;
+            return it->second.first - lazy_decrement;
         return 0;
     }
 
@@ -81,33 +79,41 @@ private:
 
     inline void bubble_down_heap(off_t pos=1) {
         const K elem = heap[pos];
+        const T elem_freq = freq_pos[elem].first;
         while (pos < heap.size()) {
             T left_child_freq = 2 * pos < heap.size() ? freq_pos[heap[2 * pos]].first : std::numeric_limits<T>::max();
             T right_child_freq = 2 * pos + 1 < heap.size() ? freq_pos[heap[2 * pos + 1]].first : std::numeric_limits<T>::max();
-            if (left_child_freq < std::min(freq_pos[elem].first, right_child_freq)) {
-                freq_pos[elem].second = 2 * pos;
-                freq_pos[heap[2 * pos]].second = pos;
-                std::swap(heap[pos], heap[2 * pos]);
-                pos = 2 * pos;
-            }
-            else if (right_child_freq < std::min(freq_pos[elem].first, left_child_freq)) {
-                freq_pos[elem].second = 2 * pos + 1;
-                freq_pos[heap[2 * pos + 1]].second = pos;
-                std::swap(heap[pos], heap[2 * pos + 1]);
-                pos = 2 * pos + 1;
+            if (elem_freq > std::min(left_child_freq, right_child_freq)) {
+                const uint32_t to_swap = 2 * pos + (left_child_freq >= right_child_freq);
+                std::swap(freq_pos[elem].second, freq_pos[heap[to_swap]].second);
+                std::swap(heap[pos], heap[to_swap]);
+                pos = to_swap;
             }
             else 
                 break;
         }
     }
 
-    inline void insert_heap(const K elem) {
-        heap.push_back(elem);
-        for (off_t i = heap.size() - 1; i > 1; i /= 2) {
+    inline void bubble_up_heap(off_t pos=0) {
+        pos = pos == 0 ? heap.size() - 1 : pos;
+        for (off_t i = pos; i > 1; i /= 2) {
             if (freq_pos[heap[i]].first >= freq_pos[heap[i / 2]].first)
                 break;
+            std::swap(freq_pos[heap[i]].second, freq_pos[heap[i / 2]].second);
             std::swap(heap[i], heap[i / 2]);
         }
+    }
+
+    inline void insert_heap(const K elem) {
+        heap.push_back(elem);
+        bubble_up_heap();
+    }
+
+    inline void delete_heap() {
+        freq_pos[heap[heap.size() - 1]].second = 1;
+        heap[1] = heap[heap.size() - 1];
+        heap.pop_back();
+        bubble_down_heap();
     }
 
     inline void expand() {

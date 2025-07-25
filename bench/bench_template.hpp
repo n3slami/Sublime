@@ -110,9 +110,10 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                 test_out.AddMeasure("size", size_f(sketch));
 
                 if (top_aae_are_count != std::numeric_limits<uint32_t>::max()) {
-                    std::priority_queue<std::pair<int64_t, uint64_t>> top_pq;
+                    using FreqItem = std::pair<int64_t, uint64_t>;
+                    std::priority_queue<FreqItem, std::vector<FreqItem>, std::greater<FreqItem>> top_pq;
                     for (auto& it : freq_checkpoints[checkpoint_ind]) {
-                        top_pq.push({-it.second, it.first});
+                        top_pq.push({it.second, it.first});
                         if (top_pq.size() > top_aae_are_count)
                             top_pq.pop();
                     }
@@ -253,9 +254,10 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
                 test_out.AddMeasure("size", size_f(sketch));
 
                 if (top_aae_are_count != std::numeric_limits<uint32_t>::max()) {
-                    std::priority_queue<std::pair<int64_t, std::string>> top_pq;
+                    using FreqItem = std::pair<int64_t, std::string>;
+                    std::priority_queue<FreqItem, std::vector<FreqItem>, std::greater<FreqItem>> top_pq;
                     for (auto& it : freq_checkpoints[checkpoint_ind]) {
-                        top_pq.push({-it.second, it.first});
+                        top_pq.push({it.second, it.first});
                         if (top_pq.size() > top_aae_are_count)
                             top_pq.pop();
                     }
