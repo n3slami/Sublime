@@ -64,7 +64,7 @@ public:
     }
 
     size_t Size() const {
-        return (sizeof(K) + sizeof(T) + sizeof(off_t)) / load_factor * freq_pos.size() + sizeof(K) * heap.size();
+        return (sizeof(K) + sizeof(T) + sizeof(uint32_t)) / load_factor * freq_pos.size() + sizeof(K) * heap.size();
     }
 
 private:
@@ -74,10 +74,10 @@ private:
     uint64_t expansion_lim;
     std::function<uint64_t(size_t)> expansion_f;
     T lazy_decrement;
-    std::unordered_map<K, std::pair<T, off_t>> freq_pos;
+    std::unordered_map<K, std::pair<T, uint32_t>> freq_pos;
     std::vector<K> heap;
 
-    inline void bubble_down_heap(off_t pos=1) {
+    inline void bubble_down_heap(uint32_t pos=1) {
         const K elem = heap[pos];
         const T elem_freq = freq_pos[elem].first;
         while (pos < heap.size()) {
@@ -94,9 +94,9 @@ private:
         }
     }
 
-    inline void bubble_up_heap(off_t pos=0) {
+    inline void bubble_up_heap(uint32_t pos=0) {
         pos = pos == 0 ? heap.size() - 1 : pos;
-        for (off_t i = pos; i > 1; i /= 2) {
+        for (uint32_t i = pos; i > 1; i /= 2) {
             if (freq_pos[heap[i]].first >= freq_pos[heap[i / 2]].first)
                 break;
             std::swap(freq_pos[heap[i]].second, freq_pos[heap[i / 2]].second);
