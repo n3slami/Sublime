@@ -66,8 +66,8 @@ public:
             const uint32_t cache_line_cnt = (row_count * cols + counter_per_cache_line - 1) / counter_per_cache_line;
             for (uint32_t j = 0; j < cache_line_cnt; j++) {
                 const uint64_t *words = reinterpret_cast<uint64_t *>(sketches[i] + j * cache_line_size_bytes);
-                if (words[cache_line_size_words - 2] >> 63) {
-                    delete reinterpret_cast<uint32_t *>(words[cache_line_size_words - 1]);
+                if (words[cache_line_size_words - num_extension_words] >> 63) {
+                    delete reinterpret_cast<uint32_t *>(get_ptr_from_extension_bitmap(words + cache_line_size_words - 1));
                 }
             }
             delete sketches[i];
@@ -261,17 +261,19 @@ private:
     uint8_t word_update_byte_offset[64], word_update_shamt[64];
 
     void setup_lookup_tables() {
-        const uint32_t offset_granule = sizeof(uint64_t) / 2 * 8;
+        constexpr uint64_t word_size_bytes = sizeof(uint64_t);
+        constexpr uint64_t word_size_bits = word_size_bytes * 8;
         uint32_t bit_pos = counter_per_cache_line;
-        uint32_t l = offset_granule, r = offset_granule + sizeof(uint64_t) * 8;
         for (int i = 0; i < counter_per_cache_line; i++) {
             const uint32_t counter_pos = i * base_counter_size + counter_per_cache_line;
-            if (counter_pos + base_counter_size > r) {
-                l += offset_granule;
-                r += offset_granule;
+            if ((counter_pos % word_size_bits) + base_counter_size > word_size_bits) {
+                word_update_byte_offset[i] = (counter_pos / word_size_bits) * word_size_bytes + word_size_bytes / 2;
+                word_update_shamt[i] = counter_pos % word_size_bits - word_size_bits / 2;
             }
-            word_update_byte_offset[i] = l / 8;
-            word_update_shamt[i] = counter_pos - l;
+            else {
+                word_update_byte_offset[i] = counter_pos / word_size_bits * word_size_bytes;
+                word_update_shamt[i] = counter_pos % word_size_bits;
+            }
         }
     }
 
@@ -286,10 +288,44 @@ private:
 
 
     //__attribute__((always_inline))
+    inline void set_overflowing(uint64_t words[], const uint32_t pos, const bool state) {
+        words[pos / 64] = state ? words[pos / 64] | (1ULL << (pos % 64))
+                                : words[pos / 64] & ~(1ULL << (pos % 64));
+    }
+
+    //__attribute__((always_inline))
+    inline void set_overflowing_to_0(uint64_t words[], const uint32_t pos, const uint64_t bit_value=1) {
+        words[pos / 64] &= ~(bit_value << (pos % 64));
+    }
+
+
+    //__attribute__((always_inline))
+    inline void set_overflowing_to_1(uint64_t words[], const uint32_t pos, const uint64_t bit_value=1) {
+        words[pos / 64] |= bit_value << (pos % 64);
+    }
+    
+
+    //__attribute__((always_inline))
+    inline bool is_overflowing(const uint64_t words[], const uint32_t pos) const {
+        return (words[pos / 64] >> (pos % 64)) & 1ULL;
+    }
+
+
+    //__attribute__((always_inline))
     inline uint64_t get_extension_mask(const uint64_t val) const {
         return (val & (val >> 1)) & select_mask;
     }
 
+
+    //__attribute__((always_inline))
+    inline uint32_t get_extension_rank(const uint64_t words[], const uint32_t pos) const {
+        uint32_t res = 0;
+        for (uint32_t i = 0; i < pos / 64; i++)
+            res += __builtin_popcountll(words[i]);
+        res += bit_rank(words[pos / 64], pos % 64);
+        return res;
+    }
+    
 
     //__attribute__((always_inline))
     inline uint32_t get_extension_pos(const uint64_t extensions[], const uint32_t rank) const {
@@ -428,9 +464,9 @@ private:
 
         // Take into account the extensions, if any
         const uint64_t *words = reinterpret_cast<const uint64_t *>(cache_line_ptr);
-        const bool has_extension = (words[0] >> inter_cache_line_ind) & 1;
+        const bool has_extension = is_overflowing(words, inter_cache_line_ind);
         if (has_extension) {
-            const uint32_t extension_rank = bit_rank(words[0], inter_cache_line_ind);
+            const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
             uint64_t extension_bitmap[num_extension_words];
             for (uint32_t i = 0; i < num_extension_words - 1; i++)
                 extension_bitmap[i] = words[cache_line_size_words - i - 1];
@@ -458,15 +494,22 @@ private:
 
 
     //__attribute__((always_inline))
-    inline uint32_t *setup_separate_array(const uint64_t has_extension_bitmap, uint64_t *extension_bitmap,
+    inline uint32_t *setup_separate_array(const uint64_t *overflows_bitmap, uint64_t *extension_bitmap,
                                           const uint32_t total_extension_len) {
         uint32_t *ptr = new uint32_t[counter_per_cache_line];
         memset(ptr, 0, counter_per_cache_line * sizeof(uint32_t));
         uint32_t running_val = 0, running_pw = 1, cnt = 0;
+        uint32_t overflows_pos = 0, running_overflows_count = 0;
         for (int i = 0; i < total_extension_len; i += extension_size) {
             const uint32_t fragment = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
             if (fragment == 3) {
-                ptr[bit_select(has_extension_bitmap, cnt)] = running_val;
+                uint32_t ptr_pos = bit_select(overflows_bitmap[overflows_pos], cnt - running_overflows_count);
+                while (ptr_pos == 64) {
+                    running_overflows_count += __builtin_popcountll(overflows_bitmap[overflows_pos]);
+                    overflows_pos++;
+                    ptr_pos = bit_select(overflows_bitmap[overflows_pos], cnt - running_overflows_count);
+                }
+                ptr[ptr_pos] = running_val;
                 running_val = 0;
                 running_pw = 1;
                 cnt++;
@@ -513,10 +556,10 @@ private:
         // Handle the extensions
         uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
         const bool new_has_extension = value > MAX_VALUE(base_counter_size);
-        const bool old_has_extension = (words[0] >> inter_cache_line_ind) & 1;
+        const bool old_has_extension = is_overflowing(words, inter_cache_line_ind);
         const int update_state = static_cast<int>(old_has_extension) * 2 + static_cast<int>(new_has_extension);
         if (update_state) {
-            const uint32_t extension_rank = bit_rank(words[0], inter_cache_line_ind);
+            const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
             uint64_t extension_bitmap[num_extension_words];
             for (uint32_t i = 0; i < num_extension_words - 1; i++)
                 extension_bitmap[i] = words[cache_line_size_words - i - 1];
@@ -536,7 +579,7 @@ private:
                         ptr[inter_cache_line_ind] = extension_value;
                     }
                     else if (new_extension_len + total_extension_len > extension_size * num_extension) {
-                        uint32_t *ptr = setup_separate_array(words[0], extension_bitmap, total_extension_len);
+                        uint32_t *ptr = setup_separate_array(words, extension_bitmap, total_extension_len);
                         ptr[inter_cache_line_ind] = extension_value;
                     }
                     else {
@@ -566,7 +609,7 @@ private:
                         ptr[inter_cache_line_ind] = extension_value;
                     }
                     else if (new_extension_len + total_extension_len - old_extension_len > extension_size * num_extension) {
-                        uint32_t *ptr = setup_separate_array(words[0], extension_bitmap, total_extension_len);
+                        uint32_t *ptr = setup_separate_array(words, extension_bitmap, total_extension_len);
                         ptr[inter_cache_line_ind] = extension_value;
                     }
                     else {
@@ -584,8 +627,7 @@ private:
 
             write_extensions_to_cache_line(words, extension_bitmap);
         }
-        words[0] = (new_has_extension ? words[0] | (1ULL << inter_cache_line_ind)
-                                      : words[0] & (~BITMASK(1ULL << inter_cache_line_ind)));
+        set_overflowing(words, inter_cache_line_ind, new_has_extension);
     }
 
 
@@ -593,86 +635,7 @@ private:
     inline void increment_counter(uint8_t *sketch, const uint32_t pos) {
         const uint32_t cache_line_ind = get_cache_line_ind(pos);
         const uint32_t inter_cache_line_ind = pos - cache_line_ind * counter_per_cache_line;
-        uint8_t *cache_line_ptr = sketch + cache_line_ind * cache_line_size_bytes;
-
-        // Set the base counter
-        uint64_t stamp;
-        const uint32_t base_bit_pos = inter_cache_line_ind * base_counter_size + counter_per_cache_line;
-        const uint32_t base_byte_pos = base_bit_pos / 8;
-        memcpy(&stamp, cache_line_ptr + base_byte_pos, sizeof(stamp));
-        uint64_t val = (stamp >> (base_bit_pos % 8)) & BITMASK(base_counter_size);
-        const uint64_t carried = (val == MAX_VALUE(base_counter_size));
-        stamp += (carried ^ 1ULL) << (base_bit_pos % 8);
-        stamp &= ~((BITMASK(base_counter_size) << (base_bit_pos % 8)) & (-carried));
-        memcpy(cache_line_ptr + base_byte_pos, &stamp, sizeof(stamp));
-        
-        // Handle the carry and extensions
-        uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
-        const bool has_extension = (words[0] >> inter_cache_line_ind) & 1;
-        if (carried) {
-            const uint32_t extension_rank = bit_rank(words[0], inter_cache_line_ind);
-
-            uint64_t extension_bitmap[num_extension_words];
-            for (uint32_t i = 0; i < num_extension_words - 1; i++)
-                extension_bitmap[i] = words[cache_line_size_words - i - 1];
-            extension_bitmap[num_extension_words - 1] = words[cache_line_size_words - num_extension_words] >> (64 - last_extension_word_bit_count);
-            const bool already_has_array_ptr = extension_bitmap[num_extension_words - 1] >> (last_extension_word_bit_count - 1);
-            const uint32_t total_extension_len = (already_has_array_ptr ? extension_size * num_extension + 1
-                                                                        : get_extension_length(extension_bitmap));
-            if (has_extension) {
-                if (already_has_array_ptr) {
-                    // Update separate array
-                    uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
-                    ptr[inter_cache_line_ind]++;
-                }
-                else {
-                    const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
-                    uint32_t i = pos;
-                    uint64_t chunk = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
-                    bool absorbed = false, should_add_extension = true;
-                    do {
-                        absorbed = (chunk != MAX_VALUE(extension_size) - 1);
-                        should_add_extension &= !absorbed;
-                        extension_bitmap[i / 64] += (1ULL + (absorbed ? 0 : -MAX_VALUE(extension_size))) << (i % 64);
-                        i += 2;
-                        chunk = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
-                    } while ((!absorbed) & (chunk != MAX_VALUE(extension_size)));
-
-                    if (should_add_extension) {
-                        if (total_extension_len + extension_size > extension_size * num_extension) {
-                            uint32_t *ptr = setup_separate_array(words[0], extension_bitmap, total_extension_len);
-                            ptr[inter_cache_line_ind] = 1;
-                            for (int j = pos; j < i; j += 2)
-                                ptr[inter_cache_line_ind] *= 3;
-                        }
-                        else {
-                            shift_extensions_left_from_pos(extension_bitmap, i, extension_size);
-                            extension_bitmap[i / 64] += 1ULL << (i % 64);
-                        }
-                    }
-                }
-            }
-            else {
-                if (already_has_array_ptr) {
-                    // Update separate array
-                    uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
-                    ptr[inter_cache_line_ind]++;
-                }
-                else if (total_extension_len + 2 * extension_size > extension_size * num_extension) {
-                    uint32_t *ptr = setup_separate_array(words[0], extension_bitmap, total_extension_len);
-                    ptr[inter_cache_line_ind] = 1;
-                }
-                else {
-                    const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
-                    shift_extensions_left_from_pos(extension_bitmap, pos, 2 * extension_size);
-                    extension_bitmap[pos / 64] += 1ULL << (pos % 64);
-                    extension_bitmap[(pos + 2) / 64] |= MAX_VALUE(extension_size) << ((pos + 2) % 64);
-                }
-            }
-
-            write_extensions_to_cache_line(words, extension_bitmap);
-        }
-        words[0] |= (carried << inter_cache_line_ind);
+        increment_counter(sketch, cache_line_ind, inter_cache_line_ind);
     }
 
 
@@ -693,8 +656,8 @@ private:
         
         // Handle the carry and extensions
         uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
-        const bool has_extension = (words[0] >> inter_cache_line_ind) & 1;
-        const uint32_t extension_rank = bit_rank(words[0], inter_cache_line_ind);
+        const bool has_extension = is_overflowing(words, inter_cache_line_ind);
+        const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
         uint64_t extension_bitmap[num_extension_words];
         for (uint32_t i = 0; i < num_extension_words - 1; i++)
             extension_bitmap[i] = words[cache_line_size_words - i - 1];
@@ -723,7 +686,7 @@ private:
 
                 if (should_add_extension) {
                     if (total_extension_len + extension_size > extension_size * num_extension) {
-                        uint32_t *ptr = setup_separate_array(words[0], extension_bitmap, total_extension_len);
+                        uint32_t *ptr = setup_separate_array(words, extension_bitmap, total_extension_len);
                         ptr[inter_cache_line_ind] = 1;
                         for (int j = pos; j < i; j += 2)
                             ptr[inter_cache_line_ind] *= 3;
@@ -742,7 +705,7 @@ private:
                 ptr[inter_cache_line_ind]++;
             }
             else if (total_extension_len + 2 * extension_size > extension_size * num_extension) {
-                uint32_t *ptr = setup_separate_array(words[0], extension_bitmap, total_extension_len);
+                uint32_t *ptr = setup_separate_array(words, extension_bitmap, total_extension_len);
                 ptr[inter_cache_line_ind] = 1;
             }
             else {
@@ -754,7 +717,7 @@ private:
         }
 
         write_extensions_to_cache_line(words, extension_bitmap);
-        words[0] |= (1ULL << inter_cache_line_ind);
+        set_overflowing_to_1(words, inter_cache_line_ind);
     }
 
 
@@ -762,62 +725,7 @@ private:
     inline void decrement_counter(uint8_t *sketch, const uint32_t pos) {
         const uint32_t cache_line_ind = get_cache_line_ind(pos);
         const uint32_t inter_cache_line_ind = pos - cache_line_ind * counter_per_cache_line;
-        uint8_t *cache_line_ptr = sketch + cache_line_ind * cache_line_size_bytes;
-
-        // Set the base counter
-        uint64_t *update_word = reinterpret_cast<uint64_t *>(cache_line_ptr + word_update_byte_offset[inter_cache_line_ind]);
-        const uint64_t base_counter_mask = BITMASK(base_counter_size) << word_update_shamt[inter_cache_line_ind];
-        const uint64_t tmp_val = (update_word[0] & base_counter_mask);
-        if (tmp_val != 0) {
-            update_word[0] -= 1ULL << word_update_shamt[inter_cache_line_ind];
-            return;
-        }
-
-        update_word[0] |= base_counter_mask;
-        
-        // Handle the carry and extensions
-        uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
-        const bool has_extension = (words[0] >> inter_cache_line_ind) & 1;
-        const uint32_t extension_rank = bit_rank(words[0], inter_cache_line_ind);
-        uint64_t extension_bitmap[num_extension_words];
-        for (uint32_t i = 0; i < num_extension_words - 1; i++)
-            extension_bitmap[i] = words[cache_line_size_words - i - 1];
-        extension_bitmap[num_extension_words - 1] = words[cache_line_size_words - num_extension_words] >> (64 - last_extension_word_bit_count);
-        const bool already_has_array_ptr = extension_bitmap[num_extension_words - 1] >> (last_extension_word_bit_count - 1);
-        const uint32_t total_extension_len = (already_has_array_ptr ? extension_size * num_extension + 1
-                                                                    : get_extension_length(extension_bitmap));
-
-        if (already_has_array_ptr) {
-            // Update separate array
-            uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
-            ptr[inter_cache_line_ind]--;
-            const uint64_t extensions_depleted = ptr[inter_cache_line_ind] == 0;
-            words[0] &= ~(extensions_depleted << inter_cache_line_ind);
-        }
-        else {
-            const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
-            uint32_t i = pos;
-            uint64_t chunk = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
-            bool absorbed = false, should_remove_extension = true;
-            do {
-                absorbed = (chunk != 0);
-                should_remove_extension &= (!absorbed | (chunk == 1));
-                extension_bitmap[i / 64] -= (1ULL + (absorbed ? 0 : -MAX_VALUE(extension_size))) << (i % 64);
-                i += 2;
-                chunk = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
-            } while ((!absorbed) & (chunk != MAX_VALUE(extension_size)));
-
-            should_remove_extension &= (chunk == MAX_VALUE(extension_size));
-            if (should_remove_extension) {
-                const uint64_t extensions_depleted = (i == pos + 2);
-                const uint32_t shamt = (extensions_depleted ? extension_size * 2 : extension_size);
-                const uint32_t shift_pos = i - 2;
-                shift_extensions_right_from_pos(extension_bitmap, shift_pos, shamt);
-                words[0] &= ~(extensions_depleted << inter_cache_line_ind);
-            }
-        }
-
-        write_extensions_to_cache_line(words, extension_bitmap);
+        decrement_counter(sketch, cache_line_ind, inter_cache_line_ind);
     }
 
 
@@ -838,8 +746,8 @@ private:
         
         // Handle the carry and extensions
         uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
-        const bool has_extension = (words[0] >> inter_cache_line_ind) & 1;
-        const uint32_t extension_rank = bit_rank(words[0], inter_cache_line_ind);
+        const bool has_extension = is_overflowing(words, inter_cache_line_ind);
+        const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
         uint64_t extension_bitmap[num_extension_words];
         for (uint32_t i = 0; i < num_extension_words - 1; i++)
             extension_bitmap[i] = words[cache_line_size_words - i - 1];
@@ -853,7 +761,7 @@ private:
             uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
             ptr[inter_cache_line_ind]--;
             const uint64_t extensions_depleted = ptr[inter_cache_line_ind] == 0;
-            words[0] &= ~(extensions_depleted << inter_cache_line_ind);
+            set_overflowing_to_0(words, inter_cache_line_ind, extensions_depleted);
         }
         else {
             const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
@@ -874,7 +782,7 @@ private:
                 const uint32_t shamt = (extensions_depleted ? extension_size * 2 : extension_size);
                 const uint32_t shift_pos = i - 2;
                 shift_extensions_right_from_pos(extension_bitmap, shift_pos, shamt);
-                words[0] &= ~(extensions_depleted << inter_cache_line_ind);
+                set_overflowing_to_0(words, inter_cache_line_ind, extensions_depleted);
             }
         }
 
