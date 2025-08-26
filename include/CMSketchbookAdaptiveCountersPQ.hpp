@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bits/floatn-common.h>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -15,6 +16,18 @@
 
 class CMSketchbookAdaptiveCountersPQ {
     friend class CMSketchbookAdaptiveCountersTest;
+
+private:
+    enum class OpType {
+        Insert,
+        Delete,
+        Query,
+        None
+    };
+
+    struct Sketch {
+        uint8_t * const sketch;
+    };
 
 public:
     CMSketchbookAdaptiveCountersPQ(size_t init_col_count, size_t init_row_count,
@@ -33,16 +46,11 @@ public:
         counter_count = init_counter_count;
         init_counter_count_lg = highbit_pos(counter_count) + 1;
         counter_count_lg = init_counter_count_lg;
-        for (uint32_t i = 0; i < prefetch_queue_len; i++) {
-            prefetch_queue[i] = new uint64_t[row_count];
-            prefetch_queue_cache_line[i] = new uint64_t[row_count];
-            prefetch_queue_cache_line_offset[i] = new uint64_t[row_count];
-            for (uint32_t j = 0; j < row_count; j++) {
-                prefetch_queue[i][j] = counter_count + 1000;
-                prefetch_queue_cache_line[i][j] = get_cache_line_ind(counter_count + 1000);
-            }
-            memset(prefetch_queue_cache_line_offset[i], 0, sizeof(uint64_t) * row_count);
-        }
+
+        // Setup Prefetching
+        std::fill(prefetch_queue_op, prefetch_queue_op + prefetch_queue_len, OpType::None);
+
+        // Setup Tof Hashing
 		bias_range = std::min(static_cast<uint32_t>(((64 - counter_count_lg)) / (row_count - 1)), 8U);
         bias_mask = BITMASK(bias_range);
         index_range	= std::min(static_cast<uint32_t>(64 - bias_range * row_count),
@@ -72,104 +80,68 @@ public:
             }
             delete sketches[i];
         }
-        for (uint32_t i = 0; i < prefetch_queue_len; i++)
-            delete prefetch_queue[i];
         sketches.clear();
         delete seeds;
     }
 
-    void Insert(const uint64_t elem) {
-        if (n == expansion_lim)
-            expand();
-        uint8_t *sketch = sketches.back();
-        const uint32_t old_prefetch_clock = prefetch_clock;
-        prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
-        for (int i = 0; i < row_count; i++) {
-            const uint32_t pos = col_count * i + hash_key(elem, i);
-            __builtin_prefetch(sketch + get_cache_line_ind(pos) * cache_line_size_bytes);
-            prefetch_queue[old_prefetch_clock][i] = pos;
-            increment_counter(sketch, prefetch_queue[prefetch_clock][i]);
-        }
-        n++;
+    template <typename T>
+    void Insert(const T elem) {
+        Insert(reinterpret_cast<const char *>(&elem), sizeof(elem));
     }
 
     void Insert(const char *elem, const uint32_t length) {
         if (n == expansion_lim)
             expand();
         uint8_t *sketch = sketches.back();
-        const uint32_t old_prefetch_clock = prefetch_clock;
-        prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
-        for (int i = 0; i < row_count; i++) {
-            const uint32_t pos = col_count * i + hash_string_key(elem, length, i);
-            __builtin_prefetch(sketch + get_cache_line_ind(pos) * cache_line_size_bytes);
-            prefetch_queue[old_prefetch_clock][i] = pos;
-            increment_counter(sketch, prefetch_queue[prefetch_clock][i]);
+        if constexpr (using_tof_hashing) {
+            uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
+            const uint32_t index = hash_tof(hash_value);
+            hash_value >>= index_range;
+            for (int i = 0; i < row_count; i++) {
+                const uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                push_prefetch_request(sketch, pos, OpType::Insert);
+                handle_last_prefetch_request(sketch);
+                hash_value >>= bias_range;
+            }
+        }
+        else {
+            for (int i = 0; i < row_count; i++) {
+                const uint32_t pos = col_count * i + hash_key(elem, length, i);
+                push_prefetch_request(sketch, pos, OpType::Insert);
+                handle_last_prefetch_request(sketch);
+            }
         }
         n++;
     }
 
 
-    void InsertTofHashing(const char *elem, const uint32_t length) {
-        if (n == expansion_lim)
-            expand();
-        uint8_t *sketch = sketches.back();
-        uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
-		const uint32_t index = hash_tof(hash_value);
-        hash_value >>= index_range;
-
-        const uint32_t old_prefetch_clock = prefetch_clock;
-        prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
-        for (int i = 0; i < row_count; i++) {
-            const uint32_t counter_pos = index + (i << bias_range) + (hash_value & bias_mask);
-            prefetch_queue_cache_line[old_prefetch_clock][i] = get_cache_line_ind(counter_pos);
-            prefetch_queue_cache_line_offset[old_prefetch_clock][i] = counter_pos - counter_per_cache_line 
-                                                                                    * prefetch_queue_cache_line[old_prefetch_clock][i];
-            __builtin_prefetch(sketch + prefetch_queue_cache_line[old_prefetch_clock][i] * cache_line_size_bytes);
-            hash_value >>= bias_range;
-            increment_counter(sketch, prefetch_queue_cache_line[prefetch_clock][i],
-                                      prefetch_queue_cache_line_offset[prefetch_clock][i]);
-        }
-        n++;
-    }
-
-
-    void Delete(const uint64_t elem) {
-        uint8_t *sketch = sketches.back();
-        for (int i = 0; i < row_count; i++)
-            decrement_counter(sketch, col_count * i + hash_key(elem, i));
-        n--;
-        if (n == contraction_lim)
-            contract();
+    template <typename T>
+    void Delete(const T elem) {
+        Delete(reinterpret_cast<const char *>(&elem), sizeof(elem));
     }
 
 
     void Delete(const char *elem, const uint32_t length) {
         uint8_t *sketch = sketches.back();
-        for (int i = 0; i < row_count; i++)
-            decrement_counter(sketch, col_count * i + hash_string_key(elem, length, i));
-        n--;
-        if (n == contraction_lim)
-            contract();
-    }
-
-    
-    void DeleteTofHashing(const char *elem, const uint32_t length) {
-        uint8_t *sketch = sketches.back();
-        uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
-		uint32_t index = hash_tof(hash_value);
-        hash_value >>= index_range;
-
-        const uint32_t old_prefetch_clock = prefetch_clock;
-        prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
-        for (int i = 0; i < row_count; i++) {
-            const uint32_t counter_pos = index + (i << bias_range) + (hash_value & bias_mask);
-            prefetch_queue_cache_line[old_prefetch_clock][i] = get_cache_line_ind(counter_pos);
-            prefetch_queue_cache_line_offset[old_prefetch_clock][i] = counter_pos - counter_per_cache_line 
-                                                                                    * prefetch_queue_cache_line[old_prefetch_clock][i];
-            __builtin_prefetch(sketch + prefetch_queue_cache_line[old_prefetch_clock][i] * cache_line_size_bytes);
-            hash_value >>= bias_range;
-            decrement_counter(sketch, prefetch_queue_cache_line[prefetch_clock][i],
-                                      prefetch_queue_cache_line_offset[prefetch_clock][i]);
+        if constexpr (using_tof_hashing) {
+            uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
+            uint32_t index = hash_tof(hash_value);
+            hash_value >>= index_range;
+            const uint32_t old_prefetch_clock = prefetch_clock;
+            prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
+            for (int i = 0; i < row_count; i++) {
+                const uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                push_prefetch_request(sketch, pos, OpType::Delete);
+                handle_last_prefetch_request(sketch);
+                hash_value >>= bias_range;
+            }
+        }
+        else {
+            for (int i = 0; i < row_count; i++) {
+                const uint32_t pos = col_count * i + hash_key(elem, length, i);
+                push_prefetch_request(sketch, pos, OpType::Delete);
+                handle_last_prefetch_request(sketch);
+            }
         }
         n--;
         if (n == contraction_lim)
@@ -177,36 +149,63 @@ public:
     }
 
     
-    uint64_t Query(const uint64_t elem) const {
-        uint64_t res = MAX_VALUE(8 * sizeof(uint32_t));
-        const uint8_t *sketch = sketches.back();
-        for (int i = 0; i < row_count; i++)
-            res = std::min(res, get_counter(sketch, col_count * i + hash_key(elem, i)));
-        return res;
+    template <typename T>
+    uint64_t Query(const T elem) const {
+        return Query(reinterpret_cast<const char *>(&elem), sizeof(elem));
     }
 
 
     uint64_t Query(const char *elem, const uint32_t length) const {
         uint64_t res = MAX_VALUE(8 * sizeof(uint32_t));
         const uint8_t *sketch = sketches.back();
-        for (int i = 0; i < row_count; i++)
-            res = std::min(res, get_counter(sketch, col_count * i + hash_string_key(elem, length, i)));
+        if constexpr (using_tof_hashing) {
+            uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
+            uint32_t index = hash_tof(hash_value);
+            hash_value >>= index_range;
+            for (int i = 0; i < row_count; i++) {
+                const uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                res = std::min(res, get_counter(sketch, pos));
+                hash_value >>= bias_range;
+            }
+        }
+        else {
+            for (int i = 0; i < row_count; i++)
+                res = std::min(res, get_counter(sketch, col_count * i + hash_key(elem, length, i)));
+        }
         return res;
     }
 
 
-    uint64_t QueryTofHashing(const char *elem, const uint32_t length) const {
-        uint64_t res = MAX_VALUE(8 * sizeof(uint32_t));
-        const uint8_t *sketch = sketches.back();
-        uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
-		uint32_t index = hash_tof(hash_value);
-        hash_value >>= index_range;
-        for (int i = 0; i < row_count; i++) {
-            const uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
-            res = std::min(res, get_counter(sketch, pos));
-            hash_value >>= bias_range;
+    void FlushPrefetchQueue() {
+        uint8_t *sketch = sketches.back();
+        const uint32_t loop_clock = prefetch_clock;
+        for (prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
+                prefetch_clock != loop_clock;
+                prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len) {
+            if constexpr (using_tof_hashing) {
+                switch (prefetch_queue_op[prefetch_clock]) {
+                    case OpType::Insert:
+                        increment_counter(sketch, prefetch_queue_cache_line[prefetch_clock],
+                                                  prefetch_queue_cache_line_offset[prefetch_clock]);
+                    case OpType::Delete:
+                        decrement_counter(sketch, prefetch_queue_cache_line[prefetch_clock],
+                                                  prefetch_queue_cache_line_offset[prefetch_clock]);
+                    default:
+                        ;
+                }
+            }
+            else {
+                switch (prefetch_queue_op[prefetch_clock]) {
+                    case OpType::Insert:
+                        increment_counter(sketch, prefetch_queue[prefetch_clock]);
+                    case OpType::Delete:
+                        decrement_counter(sketch, prefetch_queue[prefetch_clock]);
+                    default:
+                        ;
+                }
+            }
+            prefetch_queue_op[prefetch_clock] = OpType::None;
         }
-        return res;
     }
 
 
@@ -242,11 +241,14 @@ private:
 
     // Prefetching Queue
     static constexpr bool using_tof_hashing = true;
-    static constexpr uint64_t prefetch_queue_len = 16;
-    uint64_t *prefetch_queue[prefetch_queue_len];
-    uint64_t *prefetch_queue_cache_line[prefetch_queue_len];
-    uint64_t *prefetch_queue_cache_line_offset[prefetch_queue_len];
+    static constexpr uint64_t prefetch_queue_len = 32;
+    uint64_t prefetch_queue[prefetch_queue_len];
+    uint64_t prefetch_queue_cache_line[prefetch_queue_len];
+    uint64_t prefetch_queue_cache_line_offset[prefetch_queue_len];
+    OpType prefetch_queue_op[prefetch_queue_len];
     uint32_t prefetch_clock = 0;
+
+    // Tof Hashing Stuff
     uint32_t bias_range, index_range;
     uint64_t bias_mask, index_mask;
 
@@ -284,6 +286,54 @@ private:
     //__attribute__((always_inline))
     inline uint32_t get_cache_line_ind(const uint32_t pos) const {
         return static_cast<int32_t>(pos) / counter_per_cache_line;
+    }
+
+
+    __attribute__((always_inline))
+    inline void push_prefetch_request(uint8_t *sketch, const uint32_t pos, const OpType op) {
+        if constexpr (using_tof_hashing) {
+            prefetch_queue_cache_line[prefetch_clock] = get_cache_line_ind(pos);
+            prefetch_queue_cache_line_offset[prefetch_clock] = pos - counter_per_cache_line * prefetch_queue_cache_line[prefetch_clock];
+            prefetch_queue_op[prefetch_clock] = op;
+            __builtin_prefetch(sketch + prefetch_queue_cache_line[prefetch_clock] * cache_line_size_bytes);
+        }
+        else {
+            prefetch_queue[prefetch_clock] = pos;
+            prefetch_queue_op[prefetch_clock] = op;
+            __builtin_prefetch(sketch + get_cache_line_ind(pos) * cache_line_size_bytes);
+        }
+        prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
+    }
+
+
+    __attribute__((always_inline))
+    inline void handle_last_prefetch_request(uint8_t *sketch) {
+        if constexpr (using_tof_hashing) {
+            switch (prefetch_queue_op[prefetch_clock]) {
+                case OpType::Insert:
+                    increment_counter(sketch, prefetch_queue_cache_line[prefetch_clock],
+                                              prefetch_queue_cache_line_offset[prefetch_clock]);
+                    break;
+                case OpType::Delete:
+                    decrement_counter(sketch, prefetch_queue_cache_line[prefetch_clock],
+                                              prefetch_queue_cache_line_offset[prefetch_clock]);
+                    break;
+                default:
+                    break;
+            }
+        }
+        else {
+            switch (prefetch_queue_op[prefetch_clock]) {
+                case OpType::Insert:
+                    increment_counter(sketch, prefetch_queue[prefetch_clock]);
+                    break;
+                case OpType::Delete:
+                    decrement_counter(sketch, prefetch_queue[prefetch_clock]);
+                    break;
+                default:
+                    break;
+            }
+        }
     }
 
 
@@ -807,18 +857,7 @@ private:
     }
 
 
-    inline uint32_t hash_key(const uint64_t key, const int seed_ind) const {
-        const uint64_t original_hash = MurmurHash64B(&key, sizeof(key), seeds[seed_ind]);
-        uint32_t hash = original_hash & BITMASK(init_col_count_lg);
-        hash = fast_reduce(hash << (8 * sizeof(uint32_t) - init_col_count_lg),
-                            init_col_count);
-        hash += ((original_hash >> init_col_count_lg) & BITMASK(col_count_lg - init_col_count_lg))
-                * init_col_count;
-        return hash;
-    }
-
-
-    inline uint32_t hash_string_key(const char *key, const uint32_t length, const int seed_ind) const {
+    inline uint32_t hash_key(const char *key, const uint32_t length, const int seed_ind) const {
         const uint64_t original_hash = MurmurHash64B(key, length, seeds[seed_ind]);
         uint32_t hash = original_hash & BITMASK(init_col_count_lg);
         hash = fast_reduce(hash << (8 * sizeof(uint32_t) - init_col_count_lg),
@@ -841,6 +880,7 @@ private:
 
 
     inline void expand() {
+        FlushPrefetchQueue();
         contraction_lim = expansion_lim;
         expansion_lim = expansion_f(2 * col_count);
 
@@ -871,6 +911,7 @@ private:
 
 
     inline void contract() {
+        FlushPrefetchQueue();
         expansion_lim = contraction_lim;
         contraction_lim = (n < expansion_f(2 * init_col_count) ? 0 : expansion_f(col_count / 2));
 

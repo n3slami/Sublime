@@ -4,8 +4,6 @@
 #include "../bench_template.hpp"
 #include "CMSketchbookAdaptiveCountersPQ.hpp"
 
-#define TOF
-
 inline CMSketchbookAdaptiveCountersPQ *init_sketch(const uint32_t memory_budget,
                                                    const uint32_t row_count,
                                                    std::function<uint64_t(size_t)> f) {
@@ -20,54 +18,30 @@ inline CMSketchbookAdaptiveCountersPQ *init_sketch(const uint32_t memory_budget,
 int cnt = 0;
 
 inline void insert_sketch(CMSketchbookAdaptiveCountersPQ *sketch, const std::string& key) {
-#ifdef TOF
-    sketch->InsertTofHashing(key.c_str(), key.size());
-#else
     sketch->Insert(key.c_str(), key.size());
-#endif
 }
 
-template<typename T>
+template <typename T>
 inline void insert_sketch(CMSketchbookAdaptiveCountersPQ *sketch, T key) {
-#ifdef TOF
-    sketch->InsertTofHashing(reinterpret_cast<char *>(&key), sizeof(key));
-#else
     sketch->Insert(key);
-#endif
 }
 
 inline void delete_sketch(CMSketchbookAdaptiveCountersPQ *sketch, const std::string& key) {
-#ifdef TOF
-    sketch->DeleteTofHashing(key.c_str(), key.size());
-#else
     sketch->Delete(key.c_str(), key.size());
-#endif
 }
 
-template<typename T>
+template <typename T>
 inline void delete_sketch(CMSketchbookAdaptiveCountersPQ *sketch, T key) {
-#ifdef TOF
-    sketch->DeleteTofHashing(reinterpret_cast<char *>(&key), sizeof(key));
-#else
     sketch->Delete(key);
-#endif
 }
 
 inline int32_t query_sketch(CMSketchbookAdaptiveCountersPQ *sketch, const std::string& key) {
-#ifdef TOF
-    return sketch->QueryTofHashing(key.c_str(), key.size());
-#else
     return sketch->Query(key.c_str(), key.size());
-#endif
 }
 
-template<typename T>
+template <typename T>
 inline int32_t query_sketch(CMSketchbookAdaptiveCountersPQ *sketch, T key) {
-#ifdef TOF
-    return sketch->QueryTofHashing(reinterpret_cast<char *>(&key), sizeof(key));
-#else
     return sketch->Query(key);
-#endif
 }
 
 inline uint32_t size_of_sketch(CMSketchbookAdaptiveCountersPQ *sketch) {
