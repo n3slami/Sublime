@@ -55,6 +55,8 @@ private:
         uint8_t sketch[0];
     };
 
+    static_assert(sizeof(Sketch) % cache_line_size_bytes == 0);
+
     // Operation Type for Prefetching Queue
     enum class OpType {
         Insert,
