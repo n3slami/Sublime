@@ -15,19 +15,6 @@
 #include "util.hpp"
 
 
-static constexpr std::array<uint32_t, 64> setup_extension_len_lookup_table() {
-    std::array<uint32_t, 64> res = {};
-    res[0] = 1;
-    for (uint32_t i = 1; i < 64; i++) {
-        const uint64_t value = 1ULL << i;
-        res[i] = 2;
-        for (uint64_t pw = 3; pw <= value; pw *= 3)
-            res[i]++;
-    }
-    return res;
-}
-
-
 class CMSketchbookAdaptiveCountersPQ {
     friend class CMSketchbookAdaptiveCountersTest;
 
@@ -64,7 +51,7 @@ private:
         uint32_t num_extension_words;
         uint32_t last_extension_word_bit_count;
         uint8_t word_update_byte_offset[max_counter_per_cache_line], word_update_shamt[max_counter_per_cache_line];
-        const uint8_t padding[12];
+        const uint8_t padding[20];
         uint8_t sketch[0];
     };
 
@@ -170,7 +157,6 @@ public:
         Delete(reinterpret_cast<const char *>(&elem), sizeof(elem));
     }
 
-
     void Delete(const char *elem, const uint32_t length) {
         Sketch *sketch = sketches.back();
         if constexpr (using_tof_hashing) {
@@ -204,7 +190,6 @@ public:
         return Query(reinterpret_cast<const char *>(&elem), sizeof(elem));
     }
 
-
     uint64_t Query(const char *elem, const uint32_t length) const {
         uint64_t res = MAX_VALUE(8 * sizeof(uint32_t));
         const Sketch *sketch = sketches.back();
@@ -233,28 +218,7 @@ public:
         for (prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
                 prefetch_clock != loop_clock;
                 prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len) {
-            if constexpr (using_tof_hashing) {
-                switch (prefetch_queue_op[prefetch_clock]) {
-                    case OpType::Insert:
-                        increment_counter(sketch, prefetch_queue_cache_line[prefetch_clock],
-                                                  prefetch_queue_cache_line_offset[prefetch_clock]);
-                    case OpType::Delete:
-                        decrement_counter(sketch, prefetch_queue_cache_line[prefetch_clock],
-                                                  prefetch_queue_cache_line_offset[prefetch_clock]);
-                    default:
-                        ;
-                }
-            }
-            else {
-                switch (prefetch_queue_op[prefetch_clock]) {
-                    case OpType::Insert:
-                        increment_counter(sketch, prefetch_queue[prefetch_clock]);
-                    case OpType::Delete:
-                        decrement_counter(sketch, prefetch_queue[prefetch_clock]);
-                    default:
-                        ;
-                }
-            }
+            handle_last_prefetch_request(sketch);
             prefetch_queue_op[prefetch_clock] = OpType::None;
         }
     }
@@ -262,11 +226,9 @@ public:
 
     size_t Size() const {
         const Sketch *sketch = sketches.back();
-        const uint32_t cache_line_cnt = (sketch->row_count * sketch->col_count + sketch->counter_per_cache_line - 1) 
+        const uint32_t cache_line_count = (sketch->row_count * sketch->col_count + sketch->counter_per_cache_line - 1) 
                                         / sketch->counter_per_cache_line;
-        const size_t base_size = cache_line_cnt * cache_line_size_bytes;
-        const uint32_t cache_line_count = (row_count * col_count + sketch->counter_per_cache_line - 1) 
-                                          / sketch->counter_per_cache_line;
+        const size_t base_size = cache_line_count * cache_line_size_bytes;
         const uint32_t sep_1 = sketch->counter_per_cache_line;
         const uint32_t sep_2 = sep_1 + sketch->counter_per_cache_line * sketch->stub_size;
         const uint32_t sep_3 = sep_2 + sketch->last_extension_word_bit_count;
@@ -293,7 +255,6 @@ private:
     std::vector<Sketch *> sketches;
 
     // Prefetching Queue
-    static constexpr bool using_tof_hashing = true;
     static constexpr uint64_t prefetch_queue_len = 32;
     uint64_t prefetch_queue[prefetch_queue_len];
     uint64_t prefetch_queue_cache_line[prefetch_queue_len];
@@ -302,6 +263,7 @@ private:
     uint32_t prefetch_clock = 0;
 
     // Tof Hashing Stuff
+    static constexpr bool using_tof_hashing = true;
     uint32_t bias_range, index_range;
     uint64_t bias_mask, index_mask;
 
@@ -441,7 +403,7 @@ private:
     }
 
 
-    //__attribute__((always_inline))
+    __attribute__((always_inline))
     inline uint32_t get_extension_length(const Sketch *sketch, uint64_t extensions[]) const {
         if (sketch->num_extension_words == 1)
             return highbit_pos(extensions[0]) + 1;
@@ -636,12 +598,10 @@ private:
 
         // Set the stub
         uint64_t stamp;
-        const uint32_t stub_bit_pos = inter_cache_line_ind * sketch->stub_size + sketch->counter_per_cache_line;
-        const uint32_t stub_byte_pos = stub_bit_pos / 8;
-        memcpy(&stamp, cache_line_ptr + stub_byte_pos, sizeof(stamp));
-        stamp &= (~(BITMASK(sketch->stub_size) << (stub_bit_pos % 8)));
-        stamp |= (value & BITMASK(sketch->stub_size)) << (stub_bit_pos % 8);
-        memcpy(cache_line_ptr + stub_byte_pos, &stamp, sizeof(stamp));
+        memcpy(&stamp, cache_line_ptr + sketch->word_update_byte_offset[inter_cache_line_ind], sizeof(stamp));
+        stamp &= ~(sketch->stub_mask << sketch->word_update_shamt[inter_cache_line_ind]);
+        stamp |= (value & sketch->stub_mask) << sketch->word_update_shamt[inter_cache_line_ind];
+        memcpy(cache_line_ptr + sketch->word_update_byte_offset[inter_cache_line_ind], &stamp, sizeof(stamp));
         
         // Handle the extensions
         uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
@@ -729,7 +689,6 @@ private:
         const uint32_t inter_cache_line_ind = pos - cache_line_ind * sketch->counter_per_cache_line;
         increment_counter(sketch, cache_line_ind, inter_cache_line_ind);
     }
-
 
     //__attribute__((always_inline))
     inline void increment_counter(Sketch *sketch, const uint32_t cache_line_ind, const uint32_t inter_cache_line_ind) {
@@ -820,7 +779,6 @@ private:
         const uint32_t inter_cache_line_ind = pos - cache_line_ind * sketch->counter_per_cache_line;
         decrement_counter(sketch, cache_line_ind, inter_cache_line_ind);
     }
-
 
     //__attribute__((always_inline))
     inline void decrement_counter(Sketch *sketch, const uint32_t cache_line_ind, const uint32_t inter_cache_line_ind) {

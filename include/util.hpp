@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <immintrin.h>
 
@@ -174,6 +175,19 @@ static inline uint32_t highbit_pos(uint64_t val) {
 __attribute__((always_inline))
 static inline uint32_t highbit_pos(uint32_t val) {
     return 8 * sizeof(val) - __builtin_ia32_lzcnt_u32(val) - 1;
+}
+
+
+static constexpr std::array<uint32_t, 64> setup_extension_len_lookup_table() {
+    std::array<uint32_t, 64> res = {};
+    res[0] = 1;
+    for (uint32_t i = 1; i < 64; i++) {
+        const uint64_t value = 1ULL << i;
+        res[i] = 2;
+        for (uint64_t pw = 3; pw <= value; pw *= 3)
+            res[i]++;
+    }
+    return res;
 }
 
 
