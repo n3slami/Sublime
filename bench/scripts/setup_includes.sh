@@ -11,3 +11,6 @@ cd -
 
 git submodule update --init ../sketches_benchmark/include/sead_counter/
 
+git submodule update --init ../sketches_benchmark/include/waving_sketch/
+sed -i '9i #include <unistd.h>' ../sketches_benchmark/include/waving_sketch/include/Waving.h
+

@@ -25,6 +25,7 @@ list(APPEND Targets "CMSketchbookFixedCounters" "CMSketchbookAdaptiveCounters" "
                     "Switch"
                     "Tailored"
                     "OTailored"
+                    "Waving"
                     "MGDummy")
 
 function(compile_bench ds)
@@ -68,7 +69,7 @@ function(compile_bench ds)
                                          ./sketches_benchmark/include/bitsense/simulator/src/common/utils.h
                                          ./sketches_benchmark/include/bitsense/simulator/src/common/logger.h)
         set_target_properties(BitSenseCMLib PROPERTIES LINKER_LANGUAGE CXX)
-        target_compile_options(BitSenseCMLib PUBLIC ${BITHACKING_COMPILE_FLAGS} -mno-avx512f -mno-avx512pf)
+        target_compile_options(BitSenseCMLib PUBLIC ${BITHACKING_COMPILE_FLAGS} -mno-avx512f)
         target_link_libraries(bench_${ds} BitSenseCMLib BitSenseOmniTools)
     elseif (ds MATCHES "SEADCM")
         add_library(SEADCMLib STATIC ./sketches_benchmark/include/sead_counter/SEAD_Counter_Sketch/cmsketch.h
@@ -109,7 +110,7 @@ function(compile_bench ds)
                                         ./sketches_benchmark/include/bitsense/simulator/src/common/utils.h
                                         ./sketches_benchmark/include/bitsense/simulator/src/common/logger.h)
         set_target_properties(BitSenseCLib PROPERTIES LINKER_LANGUAGE CXX)
-        target_compile_options(BitSenseCLib PUBLIC ${BITHACKING_COMPILE_FLAGS} -mno-avx512f -mno-avx512pf)
+        target_compile_options(BitSenseCLib PUBLIC ${BITHACKING_COMPILE_FLAGS} -mno-avx512f)
         target_link_libraries(bench_${ds} BitSenseCLib BitSenseOmniTools)
     elseif (ds MATCHES "SEADC")
         add_library(SEADCLib STATIC ./sketches_benchmark/include/sead_counter/SEAD_Counter_Sketch/csketch.h)
@@ -130,6 +131,12 @@ function(compile_bench ds)
         set_target_properties(${ds}Lib PROPERTIES LINKER_LANGUAGE CXX)
         target_compile_options(${ds}Lib PUBLIC ${BITHACKING_COMPILE_FLAGS})
         target_link_libraries(bench_${ds} ${ds}Lib)
+    elseif (ds MATCHES "Waving")
+        add_library(WavingLib STATIC ./sketches_benchmark/include/waving_sketch/include/Waving.h ./sketches_benchmark/include/waving_sketch/include/bitset.h)
+        target_include_directories(WavingLib PUBLIC ./sketches_benchmark/include/waving_sketch/include/)
+        set_target_properties(WavingLib PROPERTIES LINKER_LANGUAGE CXX)
+        target_compile_options(WavingLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+        target_link_libraries(bench_${ds} WavingLib)
     elseif (ds MATCHES "MGDummy")
         target_link_libraries(bench_${ds} MGDummyLib)
     endif()
