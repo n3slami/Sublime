@@ -30,22 +30,23 @@ inline void insert_sketch(BSCSketchSpec *sketch, const std::string& key) {
 
 template<typename T>
 inline void insert_sketch(BSCSketchSpec *sketch, T key) {
-    int8_t key_str[sizeof(key) + 1];
+    static_assert(sizeof(key) < key_len);
+    int8_t key_str[key_len];
     memcpy(key_str, &key, sizeof(key));
     key_str[sizeof(key)] = 0;
     OmniSketch::FlowKey<key_len> flow_key(key_str);
     sketch->update(flow_key, 1);
 }
 
-template<typename T>
-inline void delete_sketch(BSCSketchSpec *sketch, const std::string&  key) {
+inline void delete_sketch(BSCSketchSpec *sketch, const std::string& key) {
     OmniSketch::FlowKey<key_len> flow_key(reinterpret_cast<const int8_t *>(key.c_str()));
     sketch->update(flow_key, -1);
 }
 
 template<typename T>
 inline void delete_sketch(BSCSketchSpec *sketch, T key) {
-    int8_t key_str[sizeof(key) + 1];
+    static_assert(sizeof(key) < key_len);
+    int8_t key_str[key_len];
     memcpy(key_str, &key, sizeof(key));
     key_str[sizeof(key)] = 0;
     OmniSketch::FlowKey<key_len> flow_key(key_str);
@@ -59,7 +60,8 @@ inline int32_t query_sketch(BSCSketchSpec *sketch, const std::string& key) {
 
 template<typename T>
 inline int32_t query_sketch(BSCSketchSpec *sketch, T key) {
-    int8_t key_str[sizeof(key) + 1];
+    static_assert(sizeof(key) < key_len);
+    int8_t key_str[key_len];
     memcpy(key_str, &key, sizeof(key));
     key_str[sizeof(key)] = 0;
     OmniSketch::FlowKey<key_len> flow_key(key_str);

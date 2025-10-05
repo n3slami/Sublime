@@ -17,6 +17,7 @@ list(APPEND Targets "CMSketchbookFixedCounters" "CMSketchbookAdaptiveCounters" "
                     "CodingCM"
                     "BitSenseCM"
                     "SEADCM"
+                    "SALSACM"
                     "CSketchbookFixedCounters" "CSketchbookAdaptiveCountersPQ"
                     "StingyC"
                     "CodingC"
@@ -81,6 +82,15 @@ function(compile_bench ds)
         set_target_properties(SEADCMLib PROPERTIES LINKER_LANGUAGE CXX)
         target_compile_options(SEADCMLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
         target_link_libraries(bench_${ds} SEADCMLib)
+    elseif (ds MATCHES "SALSACM")
+        add_library(SALSACMLib STATIC ./sketches_benchmark/include/salsa/Salsa/SalsaCMS.hpp
+                                      ./sketches_benchmark/include/salsa/Salsa/SalsaCMS.cpp
+                                      ./sketches_benchmark/include/salsa/Salsa/BobHash.hpp
+                                      ./sketches_benchmark/include/salsa/Salsa/BobHash.cpp)
+        target_include_directories(SALSACMLib PUBLIC ./sketches_benchmark/include/salsa/Salsa/)
+        set_target_properties(SALSACMLib PROPERTIES LINKER_LANGUAGE CXX)
+        target_compile_options(SALSACMLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+        target_link_libraries(bench_${ds} SALSACMLib)
     elseif (ds MATCHES "CSketchbookAdaptiveCountersPQ")
         target_link_libraries(bench_${ds} CSketchbookAdaptiveCountersPQLib)
     elseif (ds MATCHES "CSketchbookFixedCounters")

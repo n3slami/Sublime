@@ -6,7 +6,8 @@
 
 static constexpr uint32_t num_slots = 8;
 static constexpr uint32_t num_counters = 1;
-static constexpr uint32_t data_len = sizeof(uint32_t);
+typedef uint32_t fingerprint_t;
+static constexpr uint32_t data_len = sizeof(fingerprint_t);
 static uint32_t key_hash_seed;
 
 inline WavingSketch<num_slots, num_counters, data_len> *init_sketch(const uint32_t memory_budget) {
@@ -26,9 +27,10 @@ inline void insert_sketch(WavingSketch<num_slots, num_counters, data_len> *sketc
 
 template <typename T>
 inline void insert_sketch(WavingSketch<num_slots, num_counters, data_len> *sketch, T key) {
-    char key_hash_str[data_len + 1];
-    memcpy(key_hash_str, &key, sizeof(key));
-    key_hash_str[sizeof(key)] = 0;
+    const uint32_t key_hash = MurmurHash3_x86_32(&key, sizeof(key), key_hash_seed);
+    char key_hash_str[data_len + 2];
+    memcpy(key_hash_str, &key_hash, sizeof(key_hash));
+    key_hash_str[sizeof(key_hash)] = 0;
     sketch->Init(Data<data_len>(key_hash_str));
 }
 
@@ -51,9 +53,10 @@ inline int32_t query_sketch(WavingSketch<num_slots, num_counters, data_len> *ske
 
 template <typename T>
 inline int32_t query_sketch(WavingSketch<num_slots, num_counters, data_len> *sketch, T key) {
+    const uint32_t key_hash = MurmurHash3_x86_32(&key, sizeof(key), key_hash_seed);
     char key_hash_str[data_len + 1];
-    memcpy(key_hash_str, &key, sizeof(key));
-    key_hash_str[sizeof(key)] = 0;
+    memcpy(key_hash_str, &key_hash, sizeof(key_hash));
+    key_hash_str[sizeof(key_hash)] = 0;
     return sketch->Query(Data<data_len>(key_hash_str));
 }
 

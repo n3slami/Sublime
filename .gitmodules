@@ -7,3 +7,6 @@
 [submodule "bench/sketches_benchmark/include/waving_sketch"]
 	path = bench/sketches_benchmark/include/waving_sketch
 	url = https://github.com/WavingSketch/Waving-Sketch.git
+[submodule "bench/sketches_benchmark/include/salsa"]
+	path = bench/sketches_benchmark/include/salsa
+	url = https://github.com/SALSA-ICDE2021/SALSA.git
