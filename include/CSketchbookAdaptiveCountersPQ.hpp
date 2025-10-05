@@ -33,7 +33,7 @@ private:
                && default_stub_size <= max_stub_size);
     static constexpr uint32_t extension_size = 2;
     static constexpr uint32_t min_extension_count = 24;
-    static constexpr float max_spill_probability = 0.10, retune_spill_frac = 0.03;
+    static constexpr float max_spill_probability = 0.02, retune_spill_frac = 0.03;
     static constexpr auto bit_length_to_extension_count = setup_extension_len_lookup_table();
 
     struct Sketch {
@@ -86,7 +86,7 @@ public:
         std::fill(prefetch_queue_op, prefetch_queue_op + prefetch_queue_len, OpType::None);
 
         // Setup Tof Hashing
-		bias_range = std::min(static_cast<uint32_t>(((64 - counter_count_lg)) / (row_count - 1)), 8U);
+		bias_range = std::min(static_cast<uint32_t>(((64 - counter_count_lg)) / row_count), 8U);
         bias_mask = BITMASK(bias_range);
         index_range	= std::min(static_cast<uint32_t>(64 - bias_range * row_count),
                                static_cast<uint32_t>(counter_count_lg - bias_range));
@@ -130,7 +130,8 @@ public:
             const uint32_t index = hash_tof(hash_value);
             hash_value >>= index_range;
             for (int i = 0; i < row_count; i++) {
-                const uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                pos = pos < counter_count ? pos : pos - counter_count;
                 hash_value >>= bias_range;
                 push_prefetch_request(sketch, pos, hash_value & 1ULL, OpType::Insert);
                 handle_last_prefetch_request(sketch);
@@ -170,7 +171,8 @@ public:
             const uint32_t old_prefetch_clock = prefetch_clock;
             prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
             for (int i = 0; i < row_count; i++) {
-                const uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                pos = pos < counter_count ? pos : pos - counter_count;
                 hash_value >>= bias_range;
                 push_prefetch_request(sketch, pos, hash_value & 1ULL, OpType::Delete);
                 handle_last_prefetch_request(sketch);
@@ -205,7 +207,8 @@ public:
             uint32_t index = hash_tof(hash_value);
             hash_value >>= index_range;
             for (int i = 0; i < row_count; i++) {
-                const uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                pos = pos < counter_count ? pos : pos - counter_count;
                 const int64_t raw_val = get_counter(sketch, pos);
                 hash_value >>= bias_range;
                 res[i] = (hash_value & 1ULL) ? raw_val : -raw_val;
@@ -238,22 +241,28 @@ public:
     }
 
 
-    size_t Size() const {
-        const Sketch *sketch = sketches.back();
-        const uint32_t cache_line_count = (sketch->row_count * sketch->col_count + sketch->counter_per_cache_line - 1) 
-                                        / sketch->counter_per_cache_line;
-        const size_t base_size = cache_line_count * cache_line_size_bytes;
-        const uint32_t sep_1 = sketch->counter_per_cache_line;
-        const uint32_t sep_2 = sep_1 + sketch->counter_per_cache_line * sketch->stub_size;
-        const uint32_t sep_3 = sep_2 + sketch->last_extension_word_bit_count;
-        uint32_t extra_arrays = 0;
-        for (int i = 0; i < cache_line_count; i++) {
-            const uint8_t *ptr = sketch->sketch + i * cache_line_size_bytes;
-            const uint64_t *words = reinterpret_cast<const uint64_t *>(ptr);
-            if (words[cache_line_size_words - sketch->num_extension_words] >> 63)
-                extra_arrays++;
+    size_t Size(bool include_all_sketches = false) const {
+        size_t res = 0;
+        for (int32_t sketch_ind = sketches.size() - 1; sketch_ind >= 0; sketch_ind--) {
+            const Sketch *sketch = sketches.back();
+            const uint32_t cache_line_count = (sketch->row_count * sketch->col_count + sketch->counter_per_cache_line - 1) 
+                / sketch->counter_per_cache_line;
+            const size_t base_size = cache_line_count * cache_line_size_bytes;
+            const uint32_t sep_1 = sketch->counter_per_cache_line;
+            const uint32_t sep_2 = sep_1 + sketch->counter_per_cache_line * sketch->stub_size;
+            const uint32_t sep_3 = sep_2 + sketch->last_extension_word_bit_count;
+            uint32_t extra_arrays = 0;
+            for (int i = 0; i < cache_line_count; i++) {
+                const uint8_t *ptr = sketch->sketch + i * cache_line_size_bytes;
+                const uint64_t *words = reinterpret_cast<const uint64_t *>(ptr);
+                if (words[cache_line_size_words - sketch->num_extension_words] >> 63)
+                    extra_arrays++;
+            }
+            res += base_size + extra_arrays * sizeof(uint32_t) * sketch->counter_per_cache_line;
+            if (!include_all_sketches)
+                break;
         }
-        return base_size + extra_arrays * sizeof(uint32_t) * sketch->counter_per_cache_line;
+        return res;
     }
 
 
@@ -410,7 +419,7 @@ private:
             extension_pos = (extension_pos >= 64 ? other_attempt + 64 : extension_pos);
         }
         else if (sketch->num_extension_words > 2) {
-            extension_pos = -3;
+            extension_pos = (extension_pos < 64 ? extension_pos : -3);
             uint32_t running_rank = rank - __builtin_popcountll(masks[0]);
             for (uint32_t i = 1; i < sketch->num_extension_words; i++) {
                 const uint32_t select_result = running_rank > 64 ? 64 : bit_select(masks[i], running_rank - 1);
@@ -433,7 +442,7 @@ private:
         }
         else {
             uint32_t res = std::numeric_limits<uint32_t>::max();
-            for (uint32_t i = sketch->num_extension_words - 1; i >= 0; i--)
+            for (int32_t i = sketch->num_extension_words - 1; i >= 0; i--)
                 res = ((res == std::numeric_limits<uint32_t>::max() && extensions[i]) ? highbit_pos(extensions[i]) + 64 * i + 1
                                                                                       : res);
             return res;
@@ -871,7 +880,7 @@ private:
         uint64_t counter_len_ps[word_size_bits] = {counter_len_cnt[0]};
         for (uint32_t i = 1; i < word_size_bits; i++)
             counter_len_ps[i] = counter_len_ps[i - 1] + counter_len_cnt[i];
-        for (uint32_t m_c = max_counter_per_cache_line; m_c >= min_counter_per_cache_line; m_c--) {
+        for (int32_t m_c = max_counter_per_cache_line; m_c >= min_counter_per_cache_line; m_c--) {
             const uint32_t cache_line_cnt = counter_len_ps[word_size_bits - 1] / m_c;
             for (uint32_t m_s = min_stub_size; m_s <= max_stub_size; m_s++) {
                 const int32_t extension_bitmap_len = cache_line_size - m_c * (m_s + 1) - 1;
@@ -940,8 +949,7 @@ private:
         res->last_extension_word_bit_count = extension_size * res->num_extension + 1 - 64 * (res->num_extension_words - 1);
         setup_lookup_tables(res);
 
-        for (uint32_t i = 0; i < std::min(sketch->cache_line_count * sketch->counter_per_cache_line,
-                                          res->cache_line_count * res->counter_per_cache_line); i++)
+        for (uint32_t i = 0; i < sketch->counter_count; i++)
             set_counter(res, i, get_counter(sketch, i));
         delete[] sketch;
         sketch = res;

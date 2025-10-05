@@ -67,9 +67,10 @@ int main(int argc, char const *argv[]) {
     read_workload(parser.get<std::string>("--workload"));
 
     const uint32_t n_rows = parser.get<uint32_t>("--rows");
-    const double expansion_power = parser.get<double>("--expansion-power");
-    auto f = [&](size_t x) { return expansion_power == 0.0 ? std::numeric_limits<uint64_t>::max()
-                                    : static_cast<uint64_t>(pow(x, 1.0 / expansion_power)); };
+    const double size_function_power = parser.get<double>("--size-function-power");
+    const double size_function_mult = parser.get<double>("--size-function-mult");
+    auto f = [&](size_t x) { return size_function_power == 0.0 ? std::numeric_limits<uint64_t>::max()
+                                    : static_cast<uint64_t>(pow(x, 1.0 / size_function_power) * size_function_mult); };
     auto sketch = init_sketch(memory_budget, n_rows, f);
     if (wio.StringKeys())
         experiment_string(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch));

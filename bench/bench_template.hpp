@@ -88,14 +88,18 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
             }
             case WorkloadIO::opcode::Flush: {
                 double aae = 0, are = 0, con = 0;
+                int64_t total_overestimation = 0, total_underestimation = 0;
                 time_points['q'] = timer::now();
                 for (auto& it : freq_checkpoints[checkpoint_ind]) {
                     const int64_t est_val = query_f(sketch, it.first);
                     const int64_t real_val = it.second;
-                    const double dist = std::abs(static_cast<double>(est_val - real_val));
+                    const int64_t diff = est_val - real_val;
+                    const double dist = std::abs(static_cast<double>(diff));
 
-                    are += dist / real_val;
                     aae += dist;
+                    are += dist / real_val;
+                    total_overestimation += std::max(diff, 0L);
+                    total_underestimation -= std::max(diff, 0L);
                     con += est_val != real_val;
                 }
                 timer_results['q'] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points['q']).count();
@@ -107,6 +111,8 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                 test_out.AddMeasure("n_keys", n_keys);
                 test_out.AddMeasure("aae", aae);
                 test_out.AddMeasure("are", are);
+                test_out.AddMeasure("total_overestimation", total_overestimation);
+                test_out.AddMeasure("total_underestimation", total_underestimation);
                 test_out.AddMeasure("size", size_f(sketch));
 
                 if (top_aae_are_count != std::numeric_limits<uint32_t>::max()) {
@@ -233,14 +239,18 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
             }
             case WorkloadIO::opcode::Flush: {
                 double aae = 0, are = 0, con = 0;
+                uint64_t total_overestimation = 0, total_underestimation = 0;
                 time_points['q'] = timer::now();
                 for (auto& it : freq_checkpoints[checkpoint_ind]) {
                     const int64_t est_val = query_f(sketch, it.first);
                     const int64_t real_val = it.second;
-                    const double dist = std::abs(static_cast<double>(est_val - real_val));
+                    const int64_t diff = est_val - real_val;
+                    const double dist = std::abs(static_cast<double>(diff));
 
-                    are += dist / real_val;
                     aae += dist;
+                    are += dist / real_val;
+                    total_overestimation += std::max(diff, 0L);
+                    total_underestimation -= std::min(diff, 0L);
                     con += est_val != real_val;
                 }
                 timer_results['q'] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points['q']).count();
@@ -251,6 +261,8 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
                 test_out.AddMeasure("n_keys", n_keys);
                 test_out.AddMeasure("aae", aae);
                 test_out.AddMeasure("are", are);
+                test_out.AddMeasure("total_overestimation", total_overestimation);
+                test_out.AddMeasure("total_underestimation", total_underestimation);
                 test_out.AddMeasure("size", size_f(sketch));
 
                 if (top_aae_are_count != std::numeric_limits<uint32_t>::max()) {
@@ -316,8 +328,14 @@ argparse::ArgumentParser init_parser(const std::string& name) {
             .nargs(1)
             .scan<'u', uint64_t>();
 
-    parser.add_argument("--expansion-power")
-            .help("the exponent of n in the expansion rate function")
+    parser.add_argument("--size-function-power")
+            .help("the exponent of N the size function")
+            .nargs(1)
+            .default_value(static_cast<double>(0.0))
+            .scan<'g', double>();
+
+    parser.add_argument("--size-function-mult")
+            .help("the divisor (epsilon) in the size function")
             .nargs(1)
             .default_value(static_cast<double>(0.0))
             .scan<'g', double>();

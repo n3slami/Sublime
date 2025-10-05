@@ -205,7 +205,11 @@ again:
             w=_w;
             d=_d;
             hashseed=_hashseed;
-            const int sz[]={0,(int)(mem[1]),(int)(mem[2]),(int)(mem[3]),(int)(mem[4]),(int)(mem[5])};
+            int sz[]={0,(int)(mem[1]),(int)(mem[2]),(int)(mem[3]),(int)(mem[4]),(int)(mem[5])};
+            if (_w > 8000000) {
+                for (uint32_t i = 1; i < 6; i++)
+                    sz[i] *= 10;
+            }
             layer[0]=Layer(w-sz[1]*3-sz[2]*3-sz[3]*2-sz[4]*2,4,3,hashseed,&layer[1],0);
             //layer[0]=Layer(4*2000000,4,3,hashseed,&layer[1],0);
             layer[1]=Layer(sz[1]*3,3,3,hashseed*2,&layer[2],1);

@@ -177,7 +177,11 @@ public:
         w=_w;
         d=_d;
         hashseed=_hashseed;
-        const int sz[]={0,(int)(mem[1]*1.23),(int)(mem[2]*1.23),(int)(mem[3]*1.23),(int)(mem[4]*1.23),(int)(mem[5]*1.23)};
+        int sz[]={0,(int)(mem[1]*1.23),(int)(mem[2]*1.23),(int)(mem[3]*1.23),(int)(mem[4]*1.23),(int)(mem[5]*1.23)};
+        if (_w > 16000000) {
+            for (uint32_t i = 1; i < 6; i++)
+                sz[i] *= 5;
+        }
         layer[0]=Layer(w-sz[1]*4-sz[2]*4-sz[3]*3-sz[4]*3,4,3,hashseed,&layer[1],0);
         layer[1]=Layer(sz[1]*4,4,3,hashseed*2,&layer[2],1);
         layer[2]=Layer(sz[2]*4,4,3,hashseed*3,&layer[3],2);

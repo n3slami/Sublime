@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <set>
 #include <stdexcept>
@@ -127,6 +128,8 @@ std::tuple<std::string, long double, long double, std::string> get_fdist(argpars
          char_exp = std::stod(parser.get<std::vector<std::string>>("--fdist")[pos++]);
     else if (dist_name == "real")
         key_file = parser.get<std::vector<std::string>>("--fdist")[pos++];
+    pos = pos == parser.get<std::vector<std::string>>("--fdist").size() ? std::numeric_limits<uint32_t>::max() 
+                                                                        : pos;
     return {dist_name, sigma, char_exp, key_file};
 }
 
@@ -174,16 +177,21 @@ void standard_int_bench(argparse::ArgumentParser& parser) {
 
 void standard_string_bench(argparse::ArgumentParser& parser) {
     WorkloadIO wio(parser.get<std::string>("--output-file"), WorkloadIO::iomode::Write, true);
-    uint32_t fdist_ind = 0;
-    auto [freq_dist, freq_dist_std, freq_dist_char_exp, key_file] = get_fdist(parser, fdist_ind);
-
     const uint32_t n_keys = parser.get<uint64_t>("--n-keys");
     const uint64_t universe_size = parser.get<uint64_t>("--universe-size");
     const uint64_t seed = parser.get<uint64_t>("--seed");
     std::mt19937_64 rng(seed);
 
-    const uint32_t key_len_binary = parser.get<uint32_t>("--key-len-binary");
-    std::vector<ByteString> keys = read_data_binary(key_file, key_len_binary);
+    uint32_t fdist_ind = 0;
+    std::vector<ByteString> keys;
+    while (fdist_ind != std::numeric_limits<uint32_t>::max()) {
+        auto [freq_dist, freq_dist_std, freq_dist_char_exp, key_file] = get_fdist(parser, fdist_ind);
+
+        const uint32_t key_len_binary = parser.get<uint32_t>("--key-len-binary");
+        std::vector<ByteString> new_keys = read_data_binary(key_file, key_len_binary);
+        keys.insert(keys.end(), new_keys.begin(), new_keys.end());
+    }
+    std::shuffle(keys.begin(), keys.end(), rng);
 
     wio.Timer('i');
     for (ByteString key : keys)

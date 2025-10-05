@@ -58,24 +58,36 @@ generate_classical_comparison_bench() {
 }
 
 generate_real_bench() {
-    $WORKLOAD_GEN_PATH -t standard_string --fdist real $REAL_DATASETS_PATH/CAIDA.dat -o caida
+    #$WORKLOAD_GEN_PATH -t standard_string --fdist real $REAL_DATASETS_PATH/CAIDA.dat -o caida
+    $WORKLOAD_GEN_PATH -t standard_string --fdist real $REAL_DATASETS_PATH/0.dat \
+                                                  real $REAL_DATASETS_PATH/1.dat \
+                                                  real $REAL_DATASETS_PATH/2.dat \
+                                                  real $REAL_DATASETS_PATH/3.dat \
+                                                  real $REAL_DATASETS_PATH/4.dat \
+                                                  real $REAL_DATASETS_PATH/5.dat \
+                                                  real $REAL_DATASETS_PATH/6.dat \
+                                                  real $REAL_DATASETS_PATH/7.dat \
+                                                  real $REAL_DATASETS_PATH/8.dat \
+                                                  real $REAL_DATASETS_PATH/9.dat \
+                                                  real $REAL_DATASETS_PATH/10.dat \
+                                                  -o caida
 }
 
 
+: '
 mkdir -p $OUT_PATH/classical_comparison_bench && cd $OUT_PATH/classical_comparison_bench || exit 1
 if ! generate_classical_comparison_bench ; then
     echo "[!!] generate_classical_comparison_bench generation failed"
     exit 1
 fi
 echo "[!!] classical_comparison_bench generated"
+'
 
-: '
 mkdir -p $OUT_PATH/real_bench && cd $OUT_PATH/real_bench || exit 1
 if ! generate_real_bench ; then
     echo "[!!] generate_real_bench generation failed"
     exit 1
 fi
 echo "[!!] generate_real_bench generated"
-'
 
 echo "[!!] success, all workloads generated"
