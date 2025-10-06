@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bits/floatn-common.h>
+#include <cassert>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -268,7 +269,6 @@ private:
     void setup_lookup_tables() {
         constexpr uint64_t word_size_bytes = sizeof(uint64_t);
         constexpr uint64_t word_size_bits = word_size_bytes * 8;
-        uint32_t bit_pos = counter_per_cache_line;
         for (int i = 0; i < counter_per_cache_line; i++) {
             const uint32_t counter_pos = i * base_counter_size + counter_per_cache_line;
             if ((counter_pos % word_size_bits) + base_counter_size > word_size_bits) {
@@ -391,7 +391,7 @@ private:
             extension_pos = (extension_pos >= 64 ? other_attempt + 64 : extension_pos);
         }
         else if constexpr (num_extension_words > 2) {
-            extension_pos = -3;
+            extension_pos = (extension_pos < 64 ? extension_pos : -3);
             uint32_t running_rank = rank - __builtin_popcountll(masks[0]);
             for (uint32_t i = 1; i < num_extension_words; i++) {
                 const uint32_t select_result = running_rank > 64 ? 64 : bit_select(masks[i], running_rank - 1);
@@ -425,7 +425,7 @@ private:
     //__attribute__((always_inline))
     inline void shift_extensions_left_from_pos(uint64_t extensions[], const uint32_t pos, const uint32_t shamt) const {
         assert(shamt < 64); // Shifting more than a word not implemented
-        if constexpr (num_extension_words == 2) {
+        if constexpr (num_extension_words == 1) {
             const uint64_t a = extensions[0] & BITMASK(pos);
             const uint64_t b = extensions[0] & (BITMASK(64) << pos);
             extensions[0] = (b << shamt) | a;
@@ -555,13 +555,14 @@ private:
         uint32_t overflows_pos = 0, running_overflows_count = 0;
         for (int i = 0; i < total_extension_len; i += extension_size) {
             const uint32_t fragment = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
-            if (fragment == 3) {
+            if (fragment == MAX_VALUE(extension_size)) {
                 uint32_t ptr_pos = bit_select(overflows_bitmap[overflows_pos], cnt - running_overflows_count);
                 while (ptr_pos == 64) {
                     running_overflows_count += __builtin_popcountll(overflows_bitmap[overflows_pos]);
                     overflows_pos++;
                     ptr_pos = bit_select(overflows_bitmap[overflows_pos], cnt - running_overflows_count);
                 }
+                ptr_pos += 64 * overflows_pos;
                 ptr[ptr_pos] = running_val;
                 running_val = 0;
                 running_pw = 1;
@@ -718,6 +719,7 @@ private:
         const bool already_has_array_ptr = extension_bitmap[num_extension_words - 1] >> (last_extension_word_bit_count - 1);
         const uint32_t total_extension_len = (already_has_array_ptr ? extension_size * num_extension + 1
                                                                     : get_extension_length(extension_bitmap));
+
         if (has_extension) {
             if (already_has_array_ptr) {
                 // Update separate array
@@ -844,7 +846,7 @@ private:
 
 
     inline uint8_t *allocate_sketch(const size_t rows, const size_t cols) {
-        const uint32_t cache_line_cnt = 1000 + (rows * cols + counter_per_cache_line - 1) / counter_per_cache_line;
+        const uint32_t cache_line_cnt = (rows * cols + counter_per_cache_line - 1) / counter_per_cache_line;
         const uint32_t size = cache_line_cnt * cache_line_size_bytes;
         uint8_t *res = new uint8_t[size];
         memset(res, 0, size);
