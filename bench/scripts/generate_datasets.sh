@@ -43,15 +43,15 @@ fi
 OUT_PATH=$(realpath ./workloads)
 
 generate_synthetic() {
-    if ! test -f zipf_0.00; then
-        echo "    [++] generating zipf_0.00"
-        $WORKLOAD_GEN_PATH -t standard --fdist unif -o zipf_0.00
+    if ! test -f zipf_.00; then
+        echo "    [++] generating zipf_.00"
+        $WORKLOAD_GEN_PATH -t standard --fdist unif -o zipf_.00
     else 
-        echo "    [--] zipf_0.00 already generated"
+        echo "    [--] zipf_.00 already generated"
     fi
 
     i=0
-    x=0.20
+    x=.20
     while [ $i -le 4 ]
     do
         if ! test -f zipf_${x}; then
