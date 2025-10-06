@@ -1,10 +1,9 @@
-import argparse, shutil, itertools, subprocess, sys
+import argparse, shutil, itertools, subprocess, inspect
 from pathlib import Path
 from datetime import datetime
 
 global build_dir
 global workload_dir
-global benchmarks_dir
 global output_prefix
 
 SKETCHS_WITH_EXPANSION_RATE_FUNCTION = {"CMSketchbookFixedCounters",
@@ -21,6 +20,7 @@ def execute_benchmark(build_dir, output_base, workload_subdir, workload, filter,
     command = f"{build_dir}/{file_to_execute} {bpk} -w {workload} {size_function_power_option} {size_function_mult_option} | tee {output_base}/{filter}_{bpk}_{workload.name}.json"
     cli_message_command = f"<build_dir>/{file_to_execute} {bpk} -w <workload_dir>/{workload_subdir}/{workload.name} {size_function_power_option} {size_function_mult_option} | tee <output_dir>/{workload_subdir}/{filter}_{bpk}_{workload.name}.json"
 
+    print(command)
     print(f"[ Executing: {cli_message_command} ]")
     subprocess.run(command, shell=True)
     print("[ Command finished ]")
@@ -28,23 +28,27 @@ def execute_benchmark(build_dir, output_base, workload_subdir, workload, filter,
 
 def accuracy_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters",
-                "StingyCM", "SALSACM", "CodingCM", "BitSenseCM", "SEADCM",
+                "StingyCM", "SALSACM", "CodingCM", "SEADCM",
                 "Tailored", "OTailored", "Switch", "Waving"]
-    memory_footprints = [2 ** i for i in range(17, 23)]
-    workload_subdir = sys._getframe()
+    memory_footprints = {"caida": [2 ** i for i in range(17, 23)],
+                         "kosarak": [2 ** i for i in range(17, 23)],
+                         "webdocs": [2 ** i for i in range(17, 23)]}
+    workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
 
     workload_path = Path(f"{workload_dir}/real")
     for workload in workload_path.iterdir():
-        for sketch, bpk in itertools.product(sketches, memory_footprints):
+        if "caida" in workload.name:
+            continue
+        for sketch, bpk in itertools.product(sketches, memory_footprints[workload.name]):
             execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, bpk)
 
 
 def skew_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters", "StingyCM", "SALSACM", "Tailored"]
     MEMORY_FOOTPRINT = 2 ** 18
-    workload_subdir = sys._getframe()
+    workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
 
@@ -57,7 +61,7 @@ def skew_bench():
 def vale_tuning_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookAdaptiveCountersPQNoTuning"]
     MEMORY_FOOTPRINT = 2 ** 18
-    workload_subdir = sys._getframe()
+    workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
 
@@ -74,14 +78,14 @@ def expansion_bench():
                 "StingyCM", "SALSACM", "Tailored"]
     OVERESTIMATE_MEMORY = 2 ** 26
     UNDERESTIMATE_MEMORY = 2 ** 18
-    workload_subdir = sys._getframe()
+    workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
 
     workload_path = Path(f"{workload_dir}/expand")
     for workload in workload_path.iterdir():
         for sketch in sketches:
-            if sketch == "CMSketchbookAdaptiveCountersPQ":
+            if sketch in SKETCHS_WITH_EXPANSION_RATE_FUNCTION:
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY, 1.0, 9.5)
             else:
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY)
@@ -92,7 +96,7 @@ def size_function_bench():
     SKETCH = "CMSketchbookAdaptiveCountersPQ"
     START_MEMORY_FOOTPRINT = 2 ** 18
     size_function_powers = [i / 4 for i in range(5)]
-    workload_subdir = sys._getframe()
+    workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
 
@@ -107,22 +111,24 @@ def contraction_bench():
                 "BitSenseCM", "SEADCM"]
     MEMORY_FOOTPRINT = 2 ** 24
     START_MEMORY_FOOTPRINT  = 2 ** 18
-    workload_subdir = sys._getframe()
+    workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
 
     workload_path = Path(f"{workload_dir}/delete")
     for workload in workload_path.iterdir():
         for sketch in sketches:
-            memory_footprint = START_MEMORY_FOOTPRINT if sketch == "CMSketchbookAdaptiveCountersPQ" else MEMORY_FOOTPRINT
-            execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint, 1.0, 9.5)
+            if sketch in SKETCHS_WITH_EXPANSION_RATE_FUNCTION:
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, START_MEMORY_FOOTPRINT, 1.0, 9.5)
+            else:
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, MEMORY_FOOTPRINT)
 
 
 def accuracy_unbiased_bench():
     sketches = ["CSketchbookAdaptiveCountersPQ", "CSketchbookFixedCounters", 
                 "StingyC", "CodingC", "BitSenseC", "SEADC"]
     memory_footprints = [2 ** i for i in range(17, 23)]
-    workload_subdir = sys._getframe()
+    workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
 
@@ -159,7 +165,6 @@ if __name__ == "__main__":
     if not build_dir.exists():
         raise FileNotFoundError("The build directory does not exist")
 
-    benchmarks_dir = Path(f"{build_dir}/bench/")
     output_prefix = Path(f"results/{datetime.now().strftime('%Y-%m-%d.%H:%M:%S')}")
 
     try:

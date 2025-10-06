@@ -100,7 +100,7 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                     aae += dist;
                     are += dist / real_val;
                     total_overestimation += std::max(diff, 0L);
-                    total_underestimation -= std::max(diff, 0L);
+                    total_underestimation -= std::min(diff, 0L);
                     con += est_val != real_val;
                 }
                 timer_results['q'] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points['q']).count();
