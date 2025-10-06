@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <argparse/argparse.hpp>
 #include <limits>
@@ -29,8 +30,8 @@ inline uint64_t timer_results[std::numeric_limits<uint8_t>::max()];
 inline uint32_t top_aae_are_count = std::numeric_limits<uint32_t>::max();
 
 
-template <typename Sketch, typename InsertFun, typename DeleteFun, typename QueryFun, typename SizeFun>
-void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun query_f, SizeFun size_f) {
+template <typename Sketch, typename InsertFun, typename DeleteFun, typename QueryFun, typename SizeFun> 
+void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun query_f, SizeFun size_f, void *aux_f=nullptr) {
     std::unordered_map<uint64_t, uint32_t> actual_freq;
     std::vector<std::unordered_map<uint64_t, uint32_t>> freq_checkpoints;
     uint32_t n_keys = 0;
@@ -147,6 +148,14 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                     test_out.AddMeasure("top_are", are);
                 }
 
+                if (aux_f != nullptr) {
+                    std::unordered_map<std::string, uint32_t> (*converted_aux_f)(Sketch *) =
+                        reinterpret_cast<std::unordered_map<std::string, uint32_t> (*)(Sketch *)>(aux_f);
+                    auto aux_data = converted_aux_f(sketch);
+                    for (auto [key, value] : aux_data)
+                        test_out.AddMeasure(key, value);
+                }
+
                 for (int32_t i = 0; i < std::numeric_limits<uint8_t>::max(); i++) {
                     if (timer_results[i] > 0) {
                         std::string measure_name = "time_";
@@ -171,7 +180,7 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
 
 
 template <typename Sketch, typename InsertFun, typename DeleteFun, typename QueryFun, typename SizeFun>
-void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun query_f, SizeFun size_f) {
+void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun query_f, SizeFun size_f, void *aux_f=nullptr) {
     uint16_t buf_len;
     uint8_t buf[std::numeric_limits<uint16_t>::max()];
 
@@ -295,6 +304,14 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
 
                     test_out.AddMeasure("top_aae", aae);
                     test_out.AddMeasure("top_are", are);
+                }
+
+                if (aux_f != nullptr) {
+                    std::unordered_map<std::string, uint32_t> (*converted_aux_f)(Sketch *) =
+                        reinterpret_cast<std::unordered_map<std::string, uint32_t> (*)(Sketch *)>(aux_f);
+                    auto aux_data = converted_aux_f(sketch);
+                    for (auto [key, value] : aux_data)
+                        test_out.AddMeasure(key, value);
                 }
 
                 for (int32_t i = 0; i < std::numeric_limits<uint8_t>::max(); i++) {

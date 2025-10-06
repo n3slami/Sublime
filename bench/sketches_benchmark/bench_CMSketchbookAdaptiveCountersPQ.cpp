@@ -1,8 +1,11 @@
 #include <cstdint>
 #include <functional>
+#include <unordered_map>
 
 #include "../bench_template.hpp"
 #include "CMSketchbookAdaptiveCountersPQ.hpp"
+
+static bool include_all_sketches = false;
 
 inline CMSketchbookAdaptiveCountersPQ *init_sketch(const uint32_t memory_budget,
                                                    const uint32_t row_count,
@@ -26,11 +29,13 @@ inline void insert_sketch(CMSketchbookAdaptiveCountersPQ *sketch, T key) {
 }
 
 inline void delete_sketch(CMSketchbookAdaptiveCountersPQ *sketch, const std::string& key) {
+    include_all_sketches = true;
     sketch->Delete(key.c_str(), key.size());
 }
 
 template <typename T>
 inline void delete_sketch(CMSketchbookAdaptiveCountersPQ *sketch, T key) {
+    include_all_sketches = true;
     sketch->Delete(key);
 }
 
@@ -44,7 +49,14 @@ inline int32_t query_sketch(CMSketchbookAdaptiveCountersPQ *sketch, T key) {
 }
 
 inline uint32_t size_of_sketch(CMSketchbookAdaptiveCountersPQ *sketch) {
-    return sketch->Size();
+    return sketch->Size(include_all_sketches);
+}
+
+inline std::unordered_map<std::string, uint32_t> get_vale_parameters(CMSketchbookAdaptiveCountersPQ *sketch) {
+    std::unordered_map<std::string, uint32_t> res;
+    res["counters_per_chunk"] = sketch->GetCountersPerChunk();
+    res["stub_length"] = sketch->GetStubLength();
+    return res;
 }
 
 
@@ -70,8 +82,10 @@ int main(int argc, char const *argv[]) {
                                     : static_cast<uint64_t>(pow(x, 1.0 / size_function_power) * size_function_mult); };
     auto sketch = init_sketch(memory_budget, n_rows, f);
     if (wio.StringKeys())
-        experiment_string(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch));
+        experiment_string(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch), 
+                          reinterpret_cast<void *>(get_vale_parameters));
     else 
-        experiment(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch));
+        experiment(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch), 
+                   reinterpret_cast<void *>(get_vale_parameters));
 }
 

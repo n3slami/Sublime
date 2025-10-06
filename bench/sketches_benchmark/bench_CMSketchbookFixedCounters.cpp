@@ -12,7 +12,8 @@ inline CMSketchbookFixedCounters<T> *init_sketch(const uint32_t memory_budget,
     const uint32_t counter_count = (memory_budget + sizeof(T) - 1) / sizeof(T);
     const uint32_t col_count = (counter_count + row_count - 1) / row_count;
     top_aae_are_count = col_count;  // No. of top items to compute AAE and ARE for 
-    const uint32_t seed = 1380;
+    const uint32_t seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()) \
+                                .time_since_epoch().count();
     CMSketchbookFixedCounters<T> *sketch = new CMSketchbookFixedCounters<T>(col_count, row_count, f, seed);
     return sketch;
 }
@@ -69,9 +70,10 @@ int main(int argc, char const *argv[]) {
     read_workload(parser.get<std::string>("--workload"));
 
     const uint32_t n_rows = parser.get<uint32_t>("--rows");
-    const double expansion_power = parser.get<double>("--expansion-power");
-    auto f = [&](size_t x) { return expansion_power == 0.0 ? std::numeric_limits<uint64_t>::max()
-                                    : static_cast<uint64_t>(pow(x, 1.0 / expansion_power)); };
+    const double size_function_power = parser.get<double>("--size-function-power");
+    const double size_function_mult = parser.get<double>("--size-function-mult");
+    auto f = [&](size_t x) { return size_function_power == 0.0 ? std::numeric_limits<uint64_t>::max()
+                                    : static_cast<uint64_t>(pow(x, 1.0 / size_function_power) * size_function_mult); };
     auto sketch = init_sketch<uint64_t>(memory_budget, n_rows, f);
     if (wio.StringKeys())
         experiment_string(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch));

@@ -168,8 +168,7 @@ std::vector<KeyType> read_data_binary(const std::string& filename) {
     return data;
 }
 
-inline std::vector<ByteString> read_data_binary(const std::string &filename, uint16_t length) 
-{
+inline std::vector<ByteString> read_data_binary(const std::string &filename, uint16_t length) {
     std::vector<ByteString> data;
     std::fstream in(filename, std::ios::in | std::ios::binary);
     uint8_t key[length + 1];
@@ -196,6 +195,16 @@ inline std::vector<ByteString> read_data_binary(const std::string& filename) {
         in.read(reinterpret_cast<char *>(buf), key_size);
         data.push_back({buf, key_size});
     }
+    return data;
+}
+
+inline std::vector<uint64_t> read_data_text(const std::string &filename) {
+    std::vector<uint64_t> data;
+    std::fstream in(filename, std::ios::in);
+    uint64_t key;
+    while (in >> key)
+        data.emplace_back(key);
+    in.close();
     return data;
 }
 

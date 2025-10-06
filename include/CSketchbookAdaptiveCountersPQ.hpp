@@ -266,6 +266,16 @@ public:
     }
 
 
+    uint32_t GetCountersPerChunk() const {
+        return sketches.back()->counter_per_cache_line;
+    }
+
+
+    uint32_t GetStubLength() const {
+        return sketches.back()->stub_size;
+    }
+
+
 private:
     uint64_t n;
     uint64_t expansion_lim, contraction_lim;
@@ -984,7 +994,7 @@ private:
     inline uint32_t hash_tof(const uint64_t original_hash) const {
         const uint32_t hash_shamt = counter_count_lg - init_counter_count_lg;
         uint32_t hash = (original_hash & index_mask) << bias_range;
-		int32_t tmp = hash - counter_count;
+		int32_t tmp = hash - init_counter_count;
 		hash = (tmp < 0 ? hash : tmp);
         hash += ((original_hash >> (8 * sizeof(original_hash) - hash_shamt)) & BITMASK(hash_shamt))
                 * init_counter_count;

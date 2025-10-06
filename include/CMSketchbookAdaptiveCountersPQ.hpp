@@ -13,6 +13,9 @@
 #include "MurmurHash.hpp"
 #include "util.hpp"
 
+#ifndef RETUNE_SPILL_FRAC 
+#define RETUNE_SPILL_FRAC 0.03
+#endif
 
 class CMSketchbookAdaptiveCountersPQ {
     friend class CMSketchbookAdaptiveCountersTest;
@@ -33,7 +36,7 @@ private:
                && default_stub_size <= max_stub_size);
     static constexpr uint32_t extension_size = 2;
     static constexpr uint32_t min_extension_count = 24;
-    static constexpr float max_spill_probability = 0.02, retune_spill_frac = 0.03;
+    static constexpr float max_spill_probability = 0.02, retune_spill_frac = RETUNE_SPILL_FRAC;
     static constexpr auto bit_length_to_extension_count = setup_extension_len_lookup_table();
 
     struct Sketch {
@@ -248,6 +251,16 @@ public:
             res += base_size + extra_arrays * sizeof(uint32_t) * sketch->counter_per_cache_line;
         }
         return res;
+    }
+
+
+    uint32_t GetCountersPerChunk() const {
+        return sketches.back()->counter_per_cache_line;
+    }
+
+
+    uint32_t GetStubLength() const {
+        return sketches.back()->stub_size;
     }
 
 
@@ -958,7 +971,7 @@ private:
     inline uint32_t hash_tof(const uint64_t original_hash) const {
         const uint32_t hash_shamt = counter_count_lg - init_counter_count_lg;
         uint32_t hash = (original_hash & index_mask) << bias_range;
-		int32_t tmp = hash - counter_count;
+		int32_t tmp = hash - init_counter_count;
 		hash = (tmp < 0 ? hash : tmp);
         hash += ((original_hash >> (8 * sizeof(original_hash) - hash_shamt)) & BITMASK(hash_shamt))
                 * init_counter_count;
@@ -976,6 +989,8 @@ private:
         FlushPrefetchQueue();
         contraction_lim = expansion_lim;
         expansion_lim = expansion_f(2 * col_count);
+
+        std::cerr << "expanding n=" << n << " new expansion_lim=" << expansion_lim << std::endl;
 
         Sketch *old_sketch = sketches.back();
         uint32_t counter_len_cnt[8 * sizeof(uint64_t)] = {};

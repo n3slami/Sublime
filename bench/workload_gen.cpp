@@ -44,8 +44,9 @@ static const std::vector<std::string> fdist_names = {"unif", "norm", "zipf", "re
 static const std::vector<std::string> fdist_default = {"zipf"};
 
 const uint64_t default_n_keys = 100'000'000;
-const uint64_t default_universe_size = 20'000;
+const uint64_t default_universe_size = 20'0000;
 const uint64_t default_n_deletes = 5'000'000;
+const uint64_t default_measurement_period = 100'000;
 
 InputKeys<uint64_t> keys_from_file = InputKeys<uint64_t>();
 
@@ -158,8 +159,12 @@ void standard_int_bench(argparse::ArgumentParser& parser) {
         keys = generate_int_keys_normal(n_keys, universe_size, freq_dist_std, rng);
     else if (freq_dist == "zipf")
         keys = generate_int_keys_zipf(n_keys, universe_size, freq_dist_char_exp, rng);
-    else
-        keys = read_data_binary<uint64_t>(key_file);
+    else {
+        if (parser.get<uint32_t>("--key-len-binary") > 0)
+            keys = read_data_binary<uint64_t>(key_file);
+        else
+            keys = read_data_text(key_file);
+    }
 
     std::set<uint64_t> key_set = {keys.begin(), keys.end()};
     std::unordered_map<uint64_t, uint64_t> alias;
@@ -184,6 +189,62 @@ void standard_string_bench(argparse::ArgumentParser& parser) {
 
     uint32_t fdist_ind = 0;
     std::vector<ByteString> keys;
+    const uint32_t key_len_binary = parser.get<uint32_t>("--key-len-binary");
+    while (fdist_ind != std::numeric_limits<uint32_t>::max()) {
+        auto [freq_dist, freq_dist_std, freq_dist_char_exp, key_file] = get_fdist(parser, fdist_ind);
+
+        std::vector<ByteString> new_keys;
+         new_keys = read_data_binary(key_file, key_len_binary);
+        keys.insert(keys.end(), new_keys.begin(), new_keys.end());
+    }
+    std::shuffle(keys.begin(), keys.end(), rng);
+
+    wio.Timer('i');
+    for (ByteString key : keys)
+        wio.Insert(key);
+    wio.Timer('i');
+    wio.Flush();
+}
+
+
+void expand_bench(argparse::ArgumentParser& parser) {
+    WorkloadIO wio(parser.get<std::string>("--output-file"), WorkloadIO::iomode::Write, true);
+    const uint32_t n_keys = parser.get<uint64_t>("--n-keys");
+    const uint64_t universe_size = parser.get<uint64_t>("--universe-size");
+    const uint64_t seed = parser.get<uint64_t>("--seed");
+    std::mt19937_64 rng(seed);
+
+    uint32_t fdist_ind = 0;
+    std::vector<ByteString> keys;
+    while (fdist_ind != std::numeric_limits<uint32_t>::max()) {
+        auto [freq_dist, freq_dist_std, freq_dist_char_exp, key_file] = get_fdist(parser, fdist_ind);
+
+        const uint32_t key_len_binary = parser.get<uint32_t>("--key-len-binary");
+        std::vector<ByteString> new_keys = read_data_binary(key_file, key_len_binary);
+        keys.insert(keys.end(), new_keys.begin(), new_keys.end());
+    }
+    std::shuffle(keys.begin(), keys.end(), rng);
+
+    const uint32_t measurement_period = parser.get<uint64_t>("--measurement-period");
+    for (uint32_t i = 0; i + measurement_period <= keys.size(); i += measurement_period) {
+        wio.Timer('i');
+        for (uint32_t j = i; j < i + measurement_period; j++)
+            wio.Insert(keys[j]);
+        wio.Timer('i');
+        wio.Flush();
+    }
+}
+
+
+void delete_bench(argparse::ArgumentParser& parser) {
+    WorkloadIO wio(parser.get<std::string>("--output-file"), WorkloadIO::iomode::Write, true);
+    const uint32_t n_keys = parser.get<uint64_t>("--n-keys");
+    const uint64_t universe_size = parser.get<uint64_t>("--universe-size");
+    const uint64_t seed = parser.get<uint64_t>("--seed");
+    std::mt19937_64 rng(seed);
+
+    uint32_t fdist_ind = 0;
+    std::vector<ByteString> keys;
     while (fdist_ind != std::numeric_limits<uint32_t>::max()) {
         auto [freq_dist, freq_dist_std, freq_dist_char_exp, key_file] = get_fdist(parser, fdist_ind);
 
@@ -198,12 +259,29 @@ void standard_string_bench(argparse::ArgumentParser& parser) {
         wio.Insert(key);
     wio.Timer('i');
     wio.Flush();
+
+    std::cerr << "huh..." << std::endl;
+    std::shuffle(keys.begin(), keys.end(), rng);
+    std::cerr << "shuffled" << std::endl;
+    const uint32_t n_deletes = parser.get<uint64_t>("--n-deletes");
+    const uint32_t measurement_period = parser.get<uint64_t>("--measurement-period");
+    std::cerr << "n_deletes=" << n_deletes << " measurement_period=" << measurement_period << std::endl;
+    for (uint32_t i = 0; i < n_deletes; i += measurement_period) {
+        std::cerr << "welp i=" << i << std::endl;
+        wio.Timer('d');
+        for (uint32_t j = i; j < i + measurement_period; j++)
+            wio.Delete(keys[j]);
+        wio.Timer('d');
+        wio.Flush();
+    }
 }
 
 
 std::unordered_map<std::string, std::function<void(argparse::ArgumentParser&)>> benches = {
     {"standard", standard_int_bench},
-    {"standard_string", standard_string_bench}
+    {"standard_string", standard_string_bench},
+    {"expand", expand_bench},
+    {"delete", delete_bench},
 };
 
 int main(int argc, char const *argv[]) {
@@ -256,6 +334,13 @@ int main(int argc, char const *argv[]) {
             .help("The number of delete operations in the input stream")
             .required()
             .default_value(static_cast<uint64_t>(default_n_deletes))
+            .scan<'u', uint64_t>()
+            .nargs(1);
+
+    parser.add_argument("-m", "--measurement-period")
+            .help("The period in which accuracy measurement should be done")
+            .required()
+            .default_value(static_cast<uint64_t>(default_measurement_period))
             .scan<'u', uint64_t>()
             .nargs(1);
 
