@@ -74,7 +74,7 @@ int main(int argc, char const *argv[]) {
     const double size_function_mult = parser.get<double>("--size-function-mult");
     auto f = [&](size_t x) { return size_function_power == 0.0 ? std::numeric_limits<uint64_t>::max()
                                     : static_cast<uint64_t>(pow(x, 1.0 / size_function_power) * size_function_mult); };
-    auto sketch = init_sketch<uint64_t>(memory_budget, n_rows, f);
+    auto sketch = init_sketch<int64_t>(memory_budget, n_rows, f);
     if (wio.StringKeys())
         experiment_string(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch));
     else 
