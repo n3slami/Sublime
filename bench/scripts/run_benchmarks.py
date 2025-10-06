@@ -82,7 +82,7 @@ def expansion_bench():
     for workload in workload_path.iterdir():
         for sketch in sketches:
             if sketch == "CMSketchbookAdaptiveCountersPQ":
-                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY, 1.0, 30)
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY, 1.0, 9.5)
             else:
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY)
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, OVERESTIMATE_MEMORY)
@@ -115,7 +115,7 @@ def contraction_bench():
     for workload in workload_path.iterdir():
         for sketch in sketches:
             memory_footprint = START_MEMORY_FOOTPRINT if sketch == "CMSketchbookAdaptiveCountersPQ" else MEMORY_FOOTPRINT
-            execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint, 1.0, 30)
+            execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint, 1.0, 9.5)
 
 
 def accuracy_unbiased_bench():

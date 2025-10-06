@@ -990,8 +990,6 @@ private:
         contraction_lim = expansion_lim;
         expansion_lim = expansion_f(2 * col_count);
 
-        std::cerr << "expanding n=" << n << " new expansion_lim=" << expansion_lim << std::endl;
-
         Sketch *old_sketch = sketches.back();
         uint32_t counter_len_cnt[8 * sizeof(uint64_t)] = {};
         compute_counter_len_cnt(old_sketch, counter_len_cnt);
