@@ -21,18 +21,17 @@ from pathlib import Path
 import logging
 
 
-rc_fonts = {
-    "font.family": "serif",
-    "font.size": 9.5,
-    "text.usetex": True,
-    'text.latex.preamble': r'\usepackage{mathpazo}'}
+rc_fonts = {"font.family": "serif",
+            "font.size": 9.5,
+            "text.usetex": True,
+            "text.latex.preamble": r"\usepackage{mathpazo}"}
 matplotlib.rcParams.update(rc_fonts)
 
 logging.getLogger().setLevel(logging.INFO)
 
-CLASSIC_SKETCHES_STYLE_KWARGS = {"CMSketchbookFixedCounters": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Count-Min Sketch"},
-                                 "CSketchbookFixedCounters": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "Count Sketch"},
-                                 "MGDummy": {"marker": '+', "color": "C1", "zorder": 11, "label": "Misra-Gries"}}
+CLASSIC_SKETCHES_STYLE_KWARGS = {"CMSketchbookFixedCounters": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "CMS"},
+                                 "CSketchbookFixedCounters": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CS"},
+                                 "MGDummy": {"marker": '+', "color": "C1", "zorder": 11, "label": "MG"}}
 LINES_STYLE = {"markersize": 4, "linewidth": 0.7, "fillstyle": "none"}
 DATASET_NAMES = {"unif": r"$\textsc{Uniform}$", 
                  "norm": r"$\textsc{Normal}$",
@@ -65,22 +64,21 @@ def plot_classical_comparison(result_dir, output_dir):
     YLABEL_FONT_SIZE = 9.5
     XLABEL_FONT_SIZE = 9.5
     XTICK_FONT_SIZE = 8
-    WIDTH = 5
+    WIDTH = 5.6
     HEIGHT = 2
-    YTICKS_SMALL = [1, 1e-01, 1e-02, 1e-03]
-    YTICKS = [1, 1e-01, 1e-02, 1e-03, 1e-04, 1e-05]
+    YTICKS_MINOR = [0.1 * i for i in range(10)] + [10 ** (i // 10) * (i % 10) for i in range(0, 50)]
 
     WORKLOAD = "zipf"
     workload_subdir = Path("classical_comparison_bench")
     sketches = ["CMSketchbookFixedCounters", "CSketchbookFixedCounters", "MGDummy"]
     memory_powers = range(15, 21)
     memory_footprints = [2 ** i for i in memory_powers]
-    memory_footprint_labels = [f"${2 ** (i - (20 if i >= 20 else 10))}${'KB' if i < 19 else 'MB'}" for i in memory_powers]
-    char_exps = [0.10 + 0.20 * i for i in range(13)]
+    memory_footprint_labels = [f"${2 ** (i - (20 if i >= 20 else 10))}${'KB' if i < 20 else 'MB'}" for i in memory_powers]
+    char_exps = [0.10 + 0.20 * i for i in range(11)]
     CHAR_EXP = 1.00
-    MEMORY_FOOTPRINT = 2 ** 17
+    MEMORY_FOOTPRINT = 2 ** 18
 
-    fig, axes = plt.subplots(nrows=1, ncols=2, sharey=True, figsize=(WIDTH, HEIGHT))
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(WIDTH, HEIGHT)) #sharey=True, 
 
     # Memory footprint plot
     aae_data = {sketch: [] for sketch in sketches}
@@ -125,23 +123,25 @@ def plot_classical_comparison(result_dir, output_dir):
         #axes[0].plot(*zip(*are_data[sketch]), **CLASSIC_SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE, linestyle=':')
     
     axes[1].set_xlabel("Memory Footprint", fontsize=XLABEL_FONT_SIZE)
-    axes[0].set_xlabel("Char. Exponent ($a$)", fontsize=XLABEL_FONT_SIZE)
-    axes[0].set_ylabel(f"{DATASET_NAMES['zipf']} AAE", fontsize=YLABEL_FONT_SIZE)
-    axes[1].set_title("Char. Exponent ($a=1.0$)", fontsize=TITLE_FONT_SIZE)
-    axes[0].set_title("Memory Footprint=128KB", fontsize=TITLE_FONT_SIZE)
+    axes[0].set_xlabel(f"{DATASET_NAMES['zipf']} Char. Exponent ($a$)", fontsize=XLABEL_FONT_SIZE)
+    axes[0].set_ylabel(f"AAE", fontsize=YLABEL_FONT_SIZE)
+    axes[1].set_title(f"{DATASET_NAMES['zipf']} Char. Exponent ($a=1.0$)", fontsize=TITLE_FONT_SIZE)
+    axes[0].set_title("Memory Footprint=256KB", fontsize=TITLE_FONT_SIZE)
 
     axes[1].set_xscale("log")
     axes[1].set_xticks(memory_footprints, memory_footprint_labels, fontsize=0.93*XTICK_FONT_SIZE)
-    axes[1].minorticks_off()
+    axes[1].xaxis.set_ticks([], minor=True)
     axes[0].set_xticks(char_exps[::2], [f"{val:.2f}" for val in char_exps[::2]], fontsize=XTICK_FONT_SIZE)
     for i in range(2):
-        axes[i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(1000))
+        #axes[i].set_yscale("symlog", linthresh=(1e-00))
+        #axes[i].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
+        #axes[i].yaxis.set_ticks(YTICKS_MINOR, minor=True)
         axes[i].autoscale_view()
         axes[i].margins(0.04)
-    fig.subplots_adjust(hspace=0.05, wspace=0.1)
+    fig.subplots_adjust(hspace=0.05, wspace=0.25)
 
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
-    axes[0].legend(legend_lines, legend_labels, loc='upper left', bbox_to_anchor=(0.2, 1.3),
+    axes[0].legend(legend_lines, legend_labels, loc='upper left', bbox_to_anchor=(0.5, 1.3),
                   fancybox=True, shadow=False, ncol=6, fontsize=LEGEND_FONT_SIZE)
     fig.savefig(output_dir / "classical_comparison.pdf", bbox_inches='tight', pad_inches=0.01)
 
