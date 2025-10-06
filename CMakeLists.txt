@@ -78,6 +78,11 @@ if (BUILD_EXAMPLES)
 endif ()
 
 if (BUILD_BENCHMARKS)
+    if (NOT EXISTS ../bench/sketches_benchmark/include/bitsense/README.md)
+        message(STATUS "Cloning baselines")
+        execute_process(COMMAND bash -c "cd ../bench/scripts && bash setup_includes.sh")
+    endif ()
+
     message(STATUS "Building benchmarks")
     add_subdirectory(bench)
 endif ()
