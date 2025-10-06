@@ -100,7 +100,8 @@ public:
             const uint32_t index = hash_tof(hash_value);
             hash_value >>= index_range;
             for (int i = 0; i < row_count; i++) {
-                const uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                pos = pos < counter_count ? pos : pos - counter_count;
                 push_prefetch_request(sketch, pos, OpType::Insert);
                 handle_last_prefetch_request(sketch);
                 hash_value >>= bias_range;
@@ -132,7 +133,8 @@ public:
             const uint32_t old_prefetch_clock = prefetch_clock;
             prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
             for (int i = 0; i < row_count; i++) {
-                const uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                pos = pos < counter_count ? pos : pos - counter_count;
                 push_prefetch_request(sketch, pos, OpType::Delete);
                 handle_last_prefetch_request(sketch);
                 hash_value >>= bias_range;
@@ -165,7 +167,8 @@ public:
             uint32_t index = hash_tof(hash_value);
             hash_value >>= index_range;
             for (int i = 0; i < row_count; i++) {
-                const uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                pos = pos < counter_count ? pos : pos - counter_count;
                 res = std::min(res, get_counter(sketch, pos));
                 hash_value >>= bias_range;
             }
