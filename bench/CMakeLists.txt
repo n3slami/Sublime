@@ -12,13 +12,13 @@ FetchContent_MakeAvailable(argparse)
 
 set(CMAKE_CXX_STANDARD 17)
 
-list(APPEND Targets "CMSketchbookFixedCounters" "CMSketchbookAdaptiveCounters" "CMSketchbookAdaptiveCountersPQ"
+list(APPEND Targets "CMSketchbookFixedCounters" "CMSketchbookAdaptiveCountersPQ" "CMSketchbookAdaptiveCountersPQNoTuning"
                     "StingyCM"
                     "CodingCM"
                     "BitSenseCM"
                     "SEADCM"
                     "SALSACM"
-                    "CSketchbookFixedCounters" "CSketchbookAdaptiveCountersPQ"
+                    "CSketchbookFixedCounters" "CSketchbookAdaptiveCountersPQ" "CSketchbookAdaptiveCountersPQNoTuning"
                     "StingyC"
                     "CodingC"
                     "BitSenseC"
@@ -41,9 +41,7 @@ function(compile_bench ds)
 
     if (ds MATCHES "CMSketchbookFixedCounters")
         target_link_libraries(bench_${ds} CMSketchbookFixedCountersLib)
-    elseif (ds MATCHES "CMSketchbookAdaptiveCounters")
-        target_link_libraries(bench_${ds} CMSketchbookAdaptiveCountersLib)
-    elseif (ds MATCHES "CMSketchbookAdaptiveCountersPQ")
+    elseif (ds MATCHES "CMSketchbookAdaptiveCountersPQ" OR ds MATCHES "CMSketchbookAdaptiveCountersPQNoTuning")
         target_link_libraries(bench_${ds} CMSketchbookAdaptiveCountersPQLib)
     elseif (ds MATCHES "StingyCM")
         add_library(StingyCMLib STATIC ./sketches_benchmark/include/StingyCM.hpp 
@@ -91,10 +89,10 @@ function(compile_bench ds)
         set_target_properties(SALSACMLib PROPERTIES LINKER_LANGUAGE CXX)
         target_compile_options(SALSACMLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
         target_link_libraries(bench_${ds} SALSACMLib)
-    elseif (ds MATCHES "CSketchbookAdaptiveCountersPQ")
-        target_link_libraries(bench_${ds} CSketchbookAdaptiveCountersPQLib)
     elseif (ds MATCHES "CSketchbookFixedCounters")
         target_link_libraries(bench_${ds} CSketchbookFixedCountersLib)
+    elseif (ds MATCHES "CSketchbookAdaptiveCountersPQ" OR ds MATCHES "CSketchbookAdaptiveCountersPQNoTuning")
+        target_link_libraries(bench_${ds} CSketchbookAdaptiveCountersPQLib)
     elseif (ds MATCHES "StingyC")
         add_library(StingyCLib STATIC ./sketches_benchmark/include/StingyC.hpp 
                                       ./sketches_benchmark/include/MurmurHash.h 
