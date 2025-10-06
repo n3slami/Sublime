@@ -973,7 +973,7 @@ private:
         uint32_t hash = (original_hash & index_mask) << bias_range;
 		int32_t tmp = hash - init_counter_count;
 		hash = (tmp < 0 ? hash : tmp);
-        hash += ((original_hash >> (8 * sizeof(original_hash) - hash_shamt)) & BITMASK(hash_shamt))
+        hash += ((original_hash >> (init_counter_count_lg + bias_range * row_count)) & BITMASK(hash_shamt))
                 * init_counter_count;
         return hash;
     }
