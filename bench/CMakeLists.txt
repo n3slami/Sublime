@@ -18,7 +18,7 @@ list(APPEND Targets "CMSketchbookFixedCounters" "CMSketchbookAdaptiveCountersPQ"
                     "BitSenseCM"
                     "SEADCM"
                     "SALSACM"
-                    "CSketchbookFixedCounters" "CSketchbookAdaptiveCountersPQ" "CSketchbookAdaptiveCountersPQNoTuning"
+                    "CSketchbookFixedCounters" "CSketchbookAdaptiveCountersPQ"
                     "StingyC"
                     "CodingC"
                     "BitSenseC"
@@ -41,8 +41,10 @@ function(compile_bench ds)
 
     if (ds MATCHES "CMSketchbookFixedCounters")
         target_link_libraries(bench_${ds} CMSketchbookFixedCountersLib)
-    elseif (ds MATCHES "CMSketchbookAdaptiveCountersPQ" OR ds MATCHES "CMSketchbookAdaptiveCountersPQNoTuning")
+    elseif (ds MATCHES "CMSketchbookAdaptiveCountersPQ")
         target_link_libraries(bench_${ds} CMSketchbookAdaptiveCountersPQLib)
+    elseif (ds MATCHES "CMSketchbookAdaptiveCountersPQNoTuning")
+        target_link_libraries(bench_${ds} CMSketchbookAdaptiveCountersPQNoTuningLib)
     elseif (ds MATCHES "StingyCM")
         add_library(StingyCMLib STATIC ./sketches_benchmark/include/StingyCM.hpp 
                                        ./sketches_benchmark/include/MurmurHash.h 
@@ -91,7 +93,7 @@ function(compile_bench ds)
         target_link_libraries(bench_${ds} SALSACMLib)
     elseif (ds MATCHES "CSketchbookFixedCounters")
         target_link_libraries(bench_${ds} CSketchbookFixedCountersLib)
-    elseif (ds MATCHES "CSketchbookAdaptiveCountersPQ" OR ds MATCHES "CSketchbookAdaptiveCountersPQNoTuning")
+    elseif (ds MATCHES "CSketchbookAdaptiveCountersPQ")
         target_link_libraries(bench_${ds} CSketchbookAdaptiveCountersPQLib)
     elseif (ds MATCHES "StingyC")
         add_library(StingyCLib STATIC ./sketches_benchmark/include/StingyC.hpp 
