@@ -34,7 +34,7 @@ public:
     static constexpr uint32_t cache_line_size_bytes = cache_line_size / 8;
 
     CMSketchbookAdaptiveCountersPQ(size_t init_col_count, size_t init_row_count,
-                                     std::function<uint64_t(size_t)> expansion_f,
+                                     std::function<uint64_t(double)> expansion_f,
                                      uint32_t seed_gen_seed)
                                      : row_count(init_row_count), init_col_count(init_col_count),
                                        expansion_f(expansion_f), seed_gen_seed(seed_gen_seed) {
@@ -242,7 +242,7 @@ private:
     size_t init_col_count, col_count, init_counter_count, counter_count;
     const size_t row_count;
     uint32_t init_col_count_lg, col_count_lg, init_counter_count_lg, counter_count_lg;
-    std::function<uint64_t(size_t)> expansion_f;
+    std::function<uint64_t(double)> expansion_f;
     std::vector<uint8_t *> sketches;
 
     // Prefetching Queue

@@ -9,7 +9,7 @@ static bool include_all_sketches = false;
 
 inline CMSketchbookAdaptiveCountersPQ *init_sketch(const uint32_t memory_budget,
                                                    const uint32_t row_count,
-                                                   std::function<uint64_t(size_t)> f) {
+                                                   std::function<uint64_t(double)> f) {
     const uint32_t counter_count = memory_budget / (static_cast<float>(CMSketchbookAdaptiveCountersPQ::cache_line_size_bytes) 
                                                     / CMSketchbookAdaptiveCountersPQ::default_counter_per_cache_line);
     const uint32_t col_count = (counter_count + row_count - 1) / row_count;
@@ -78,7 +78,7 @@ int main(int argc, char const *argv[]) {
     const uint32_t n_rows = parser.get<uint32_t>("--rows");
     const double size_function_power = parser.get<double>("--size-function-power");
     const double size_function_mult = parser.get<double>("--size-function-mult");
-    auto f = [&](size_t x) { return size_function_power == 0.0 ? std::numeric_limits<uint64_t>::max()
+    auto f = [&](double x) { return size_function_power == 0.0 ? std::numeric_limits<uint64_t>::max()
                                     : static_cast<uint64_t>(pow(x, 1.0 / size_function_power) * size_function_mult); };
     auto sketch = init_sketch(memory_budget, n_rows, f);
     if (wio.StringKeys())

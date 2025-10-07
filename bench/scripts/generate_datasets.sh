@@ -84,6 +84,46 @@ generate_real() {
         echo "    [--] caida already generated"
     fi
 
+    if ! test -f caida_repeat; then
+        echo "    [++] generating caida_repeat"
+        $WORKLOAD_GEN_PATH -t standard_string --fdist real $REAL_DATASETS_PATH/0.dat \
+                                                      real $REAL_DATASETS_PATH/1.dat \
+                                                      real $REAL_DATASETS_PATH/2.dat \
+                                                      real $REAL_DATASETS_PATH/3.dat \
+                                                      real $REAL_DATASETS_PATH/4.dat \
+                                                      real $REAL_DATASETS_PATH/5.dat \
+                                                      real $REAL_DATASETS_PATH/6.dat \
+                                                      real $REAL_DATASETS_PATH/7.dat \
+                                                      real $REAL_DATASETS_PATH/8.dat \
+                                                      real $REAL_DATASETS_PATH/9.dat \
+                                                      real $REAL_DATASETS_PATH/10.dat \
+                                                      real $REAL_DATASETS_PATH/0.dat \
+                                                      real $REAL_DATASETS_PATH/1.dat \
+                                                      real $REAL_DATASETS_PATH/2.dat \
+                                                      real $REAL_DATASETS_PATH/3.dat \
+                                                      real $REAL_DATASETS_PATH/4.dat \
+                                                      real $REAL_DATASETS_PATH/5.dat \
+                                                      real $REAL_DATASETS_PATH/6.dat \
+                                                      real $REAL_DATASETS_PATH/7.dat \
+                                                      real $REAL_DATASETS_PATH/8.dat \
+                                                      real $REAL_DATASETS_PATH/9.dat \
+                                                      real $REAL_DATASETS_PATH/10.dat \
+                                                      real $REAL_DATASETS_PATH/0.dat \
+                                                      real $REAL_DATASETS_PATH/1.dat \
+                                                      real $REAL_DATASETS_PATH/2.dat \
+                                                      real $REAL_DATASETS_PATH/3.dat \
+                                                      real $REAL_DATASETS_PATH/4.dat \
+                                                      real $REAL_DATASETS_PATH/5.dat \
+                                                      real $REAL_DATASETS_PATH/6.dat \
+                                                      real $REAL_DATASETS_PATH/7.dat \
+                                                      real $REAL_DATASETS_PATH/8.dat \
+                                                      real $REAL_DATASETS_PATH/9.dat \
+                                                      real $REAL_DATASETS_PATH/10.dat \
+                                                      -o caida_repeat
+    else 
+        echo "    [--] caida_repeat already generated"
+    fi
+
     if ! test -f kosarak; then
         echo "    [++] generating kosarak"
         $WORKLOAD_GEN_PATH -t standard --fdist real $REAL_DATASETS_PATH/kosarak.dat --key-len-binary 0 -o kosarak

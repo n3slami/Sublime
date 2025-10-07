@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -20,7 +21,7 @@ inline auto test_out = TestOutput();
 
 inline std::string json_file = "";
 inline uint64_t memory_budget;
-inline uint64_t kill_exec_time_threshold = 1ULL * 3600ULL * 1000000ULL;
+inline uint64_t kill_exec_time_threshold = 1ULL * 3600ULL * 1000000000ULL;
 
 inline WorkloadIO wio;
 inline InputKeys<uint64_t> initial_int_keys;
@@ -32,8 +33,8 @@ inline uint32_t top_aae_are_count = std::numeric_limits<uint32_t>::max();
 
 template <typename Sketch, typename InsertFun, typename DeleteFun, typename QueryFun, typename SizeFun> 
 void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun query_f, SizeFun size_f, void *aux_f=nullptr) {
-    std::unordered_map<uint64_t, uint32_t> actual_freq;
-    std::vector<std::unordered_map<uint64_t, uint32_t>> freq_checkpoints;
+    std::unordered_map<uint64_t, int32_t> actual_freq;
+    std::vector<std::unordered_map<uint64_t, int32_t>> freq_checkpoints;
     uint32_t n_keys = 0;
 
     timer::time_point op_start_time = timer::now();
@@ -52,6 +53,13 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
             }
             case WorkloadIO::opcode::Flush: {
                 freq_checkpoints.push_back(actual_freq);
+                std::vector<uint64_t> to_remove;
+                for (auto it : freq_checkpoints.back()) {
+                    if (it.second == 0)
+                        to_remove.push_back(it.first);
+                }
+                for (auto victim : to_remove)
+                    freq_checkpoints.back().erase(victim);
                 break;
             }
             default: {
@@ -84,7 +92,7 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                     timer_results[timer_key] = -1;
                 }
                 else
-                    timer_results[timer_key] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points[timer_key]).count();
+                    timer_results[timer_key] = std::chrono::duration_cast<std::chrono::microseconds>(timer::now() - time_points[timer_key]).count();
                 break;
             }
             case WorkloadIO::opcode::Flush: {
@@ -103,13 +111,14 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                     total_underestimation -= std::min(diff, 0L);
                     con += est_val != real_val;
                 }
-                timer_results['q'] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points['q']).count();
+                timer_results['q'] = std::chrono::duration_cast<std::chrono::microseconds>(timer::now() - time_points['q']).count();
                 const uint32_t n_distinct_keys = freq_checkpoints[checkpoint_ind].size();
                 aae /= n_distinct_keys;
                 are /= n_distinct_keys;
                 con /= n_distinct_keys;
 
                 test_out.AddMeasure("n_keys", n_keys);
+                test_out.AddMeasure("n_unique_keys", n_distinct_keys);
                 test_out.AddMeasure("aae", aae);
                 test_out.AddMeasure("are", are);
                 test_out.AddMeasure("total_overestimation", total_overestimation);
@@ -139,7 +148,7 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                         con += est_val != real_val;
                         top_pq.pop();
                     }
-                    timer_results['t'] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points['t']).count();
+                    timer_results['t'] = std::chrono::duration_cast<std::chrono::microseconds>(timer::now() - time_points['t']).count();
                     aae /= total_count;
                     are /= total_count;
                     con /= total_count;
@@ -168,8 +177,9 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
 
                 memset(timer_results, 0, sizeof(timer_results));
                 test_out.Clear();
+                checkpoint_ind++;
 
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - op_start_time).count() 
+                if (std::chrono::duration_cast<std::chrono::microseconds>(timer::now() - op_start_time).count() 
                             > kill_exec_time_threshold)
                     return;
                 break;
@@ -184,8 +194,8 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
     uint16_t buf_len;
     uint8_t buf[std::numeric_limits<uint16_t>::max()];
 
-    std::unordered_map<std::string, uint32_t> actual_freq;
-    std::vector<std::unordered_map<std::string, uint32_t>> freq_checkpoints;
+    std::unordered_map<std::string, int32_t> actual_freq;
+    std::vector<std::unordered_map<std::string, int32_t>> freq_checkpoints;
     uint32_t n_keys = 0;
 
     timer::time_point op_start_time = timer::now();
@@ -208,6 +218,13 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
             }
             case WorkloadIO::opcode::Flush: {
                 freq_checkpoints.push_back(actual_freq);
+                std::vector<std::string> to_remove;
+                for (auto it : freq_checkpoints.back()) {
+                    if (it.second == 0)
+                        to_remove.push_back(it.first);
+                }
+                for (auto victim : to_remove)
+                    freq_checkpoints.back().erase(victim);
                 break;
             }
             default: {
@@ -243,7 +260,7 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
                     timer_results[timer_key] = -1;
                 }
                 else
-                    timer_results[timer_key] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points[timer_key]).count();
+                    timer_results[timer_key] = std::chrono::duration_cast<std::chrono::microseconds>(timer::now() - time_points[timer_key]).count();
                 break;
             }
             case WorkloadIO::opcode::Flush: {
@@ -262,12 +279,14 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
                     total_underestimation -= std::min(diff, 0L);
                     con += est_val != real_val;
                 }
-                timer_results['q'] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points['q']).count();
-                aae /= freq_checkpoints[checkpoint_ind].size();
-                are /= freq_checkpoints[checkpoint_ind].size();
-                con /= freq_checkpoints[checkpoint_ind].size();
+                timer_results['q'] = std::chrono::duration_cast<std::chrono::microseconds>(timer::now() - time_points['q']).count();
+                const uint32_t n_distinct_keys = freq_checkpoints[checkpoint_ind].size();
+                aae /= n_distinct_keys;
+                are /= n_distinct_keys;
+                con /= n_distinct_keys;
 
                 test_out.AddMeasure("n_keys", n_keys);
+                test_out.AddMeasure("n_unique_keys", n_distinct_keys);
                 test_out.AddMeasure("aae", aae);
                 test_out.AddMeasure("are", are);
                 test_out.AddMeasure("total_overestimation", total_overestimation);
@@ -297,7 +316,7 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
                         con += est_val != real_val;
                         top_pq.pop();
                     }
-                    timer_results['t'] = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - time_points['t']).count();
+                    timer_results['t'] = std::chrono::duration_cast<std::chrono::microseconds>(timer::now() - time_points['t']).count();
                     aae /= total_count;
                     are /= total_count;
                     con /= total_count;
@@ -326,8 +345,9 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
 
                 memset(timer_results, 0, sizeof(timer_results));
                 test_out.Clear();
+                checkpoint_ind++;
 
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - op_start_time).count() 
+                if (std::chrono::duration_cast<std::chrono::microseconds>(timer::now() - op_start_time).count() 
                             > kill_exec_time_threshold)
                     return;
                 break;

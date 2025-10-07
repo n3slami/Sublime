@@ -45,8 +45,8 @@ static const std::vector<std::string> fdist_default = {"zipf"};
 
 const uint64_t default_n_keys = 100'000'000;
 const uint64_t default_universe_size = 20'0000;
-const uint64_t default_n_deletes = 5'000'000;
-const uint64_t default_measurement_period = 100'000;
+const uint64_t default_n_deletes = 26'000'000;
+const uint64_t default_measurement_period = 1'000'000;
 
 InputKeys<uint64_t> keys_from_file = InputKeys<uint64_t>();
 
@@ -260,17 +260,13 @@ void delete_bench(argparse::ArgumentParser& parser) {
     wio.Timer('i');
     wio.Flush();
 
-    std::cerr << "huh..." << std::endl;
-    std::shuffle(keys.begin(), keys.end(), rng);
-    std::cerr << "shuffled" << std::endl;
-    const uint32_t n_deletes = parser.get<uint64_t>("--n-deletes");
+    //std::shuffle(keys.begin(), keys.end(), rng);
+    const uint32_t n_deletes = std::min(keys.size(), parser.get<uint64_t>("--n-deletes"));
     const uint32_t measurement_period = parser.get<uint64_t>("--measurement-period");
-    std::cerr << "n_deletes=" << n_deletes << " measurement_period=" << measurement_period << std::endl;
     for (uint32_t i = 0; i < n_deletes; i += measurement_period) {
-        std::cerr << "welp i=" << i << std::endl;
         wio.Timer('d');
         for (uint32_t j = i; j < i + measurement_period; j++)
-            wio.Delete(keys[j]);
+            wio.Delete(keys[keys.size() - j - 1]);
         wio.Timer('d');
         wio.Flush();
     }
