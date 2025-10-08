@@ -94,7 +94,7 @@ def expansion_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters",
                 "StingyCM", "SALSACM", "CodingCM", "Tailored", "OTailored", 
                 "Switch", "Waving"]
-    OVERESTIMATE_MEMORY = 2 ** 26
+    OVERESTIMATE_MEMORY = 2 ** 24
     UNDERESTIMATE_MEMORY = 2 ** 18
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
@@ -104,7 +104,7 @@ def expansion_bench():
     for workload in workload_path.iterdir():
         for sketch in sketches:
             if sketch in SKETCHES_WITH_EXPANSION_RATE_FUNCTION:
-                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY, 1.0, 9.5)
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY, 1.0, 19.7)
             else:
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY)
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, OVERESTIMATE_MEMORY)
@@ -113,7 +113,7 @@ def expansion_bench():
 def size_function_bench():
     SKETCH = "CMSketchbookAdaptiveCountersPQ"
     START_MEMORY_FOOTPRINT = 2 ** 14
-    size_function_powers = [i / 5 for i in range(6)]
+    size_function_powers = [i / 4 for i in range(5)]
     size_function_mults = [1e0, 1e-4, 1e1, 1e1, 1e1]
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
@@ -122,7 +122,7 @@ def size_function_bench():
     workload_path = Path(f"{workload_dir}/expand")
     for workload in workload_path.iterdir():
         for size_function_power, size_function_mult in zip(size_function_powers, size_function_mults):
-            execute_benchmark(build_dir, output_base, workload_subdir, workload, SKETCH, START_MEMORY_FOOTPRINT, size_function_power, size_function_mult, override_size=size_function_power)
+            execute_benchmark(build_dir, output_base, workload_subdir, workload, SKETCH, START_MEMORY_FOOTPRINT, size_function_power, size_function_mult, override_size=f"{size_function_power:.2f}")
 
 
 def contraction_bench():
@@ -137,7 +137,7 @@ def contraction_bench():
     for workload in workload_path.iterdir():
         for sketch in sketches:
             if sketch in SKETCHES_WITH_EXPANSION_RATE_FUNCTION:
-                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, START_MEMORY_FOOTPRINT, 1.0, 9.5)
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, START_MEMORY_FOOTPRINT, 1.0, 19.7)
             else:
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, MEMORY_FOOTPRINT)
 
