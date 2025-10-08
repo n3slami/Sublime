@@ -42,7 +42,8 @@ inline int32_t query_sketch(BIT_C *sketch, T key) {
 
 inline uint32_t size_of_sketch(BIT_C *sketch) {
     // Uses parameters and expressions that seem to be hard-coded into the implementation...
-    uint32_t res = sketch->layer[0].Len() * 4 / 8 + 8 + sketch->layer[0].Len() / 8 + 8;
+    // 10, 10, 10, 10
+    uint32_t res = sketch->layer[0].Len() * 10 / 8 + 8 + sketch->layer[0].Len() / 8 + 8;
     res += sketch->layer[1].Len() * 4 / 8 + 8 + sketch->layer[1].Len() / 8 + 8;
     res += sketch->layer[2].Len() * 4 / 8 + 8 + sketch->layer[2].Len() / 8 + 8;
     res += sketch->layer[3].Len() * 3 / 8 + 8 + sketch->layer[3].Len() / 8 + 8;
