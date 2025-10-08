@@ -14,6 +14,37 @@
 #include "MurmurHash.hpp"
 #include "util.hpp"
 
+#define COUNTER_PER_CACHE_LINE 64
+#define BASE_COUNTER_SIZE      6
+
+static constexpr std::array<uint8_t, 128> setup_lookup_tables_word_update_byte_offset_lookup_table() {
+    constexpr uint64_t word_size_bytes = sizeof(uint64_t);
+    constexpr uint64_t word_size_bits = word_size_bytes * 8;
+    std::array<uint8_t, 128> word_update_byte_offset = {};
+    for (int i = 0; i < COUNTER_PER_CACHE_LINE; i++) {
+        const uint32_t counter_pos = i * BASE_COUNTER_SIZE + COUNTER_PER_CACHE_LINE;
+        if ((counter_pos % word_size_bits) + BASE_COUNTER_SIZE > word_size_bits)
+            word_update_byte_offset[i] = (counter_pos / word_size_bits) * word_size_bytes + word_size_bytes / 2;
+        else
+            word_update_byte_offset[i] = counter_pos / word_size_bits * word_size_bytes;
+    }
+    return word_update_byte_offset;
+}
+
+static constexpr std::array<uint8_t, 128> setup_lookup_tables_word_update_shamt_lookup_table() {
+    constexpr uint64_t word_size_bytes = sizeof(uint64_t);
+    constexpr uint64_t word_size_bits = word_size_bytes * 8;
+    std::array<uint8_t, 128> word_update_shamt = {};
+    for (int i = 0; i < COUNTER_PER_CACHE_LINE; i++) {
+        const uint32_t counter_pos = i * BASE_COUNTER_SIZE + COUNTER_PER_CACHE_LINE;
+        if ((counter_pos % word_size_bits) + BASE_COUNTER_SIZE > word_size_bits)
+            word_update_shamt[i] = counter_pos % word_size_bits - word_size_bits / 2;
+        else
+            word_update_shamt[i] = counter_pos % word_size_bits;
+    }
+    return word_update_shamt;
+}
+
 class CMSketchbookAdaptiveCountersPQ {
     friend class CMSketchbookAdaptiveCountersTest;
 
@@ -30,8 +61,11 @@ private:
     };
 
 public:
-    static constexpr uint32_t cache_line_size = 512, counter_per_cache_line = 63;
+    static constexpr uint32_t cache_line_size = 512, counter_per_cache_line = COUNTER_PER_CACHE_LINE, base_counter_size = BASE_COUNTER_SIZE;
     static constexpr uint32_t cache_line_size_bytes = cache_line_size / 8;
+    static constexpr auto bit_length_to_extension_count = setup_extension_len_lookup_table();
+    static constexpr auto word_update_byte_offset = setup_lookup_tables_word_update_byte_offset_lookup_table();
+    static constexpr auto word_update_shamt = setup_lookup_tables_word_update_shamt_lookup_table();
 
     CMSketchbookAdaptiveCountersPQ(size_t init_col_count, size_t init_row_count,
                                      std::function<uint64_t(double)> expansion_f,
@@ -62,8 +96,6 @@ public:
 
         sketches.push_back(allocate_sketch(row_count, col_count));
         gen_seeds();
-
-        setup_lookup_tables();
     }
     
     // Should probably write a copy constructor...
@@ -260,27 +292,10 @@ private:
 
     static constexpr uint64_t select_mask = 0x5555555555555555;
     static constexpr uint32_t cache_line_size_words = cache_line_size / (8 * sizeof(uint64_t));
-    static constexpr uint32_t base_counter_size = 6, extension_size = 2;
+    static constexpr uint32_t extension_size = 2;
     static constexpr uint32_t num_extension = (cache_line_size - 1 - counter_per_cache_line * (base_counter_size + 1)) / extension_size;
     static constexpr uint32_t num_extension_words = extension_size * num_extension / 64 + 1;
     static constexpr uint64_t last_extension_word_bit_count = extension_size * num_extension + 1 - 64 * (num_extension_words - 1);
-    uint8_t word_update_byte_offset[64], word_update_shamt[64];
-
-    void setup_lookup_tables() {
-        constexpr uint64_t word_size_bytes = sizeof(uint64_t);
-        constexpr uint64_t word_size_bits = word_size_bytes * 8;
-        for (int i = 0; i < counter_per_cache_line; i++) {
-            const uint32_t counter_pos = i * base_counter_size + counter_per_cache_line;
-            if ((counter_pos % word_size_bits) + base_counter_size > word_size_bits) {
-                word_update_byte_offset[i] = (counter_pos / word_size_bits) * word_size_bytes + word_size_bytes / 2;
-                word_update_shamt[i] = counter_pos % word_size_bits - word_size_bits / 2;
-            }
-            else {
-                word_update_byte_offset[i] = counter_pos / word_size_bits * word_size_bytes;
-                word_update_shamt[i] = counter_pos % word_size_bits;
-            }
-        }
-    }
 
     static_assert((8 * sizeof(uint64_t)) % extension_size == 0,
                   "Word size must be divisible by the extension size, at least for now");
@@ -424,7 +439,6 @@ private:
 
     //__attribute__((always_inline))
     inline void shift_extensions_left_from_pos(uint64_t extensions[], const uint32_t pos, const uint32_t shamt) const {
-        assert(shamt < 64); // Shifting more than a word not implemented
         if constexpr (num_extension_words == 1) {
             const uint64_t a = extensions[0] & BITMASK(pos);
             const uint64_t b = extensions[0] & (BITMASK(64) << pos);
@@ -469,11 +483,14 @@ private:
         }
         else if constexpr (num_extension_words == 2) {
             if (pos < 64) {
-                const uint64_t a = extensions[1] & BITMASK(shamt);
-                const uint64_t b = (pos + shamt >= 64 ? 0ULL : extensions[0] >> (pos + shamt));
+                const bool end_in_second_word = pos + shamt >= 64;
+                const uint32_t dead_a = end_in_second_word ? pos + shamt - 64 : 0U;
+                const uint32_t shift_a = 64 - shamt + dead_a;
+                const uint64_t a = (extensions[1] >> dead_a) & BITMASK(shamt);
+                const uint64_t b = (end_in_second_word ? 0ULL : extensions[0] >> (pos + shamt));
                 extensions[1] >>= shamt;
                 extensions[0] &= BITMASK(pos);
-                extensions[0] |= ((a << (64 - shamt)) | (b << pos));
+                extensions[0] |= ((a << shift_a) | (b << pos));
             }
             else {
                 const uint32_t new_pos = pos - 64;

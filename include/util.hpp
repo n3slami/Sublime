@@ -178,6 +178,7 @@ static inline uint32_t highbit_pos(uint32_t val) {
 }
 
 
+// Lookup tables!
 static constexpr std::array<uint32_t, 64> setup_extension_len_lookup_table() {
     std::array<uint32_t, 64> res = {};
     res[0] = 1;
@@ -189,5 +190,4 @@ static constexpr std::array<uint32_t, 64> setup_extension_len_lookup_table() {
     }
     return res;
 }
-
 
