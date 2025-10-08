@@ -27,8 +27,7 @@ def execute_benchmark(build_dir, output_base, workload_subdir, workload, filter,
 def accuracy_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookAdaptiveCountersPQNoTuning",
                 "CMSketchbookFixedCounters",
-                "StingyCM", "SALSACM", "CodingCM", "SEADCM",
-                "Tailored", "OTailored", "Switch", "Waving"]
+                "StingyCM", "SALSACM", "CodingCM", "SEADCM", "Waving"]
     memory_footprints = {"caida": [2 ** i for i in range(17, 23)],
                          "kosarak": [2 ** i for i in range(15, 21)],
                          "webdocs": [2 ** i for i in range(17, 23)]}
@@ -54,8 +53,7 @@ def accuracy_bench():
 
 def skew_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters",
-                "StingyCM", "SALSACM", "CodingCM", "SEADCM", "Tailored", "OTailored",
-                "Switch", "Waving"]
+                "StingyCM", "SALSACM", "CodingCM", "SEADCM", "Waving"]
     MEMORY_FOOTPRINT = 2 ** 20
     baseline_memory_footprints = [1697728, 1739136, 1658584, 1912352, 1658240, 1400592]
     sketchbook_memory_footprints = [640000, 620000, 610000, 590000, 570000, 650000]
@@ -92,8 +90,7 @@ def vale_tuning_bench():
 
 def expansion_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters",
-                "StingyCM", "SALSACM", "CodingCM", "Tailored", "OTailored", 
-                "Switch", "Waving"]
+                "StingyCM", "SALSACM", "CodingCM", "Switch", "Waving"]
     OVERESTIMATE_MEMORY = 2 ** 26
     UNDERESTIMATE_MEMORY = 2 ** 18
     workload_subdir = inspect.stack()[0][3]
@@ -144,7 +141,7 @@ def contraction_bench():
 
 def accuracy_unbiased_bench():
     sketches = ["CSketchbookAdaptiveCountersPQ", "CSketchbookFixedCounters", 
-                "StingyC", "CodingC", "Waving", "SEADC"]
+                "StingyC", "CodingC", "Waving"]
     memory_footprints = [2 ** i for i in range(17, 23)]
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
