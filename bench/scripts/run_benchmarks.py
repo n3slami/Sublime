@@ -94,7 +94,7 @@ def expansion_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters",
                 "StingyCM", "SALSACM", "CodingCM", "Waving"]
     OVERESTIMATE_MEMORY = 2 ** 24
-    UNDERESTIMATE_MEMORY = 2 ** 18
+    UNDERESTIMATE_MEMORY = 210000
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
@@ -103,7 +103,7 @@ def expansion_bench():
     for workload in workload_path.iterdir():
         for sketch in sketches:
             if sketch in SKETCHES_WITH_EXPANSION_RATE_FUNCTION:
-                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY, 1.0, 19.7)
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY, 1.0, 24)
             else:
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY)
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, OVERESTIMATE_MEMORY)
@@ -126,8 +126,7 @@ def size_function_bench():
 
 def contraction_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters"]
-    sketches = ["CMSketchbookFixedCounters"]
-    MEMORY_FOOTPRINT = 2 ** 24
+    MEMORY_FOOTPRINT = 2 ** 23
     START_MEMORY_FOOTPRINT = 210000
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
