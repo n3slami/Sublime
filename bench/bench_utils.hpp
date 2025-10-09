@@ -1,6 +1,6 @@
 /*
- * This file is part of Sketchbook <https://github.com/n3slami/Sketchbook>.
- * Copyright (C) 2025 Navid Eslami
+ * This file is part of Sketchbook <--->.
+ * Copyright (C) 2025 ---
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

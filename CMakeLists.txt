@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16.3)
 project(Sketchbook
         VERSION 1.0
-        HOMEPAGE_URL https://github.com/n3slami/Sketchbook)
+        HOMEPAGE_URL https://github.com/)
 
 option(BUILD_TESTS "Build the tests" ON)
 option(BUILD_EXAMPLES "Build the examples" ON)
