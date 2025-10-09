@@ -70,7 +70,7 @@ public:
         for (int i = 0; i < row_count; i++)
             sketch[col_count * i + hash_key(elem, i)]--;
         n--;
-        if (n == contraction_lim)
+        if (n < contraction_lim)
             contract();
     }
 
@@ -79,7 +79,7 @@ public:
         for (int i = 0; i < row_count; i++)
             sketch[col_count * i + hash_string_key(elem, length, i)]--;
         n--;
-        if (n == contraction_lim)
+        if (n < contraction_lim)
             contract();
     }
 

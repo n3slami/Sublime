@@ -28,6 +28,7 @@ def accuracy_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookAdaptiveCountersPQNoTuning",
                 "CMSketchbookFixedCounters",
                 "StingyCM", "SALSACM", "CodingCM", "SEADCM", "Waving"]
+    sketches = ["CodingCM"]
     memory_footprints = {"caida": [2 ** i for i in range(17, 23)],
                          "kosarak": [2 ** i for i in range(15, 21)],
                          "webdocs": [2 ** i for i in range(17, 23)]}
@@ -54,6 +55,7 @@ def accuracy_bench():
 def skew_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters",
                 "StingyCM", "SALSACM", "CodingCM", "SEADCM", "Waving"]
+    sketches = ["CodingCM"]
     MEMORY_FOOTPRINT = 2 ** 20
     baseline_memory_footprints = [1697728, 1739136, 1658584, 1912352, 1658240, 1400592]
     sketchbook_memory_footprints = [640000, 620000, 610000, 590000, 570000, 650000]
@@ -75,7 +77,7 @@ def skew_bench():
 
 def vale_tuning_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookAdaptiveCountersPQNoTuning"]
-    memory_footprints = [2 ** i for i in range(16, 22)]
+    memory_footprints = [int(2 ** (16 + i / 5)) for i in range(25)]
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
@@ -111,7 +113,7 @@ def size_function_bench():
     SKETCH = "CMSketchbookAdaptiveCountersPQ"
     START_MEMORY_FOOTPRINT = 2 ** 14
     size_function_powers = [i / 4 for i in range(5)]
-    size_function_mults = [1e0, 1e-4, 1e1, 1e1, 1e1]
+    size_function_mults = [1e0, 1e-8, 6e-2, 1e0, 2e0]
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
@@ -124,8 +126,9 @@ def size_function_bench():
 
 def contraction_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters"]
-    MEMORY_FOOTPRINT = 2 ** 22
-    START_MEMORY_FOOTPRINT  = 2 ** 18
+    sketches = ["CMSketchbookFixedCounters"]
+    MEMORY_FOOTPRINT = 2 ** 24
+    START_MEMORY_FOOTPRINT = 210000
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
@@ -134,7 +137,7 @@ def contraction_bench():
     for workload in workload_path.iterdir():
         for sketch in sketches:
             if sketch in SKETCHES_WITH_EXPANSION_RATE_FUNCTION:
-                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, START_MEMORY_FOOTPRINT, 1.0, 19.7)
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, START_MEMORY_FOOTPRINT, 1.0, 24)
             else:
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, MEMORY_FOOTPRINT)
 
@@ -142,6 +145,7 @@ def contraction_bench():
 def accuracy_unbiased_bench():
     sketches = ["CSketchbookAdaptiveCountersPQ", "CSketchbookFixedCounters", 
                 "StingyC", "CodingC", "Waving"]
+    sketches = ["CodingC"]
     memory_footprints = [2 ** i for i in range(17, 23)]
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")

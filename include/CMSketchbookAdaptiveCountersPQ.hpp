@@ -923,6 +923,9 @@ private:
         auto [counter_per_cache_line, stub_size] = tune_params(counter_len_cnt);
         std::cerr << "reallocating: counter_per_cache_line=" << counter_per_cache_line << " stub_size=" << stub_size << std::endl;
 
+        if (counter_per_cache_line == sketch->counter_per_cache_line && stub_size == sketch->stub_size)
+            counter_per_cache_line--;
+
         const uint32_t cache_line_count = (sketch->counter_count + counter_per_cache_line - 1) / counter_per_cache_line;
         Sketch *res = reinterpret_cast<Sketch *>(new uint8_t[sizeof(Sketch) + cache_line_count * cache_line_size_bytes]);
         memset(res + 1, 0, cache_line_count * cache_line_size_bytes);

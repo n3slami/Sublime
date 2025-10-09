@@ -64,6 +64,11 @@ set_target_properties(CSketchbookAdaptiveCountersPQLib PROPERTIES LINKER_LANGUAG
 target_include_directories(CSketchbookAdaptiveCountersPQLib PUBLIC ./include)
 target_compile_options(CSketchbookAdaptiveCountersPQLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
+add_library(CSketchbookAdaptiveCountersPQNoTuningLib STATIC ./include/CSketchbookAdaptiveCountersPQNoTuning.hpp)
+set_target_properties(CSketchbookAdaptiveCountersPQNoTuningLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(CSketchbookAdaptiveCountersPQNoTuningLib PUBLIC ./include)
+target_compile_options(CSketchbookAdaptiveCountersPQNoTuningLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+
 
 
 add_library(MGDummyLib STATIC ./include/MGDummy.hpp)

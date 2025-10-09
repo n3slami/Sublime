@@ -181,6 +181,7 @@ generate_delete() {
 }
 
 
+echo "[!!] generate_synthetic start"
 mkdir -p $OUT_PATH/synthetic && cd $OUT_PATH/synthetic || exit 1
 if ! generate_synthetic ; then
     echo "[!!] generate_synthetic failed"
@@ -188,6 +189,7 @@ if ! generate_synthetic ; then
 fi
 echo "[!!] generate_synthetic done"
 
+echo "[!!] generate_real start"
 mkdir -p $OUT_PATH/real && cd $OUT_PATH/real || exit 1
 if ! generate_real ; then
     echo "[!!] generate_real failed"
@@ -195,6 +197,7 @@ if ! generate_real ; then
 fi
 echo "[!!] generate_real done"
 
+echo "[!!] generate_expand start"
 mkdir -p $OUT_PATH/expand && cd $OUT_PATH/expand || exit 1
 if ! generate_expand ; then
     echo "[!!] generate_expand failed"
@@ -202,6 +205,7 @@ if ! generate_expand ; then
 fi
 echo "[!!] generate_expand done"
 
+echo "[!!] generate_delete start"
 mkdir -p $OUT_PATH/delete && cd $OUT_PATH/delete || exit 1
 if ! generate_delete ; then
     echo "[!!] generate_delete failed"

@@ -117,6 +117,12 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                 are /= n_distinct_keys;
                 con /= n_distinct_keys;
 
+                if (n_distinct_keys == 0) {
+                    aae = 0;
+                    are = 0;
+                    con = 0;
+                }
+
                 test_out.AddMeasure("n_keys", n_keys);
                 test_out.AddMeasure("n_unique_keys", n_distinct_keys);
                 test_out.AddMeasure("aae", aae);
@@ -152,6 +158,12 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                     aae /= total_count;
                     are /= total_count;
                     con /= total_count;
+
+                    if (n_distinct_keys == 0) {
+                        aae = 0;
+                        are = 0;
+                        con = 0;
+                    }
 
                     test_out.AddMeasure("top_aae", aae);
                     test_out.AddMeasure("top_are", are);
@@ -285,6 +297,12 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
                 are /= n_distinct_keys;
                 con /= n_distinct_keys;
 
+                if (n_distinct_keys == 0) {
+                    aae = 0;
+                    are = 0;
+                    con = 0;
+                }
+
                 test_out.AddMeasure("n_keys", n_keys);
                 test_out.AddMeasure("n_unique_keys", n_distinct_keys);
                 test_out.AddMeasure("aae", aae);
@@ -320,6 +338,12 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
                     aae /= total_count;
                     are /= total_count;
                     con /= total_count;
+
+                    if (n_distinct_keys == 0) {
+                        aae = 0;
+                        are = 0;
+                        con = 0;
+                    }
 
                     test_out.AddMeasure("top_aae", aae);
                     test_out.AddMeasure("top_are", are);
