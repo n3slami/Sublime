@@ -14,18 +14,12 @@ inline BIT_CM_ver2 *init_sketch(const uint32_t memory_budget, const uint32_t row
 }
 
 inline void insert_sketch(BIT_CM_ver2 *sketch, const std::string& key) {
-    char key_copy[key.size() + 1];
-    memcpy(key_copy, key.c_str(), key.size());
-    key_copy[key.size()] = 0;
-    sketch->Insert(key_copy, key.size());
+    sketch->Insert(key.c_str(), key.size());
 }
 
 template<typename T>
 inline void insert_sketch(BIT_CM_ver2 *sketch, T key) {
-    char key_copy[sizeof(key) + 1];
-    memcpy(key_copy, &key, sizeof(key));
-    key_copy[sizeof(key)] = 0;
-    sketch->Insert(key_copy, sizeof(key));
+    sketch->Insert(&key);
 }
 
 template<typename T>

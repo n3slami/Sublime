@@ -28,7 +28,6 @@ def accuracy_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookAdaptiveCountersPQNoTuning",
                 "CMSketchbookFixedCounters",
                 "StingyCM", "SALSACM", "CodingCM", "SEADCM", "Waving"]
-    sketches = ["CodingCM"]
     memory_footprints = {"caida": [2 ** i for i in range(17, 23)],
                          "kosarak": [2 ** i for i in range(15, 21)],
                          "webdocs": [2 ** i for i in range(17, 23)]}
@@ -144,7 +143,6 @@ def contraction_bench():
 def accuracy_unbiased_bench():
     sketches = ["CSketchbookAdaptiveCountersPQ", "CSketchbookFixedCounters", 
                 "StingyC", "CodingC", "Waving"]
-    sketches = ["CodingC"]
     memory_footprints = [2 ** i for i in range(17, 23)]
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
