@@ -19,7 +19,7 @@ inline void insert_sketch(BIT_CM_ver2 *sketch, const std::string& key) {
 
 template<typename T>
 inline void insert_sketch(BIT_CM_ver2 *sketch, T key) {
-    sketch->Insert(&key);
+    sketch->Insert(reinterpret_cast<char *>(&key), sizeof(key));
 }
 
 template<typename T>
@@ -33,18 +33,12 @@ inline void delete_sketch(BIT_CM_ver2 *sketch, T key) {
 }
 
 inline int32_t query_sketch(BIT_CM_ver2 *sketch, const std::string& key) {
-    char key_copy[key.size() + 1];
-    memcpy(key_copy, key.c_str(), key.size());
-    key_copy[key.size()] = 0;
-    return sketch->Query(key_copy, key.size());
+    return sketch->Query(key.c_str(), key.size());
 }
 
 template<typename T>
 inline int32_t query_sketch(BIT_CM_ver2 *sketch, T key) {
-    char key_copy[sizeof(key) + 1];
-    memcpy(key_copy, &key, sizeof(key));
-    key_copy[sizeof(key)] = 0;
-    return sketch->Query(key_copy, sizeof(key));
+    return sketch->Query(reinterpret_cast<char *>(&key), sizeof(key));
 }
 
 inline uint32_t size_of_sketch(BIT_CM_ver2 *sketch) {

@@ -14,8 +14,9 @@
 #include "MurmurHash.hpp"
 #include "util.hpp"
 
-#define COUNTER_PER_CACHE_LINE 64
-#define BASE_COUNTER_SIZE      6
+#define COUNTER_PER_CACHE_LINE 75
+#define BASE_COUNTER_SIZE      5
+#define MORRIS_RNG_BIT_COUNT   5
 
 static constexpr std::array<uint8_t, 128> setup_lookup_tables_word_update_byte_offset_lookup_table() {
     constexpr uint64_t word_size_bytes = sizeof(uint64_t);
@@ -66,6 +67,7 @@ public:
     static constexpr auto bit_length_to_extension_count = setup_extension_len_lookup_table();
     static constexpr auto word_update_byte_offset = setup_lookup_tables_word_update_byte_offset_lookup_table();
     static constexpr auto word_update_shamt = setup_lookup_tables_word_update_shamt_lookup_table();
+    static constexpr auto morris_rng_bit_count = MORRIS_RNG_BIT_COUNT;
 
     CMSketchbookAdaptiveCountersPQ(size_t init_col_count, size_t init_row_count,
                                      std::function<uint64_t(double)> expansion_f,
@@ -128,23 +130,30 @@ public:
         if (n == expansion_lim)
             expand();
         uint8_t *sketch = sketches.back();
+        uint32_t morris_num = morris_rng();
         if constexpr (using_tof_hashing) {
             uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
             const uint32_t index = hash_tof(hash_value);
             hash_value >>= index_range;
             for (int i = 0; i < row_count; i++) {
-                uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
-                pos = pos < counter_count ? pos : pos - counter_count;
-                push_prefetch_request(sketch, pos, OpType::Insert);
-                handle_last_prefetch_request(sketch);
+                if (morris_num % (1ULL << morris_rng_bit_count) == 0) {
+                    uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                    pos = pos < counter_count ? pos : pos - counter_count;
+                    push_prefetch_request(sketch, pos, OpType::Insert);
+                    handle_last_prefetch_request(sketch);
+                }
+                morris_num >>= morris_rng_bit_count;
                 hash_value >>= bias_range;
             }
         }
         else {
             for (int i = 0; i < row_count; i++) {
-                const uint32_t pos = col_count * i + hash_key(elem, length, i);
-                push_prefetch_request(sketch, pos, OpType::Insert);
-                handle_last_prefetch_request(sketch);
+                if (morris_num % (1ULL << morris_rng_bit_count) == 0) {
+                    const uint32_t pos = col_count * i + hash_key(elem, length, i);
+                    push_prefetch_request(sketch, pos, OpType::Insert);
+                    handle_last_prefetch_request(sketch);
+                }
+                morris_num >>= morris_rng_bit_count;
             }
         }
         n++;
@@ -159,6 +168,7 @@ public:
 
     void Delete(const char *elem, const uint32_t length) {
         uint8_t *sketch = sketches.back();
+        uint32_t morris_num = morris_rng();
         if constexpr (using_tof_hashing) {
             uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
             uint32_t index = hash_tof(hash_value);
@@ -166,18 +176,24 @@ public:
             const uint32_t old_prefetch_clock = prefetch_clock;
             prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
             for (int i = 0; i < row_count; i++) {
-                uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
-                pos = pos < counter_count ? pos : pos - counter_count;
-                push_prefetch_request(sketch, pos, OpType::Delete);
-                handle_last_prefetch_request(sketch);
+                if (morris_num % (1ULL << morris_rng_bit_count) == 0) {
+                    uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+                    pos = pos < counter_count ? pos : pos - counter_count;
+                    push_prefetch_request(sketch, pos, OpType::Delete);
+                    handle_last_prefetch_request(sketch);
+                }
+                morris_num >>= morris_rng_bit_count;
                 hash_value >>= bias_range;
             }
         }
         else {
             for (int i = 0; i < row_count; i++) {
-                const uint32_t pos = col_count * i + hash_key(elem, length, i);
-                push_prefetch_request(sketch, pos, OpType::Delete);
-                handle_last_prefetch_request(sketch);
+                if (morris_num % (1ULL << morris_rng_bit_count) == 0) {
+                    const uint32_t pos = col_count * i + hash_key(elem, length, i);
+                    push_prefetch_request(sketch, pos, OpType::Delete);
+                    handle_last_prefetch_request(sketch);
+                }
+                morris_num >>= morris_rng_bit_count;
             }
         }
         n--;
@@ -202,13 +218,13 @@ public:
             for (int i = 0; i < row_count; i++) {
                 uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
                 pos = pos < counter_count ? pos : pos - counter_count;
-                res = std::min(res, get_counter(sketch, pos));
+                res = std::min(res, get_counter(sketch, pos) << morris_rng_bit_count);
                 hash_value >>= bias_range;
             }
         }
         else {
             for (int i = 0; i < row_count; i++)
-                res = std::min(res, get_counter(sketch, col_count * i + hash_key(elem, length, i)));
+                res = std::min(res, get_counter(sketch, col_count * i + hash_key(elem, length, i)) << morris_rng_bit_count);
         }
         return res;
     }
@@ -286,6 +302,9 @@ private:
     uint32_t init_col_count_lg, col_count_lg, init_counter_count_lg, counter_count_lg;
     std::function<uint64_t(double)> expansion_f;
     std::vector<uint8_t *> sketches;
+
+    // Morris Counters
+    std::mt19937 morris_rng;
 
     // Prefetching Queue
     static constexpr bool using_tof_hashing = true;
@@ -886,6 +905,7 @@ private:
         std::mt19937 rng(seed_gen_seed);
         for (int i = 0; i < row_count; i++)
             seeds[i] = rng();
+        morris_rng.seed(rng());
     }
 
 

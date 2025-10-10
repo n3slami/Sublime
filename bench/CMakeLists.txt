@@ -12,7 +12,7 @@ FetchContent_MakeAvailable(argparse)
 
 set(CMAKE_CXX_STANDARD 17)
 
-list(APPEND Targets "CMSketchbookFixedCounters" "CMSketchbookAdaptiveCountersPQ" "CMSketchbookAdaptiveCountersPQNoTuning"
+list(APPEND Targets "CMSketchbookFixedCounters" "CMSketchbookAdaptiveCountersPQ" "CMSketchbookAdaptiveCountersPQNoTuning" "CMSketchbookAdaptiveCountersPQNoTuningMorris"
                     "StingyCM"
                     "CodingCM"
                     "BitSenseCM"
@@ -45,6 +45,8 @@ function(compile_bench ds)
         target_link_libraries(bench_${ds} CMSketchbookAdaptiveCountersPQLib)
     elseif (ds MATCHES "CMSketchbookAdaptiveCountersPQNoTuning")
         target_link_libraries(bench_${ds} CMSketchbookAdaptiveCountersPQNoTuningLib)
+    elseif (ds MATCHES "CMSketchbookAdaptiveCountersPQNoTuningMorris")
+        target_link_libraries(bench_${ds} CMSketchbookAdaptiveCountersPQNoTuningMorrisLib)
     elseif (ds MATCHES "StingyCM")
         add_library(StingyCMLib STATIC ./sketches_benchmark/include/StingyCM.hpp 
                                        ./sketches_benchmark/include/MurmurHash.h 

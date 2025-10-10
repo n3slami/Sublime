@@ -3,7 +3,7 @@
 #include <unordered_map>
 
 #include "../bench_template.hpp"
-#include "CMSketchbookAdaptiveCountersPQNoTuning.hpp"
+#include "CMSketchbookAdaptiveCountersPQNoTuningMorris.hpp"
 
 
 inline CMSketchbookAdaptiveCountersPQ *init_sketch(const uint32_t memory_budget,

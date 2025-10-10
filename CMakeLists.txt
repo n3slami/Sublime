@@ -42,6 +42,11 @@ set_target_properties(CMSketchbookAdaptiveCountersPQNoTuningLib PROPERTIES LINKE
 target_include_directories(CMSketchbookAdaptiveCountersPQNoTuningLib PUBLIC ./include)
 target_compile_options(CMSketchbookAdaptiveCountersPQNoTuningLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
+add_library(CMSketchbookAdaptiveCountersPQNoTuningMorrisLib STATIC ./include/CMSketchbookAdaptiveCountersPQNoTuningMorris.hpp)
+set_target_properties(CMSketchbookAdaptiveCountersPQNoTuningMorrisLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(CMSketchbookAdaptiveCountersPQNoTuningMorrisLib PUBLIC ./include)
+target_compile_options(CMSketchbookAdaptiveCountersPQNoTuningMorrisLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+
 
 
 add_library(CSketchbookFixedCountersLib STATIC ./include/CSketchbookFixedCounters.hpp)
