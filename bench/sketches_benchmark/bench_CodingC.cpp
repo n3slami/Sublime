@@ -49,6 +49,7 @@ inline uint32_t size_of_sketch(BIT_C *sketch) {
     res += sketch->layer[3].Len() * 3 / 8 + 8 + sketch->layer[3].Len() / 8 + 8;
     res += sketch->layer[4].Len() * 3 / 8 + 8 + sketch->layer[4].Len() / 8 + 8;
     res += sketch->layer[5].Len() * 10 / 8 + 8 + sketch->layer[5].Len() / 8 + 8;
+    res += sketch->layer[1].Len() * sizeof(int32_t);
     return res;
 }
 

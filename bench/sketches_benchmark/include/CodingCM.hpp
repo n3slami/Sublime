@@ -206,9 +206,10 @@ again:
             d=_d;
             hashseed=_hashseed;
             int sz[]={0,(int)(mem[1]),(int)(mem[2]),(int)(mem[3]),(int)(mem[4]),(int)(mem[5])};
-            layer[0]=Layer(w-sz[1]*3-sz[2]*3-sz[3]*2-sz[4]*2,11,3,hashseed,&layer[1],0);
+            const int eq_size = w / 2;
+            layer[0]=Layer(std::max(w-sz[1]*3-sz[2]*3-sz[3]*2-sz[4]*2,eq_size),11,3,hashseed,&layer[1],0);
             //layer[0]=Layer(4*2000000,4,3,hashseed,&layer[1],0);
-            layer[1]=Layer(sz[1]*3,3,3,hashseed*2,&layer[2],1);
+            layer[1]=Layer(std::min(sz[1]*3,eq_size),3,3,hashseed*2,&layer[2],1);
             layer[2]=Layer(sz[2]*3,3,3,hashseed*3,&layer[3],2);
             layer[3]=Layer(sz[3]*2,2,3,hashseed*4,&layer[4],3);
             layer[4]=Layer(sz[4]*2,2,3,hashseed*5,&layer[5],4);
@@ -232,6 +233,7 @@ again:
         int Query(const char* str, const uint32_t key_len){
             if(unzip==0){
                 layer[0].Fin(counter,len);
+                decompression_time_point = timer::now();
                 unzip=1;
                 int sum=0;
                 for(int i=0;i<len;i++)

@@ -43,12 +43,13 @@ inline int32_t query_sketch(BIT_CM_ver2 *sketch, T key) {
 
 inline uint32_t size_of_sketch(BIT_CM_ver2 *sketch) {
     // Uses parameters and expressions that seem to be hard-coded into the implementation...
-    uint32_t res = sketch->layer[0].Len() * 10 / 8 + 8 + sketch->layer[0].Len() / 8 + 8;
+    uint32_t res = sketch->layer[0].Len() * 11 / 8 + 8 + sketch->layer[0].Len() / 8 + 8;
     res += sketch->layer[1].Len() * 3 / 8 + 8 + sketch->layer[1].Len() / 8 + 8;
     res += sketch->layer[2].Len() * 3 / 8 + 8 + sketch->layer[2].Len() / 8 + 8;
     res += sketch->layer[3].Len() * 2 / 8 + 8 + sketch->layer[3].Len() / 8 + 8;
     res += sketch->layer[4].Len() * 2 / 8 + 8 + sketch->layer[4].Len() / 8 + 8;
     res += sketch->layer[5].Len() * 10 / 8 + 8 + sketch->layer[5].Len() / 8 + 8;
+    res += sketch->layer[1].Len() * sizeof(uint32_t);
     return res;
 }
 

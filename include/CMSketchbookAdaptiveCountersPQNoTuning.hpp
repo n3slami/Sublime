@@ -536,11 +536,8 @@ private:
         const uint8_t *cache_line_ptr = sketch + cache_line_ind * cache_line_size_bytes;
 
         // Calculate the base counter
-        uint64_t res;
-        const uint32_t base_bit_pos = inter_cache_line_ind * base_counter_size + counter_per_cache_line;
-        const uint32_t base_byte_pos = base_bit_pos / 8;
-        memcpy(&res, cache_line_ptr + base_byte_pos, sizeof(res));
-        res = (res >> (base_bit_pos % 8)) & BITMASK(base_counter_size);
+        const uint64_t *read_word = reinterpret_cast<const uint64_t *>(cache_line_ptr + word_update_byte_offset[inter_cache_line_ind]);
+        uint64_t res = (read_word[0] >> word_update_shamt[inter_cache_line_ind]) & BITMASK(base_counter_size);
 
         // Take into account the extensions, if any
         const uint64_t *words = reinterpret_cast<const uint64_t *>(cache_line_ptr);

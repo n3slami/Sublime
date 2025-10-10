@@ -54,7 +54,7 @@ def accuracy_bench():
 def skew_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters",
                 "StingyCM", "SALSACM", "CodingCM", "SEADCM", "Waving"]
-    sketches = ["CodingCM"]
+    CODINGCM_MEMORY_FOOTPRINT = 600000
     MEMORY_FOOTPRINT = 2 ** 20
     baseline_memory_footprints = [1697728, 1739136, 1658584, 1912352, 1658240, 1400592]
     sketchbook_memory_footprints = [640000, 620000, 610000, 590000, 570000, 650000]
@@ -71,7 +71,7 @@ def skew_bench():
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, sketchbook_memory_footprints[workload_ind], override_size=MEMORY_FOOTPRINT)
             else:
                 #execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, baseline_memory_footprints[workload_ind])
-                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, MEMORY_FOOTPRINT)
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, CODINGCM_MEMORY_FOOTPRINT if sketch == "CodingCM" else MEMORY_FOOTPRINT)
 
 
 def vale_tuning_bench():

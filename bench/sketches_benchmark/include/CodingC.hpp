@@ -178,8 +178,9 @@ public:
         d=_d;
         hashseed=_hashseed;
         int sz[]={0,(int)(mem[1]*1.23),(int)(mem[2]*1.23),(int)(mem[3]*1.23),(int)(mem[4]*1.23),(int)(mem[5]*1.23)};
-        layer[0]=Layer(w-sz[1]*4-sz[2]*4-sz[3]*3-sz[4]*3-sz[5]*10,10,3,hashseed,&layer[1],0);
-        layer[1]=Layer(sz[1]*4,4,3,hashseed*2,&layer[2],1);
+        const int eq_size = w / 2;
+        layer[0]=Layer(std::max(w-sz[1]*4-sz[2]*4-sz[3]*3-sz[4]*3-sz[5]*10,eq_size),10,3,hashseed,&layer[1],0);
+        layer[1]=Layer(std::min(sz[1]*4,eq_size),4,3,hashseed*2,&layer[2],1);
         layer[2]=Layer(sz[2]*4,4,3,hashseed*3,&layer[3],2);
         layer[3]=Layer(sz[3]*3,3,3,hashseed*4,&layer[4],3);
         layer[4]=Layer(sz[4]*3,3,3,hashseed*5,&layer[5],4);
@@ -200,6 +201,7 @@ public:
 	int Query(const char* str, const uint32_t key_len){
         if(unzip==0){
             layer[0].Fin(counter,len);
+            decompression_time_point = timer::now();
             unzip=1;
             printf("\n");
         }

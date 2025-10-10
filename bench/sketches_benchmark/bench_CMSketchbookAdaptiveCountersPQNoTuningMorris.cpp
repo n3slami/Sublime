@@ -53,6 +53,7 @@ inline std::unordered_map<std::string, uint32_t> get_vale_parameters(CMSketchboo
     std::unordered_map<std::string, uint32_t> res;
     res["counters_per_chunk"] = sketch->GetCountersPerChunk();
     res["stub_length"] = sketch->GetStubLength();
+    res["morris_bit_count"] = sketch->GetMorrisRNGBitCount();
     return res;
 }
 

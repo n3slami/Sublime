@@ -26,7 +26,7 @@ inline uint64_t kill_exec_time_threshold = 1ULL * 3600ULL * 1000000000ULL;
 inline WorkloadIO wio;
 inline InputKeys<uint64_t> initial_int_keys;
 inline InputKeys<std::string> initial_string_keys;
-inline timer::time_point time_points[std::numeric_limits<uint8_t>::max()];
+inline timer::time_point time_points[std::numeric_limits<uint8_t>::max()], decompression_time_point;
 inline uint64_t timer_results[std::numeric_limits<uint8_t>::max()];
 inline uint32_t top_aae_are_count = std::numeric_limits<uint32_t>::max();
 
@@ -98,6 +98,7 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
             case WorkloadIO::opcode::Flush: {
                 double aae = 0, are = 0, con = 0;
                 int64_t total_overestimation = 0, total_underestimation = 0;
+                decompression_time_point = timer::now();
                 time_points['q'] = timer::now();
                 for (auto& it : freq_checkpoints[checkpoint_ind]) {
                     const int64_t est_val = query_f(sketch, it.first);
@@ -111,8 +112,10 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                     total_underestimation -= std::min(diff, 0L);
                     con += est_val != real_val;
                 }
-                timer_results['q'] = std::chrono::duration_cast<std::chrono::microseconds>(timer::now() - time_points['q']).count();
+                auto current_time = timer::now();
+                timer_results['q'] = std::chrono::duration_cast<std::chrono::microseconds>(current_time - time_points['q']).count();
                 const uint32_t n_distinct_keys = freq_checkpoints[checkpoint_ind].size();
+                timer_results['q'] += n_distinct_keys * std::max(std::chrono::duration_cast<std::chrono::microseconds>(decompression_time_point - time_points['q']).count(), 0L);
                 aae /= n_distinct_keys;
                 are /= n_distinct_keys;
                 con /= n_distinct_keys;
@@ -278,6 +281,7 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
             case WorkloadIO::opcode::Flush: {
                 double aae = 0, are = 0, con = 0;
                 uint64_t total_overestimation = 0, total_underestimation = 0;
+                decompression_time_point = timer::now();
                 time_points['q'] = timer::now();
                 for (auto& it : freq_checkpoints[checkpoint_ind]) {
                     const int64_t est_val = query_f(sketch, it.first);
@@ -291,8 +295,10 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
                     total_underestimation -= std::min(diff, 0L);
                     con += est_val != real_val;
                 }
-                timer_results['q'] = std::chrono::duration_cast<std::chrono::microseconds>(timer::now() - time_points['q']).count();
+                auto current_time = timer::now();
+                timer_results['q'] = std::chrono::duration_cast<std::chrono::microseconds>(current_time - time_points['q']).count();
                 const uint32_t n_distinct_keys = freq_checkpoints[checkpoint_ind].size();
+                timer_results['q'] += n_distinct_keys * std::max(std::chrono::duration_cast<std::chrono::microseconds>(decompression_time_point - time_points['q']).count(), 0L);
                 aae /= n_distinct_keys;
                 are /= n_distinct_keys;
                 con /= n_distinct_keys;

@@ -14,9 +14,9 @@
 #include "MurmurHash.hpp"
 #include "util.hpp"
 
-#define COUNTER_PER_CACHE_LINE 75
-#define BASE_COUNTER_SIZE      5
-#define MORRIS_RNG_BIT_COUNT   5
+#define COUNTER_PER_CACHE_LINE 80
+#define BASE_COUNTER_SIZE      4
+#define MORRIS_RNG_BIT_COUNT   4
 
 static constexpr std::array<uint8_t, 128> setup_lookup_tables_word_update_byte_offset_lookup_table() {
     constexpr uint64_t word_size_bytes = sizeof(uint64_t);
@@ -213,7 +213,7 @@ public:
         const uint8_t *sketch = sketches.back();
         if constexpr (using_tof_hashing) {
             uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
-            uint32_t index = hash_tof(hash_value);
+            const uint32_t index = hash_tof(hash_value);
             hash_value >>= index_range;
             for (int i = 0; i < row_count; i++) {
                 uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
@@ -289,6 +289,11 @@ public:
 
     uint32_t GetStubLength() const {
         return base_counter_size;
+    }
+
+
+    uint32_t GetMorrisRNGBitCount() const {
+        return morris_rng_bit_count;
     }
 
 
@@ -555,11 +560,8 @@ private:
         const uint8_t *cache_line_ptr = sketch + cache_line_ind * cache_line_size_bytes;
 
         // Calculate the base counter
-        uint64_t res;
-        const uint32_t base_bit_pos = inter_cache_line_ind * base_counter_size + counter_per_cache_line;
-        const uint32_t base_byte_pos = base_bit_pos / 8;
-        memcpy(&res, cache_line_ptr + base_byte_pos, sizeof(res));
-        res = (res >> (base_bit_pos % 8)) & BITMASK(base_counter_size);
+        const uint64_t *read_word = reinterpret_cast<const uint64_t *>(cache_line_ptr + word_update_byte_offset[inter_cache_line_ind]);
+        uint64_t res = (read_word[0] >> word_update_shamt[inter_cache_line_ind]) & BITMASK(base_counter_size);
 
         // Take into account the extensions, if any
         const uint64_t *words = reinterpret_cast<const uint64_t *>(cache_line_ptr);

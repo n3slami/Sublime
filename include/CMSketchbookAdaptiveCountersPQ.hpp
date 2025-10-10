@@ -33,7 +33,7 @@ private:
                && default_stub_size <= max_stub_size);
     static constexpr uint32_t extension_size = 2;
     static constexpr uint32_t min_extension_count = 24, max_extension_count = 64;
-    static constexpr float max_spill_probability = 0.01, retune_spill_frac = 0.03;
+    static constexpr float max_spill_probability = 0.03, retune_spill_frac = 0.03;
     static constexpr auto bit_length_to_extension_count = setup_extension_len_lookup_table();
 
     struct Sketch {
@@ -524,9 +524,8 @@ private:
         const uint8_t *cache_line_ptr = sketch->sketch + cache_line_ind * cache_line_size_bytes;
 
         // Calculate the stub
-        uint64_t res;
-        memcpy(&res, cache_line_ptr + sketch->word_update_byte_offset[inter_cache_line_ind], sizeof(res));
-        res = (res >> sketch->word_update_shamt[inter_cache_line_ind]) & sketch->stub_mask;
+        const uint64_t *read_word = reinterpret_cast<const uint64_t *>(cache_line_ptr + sketch->word_update_byte_offset[inter_cache_line_ind]);
+        uint64_t res = (read_word[0] >> sketch->word_update_shamt[inter_cache_line_ind]) & BITMASK(sketch->stub_size);
 
         // Take into account the extensions, if any
         const uint64_t *words = reinterpret_cast<const uint64_t *>(cache_line_ptr);

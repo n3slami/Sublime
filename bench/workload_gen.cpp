@@ -44,7 +44,7 @@ static const std::vector<std::string> fdist_names = {"unif", "norm", "zipf", "re
 static const std::vector<std::string> fdist_default = {"zipf"};
 
 const uint64_t default_n_keys = 100'000'000;
-const uint64_t default_universe_size = 20'0000;
+const uint64_t default_universe_size = 100'000;
 const uint64_t default_n_deletes = 100'000'000;
 const uint64_t default_measurement_period = 1'000'000;
 
