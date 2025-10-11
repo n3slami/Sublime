@@ -108,8 +108,8 @@ def plot_accuracy(result_dir, output_dir):
     HEIGHT = 5.0
     YLIM_LOW = 0
     YLIM_HIGH = {"caida": 1e3, "kosarak": 3e2, "webdocs": 1e4}
-    YLIM_HIGH_ALT = 70
-    YTICKS_MINOR = {"caida": 10, "kosarak": 10, "webdocs": 10}
+    YLIM_HIGH_ALT = 1e7
+    YTICKS_MINOR = {"caida": 10, "kosarak": 5, "webdocs": 10}
 
     workloads = ["kosarak", "webdocs", "caida"]
     workload_subdir = Path("accuracy_bench")
@@ -139,6 +139,8 @@ def plot_accuracy(result_dir, output_dir):
         insert_data = {sketch: [] for sketch in sketches}
         query_data = {sketch: [] for sketch in sketches}
         for sketch, memory_footprint in itertools.product(sketches, memory_footprints[workload]):
+            if workload != "caida" and sketch == "CMSketchbookAdaptiveCountersPQNoTuningMorris":
+                continue
             file_path = result_dir / workload_subdir / Path(f"{sketch}_{memory_footprint}_{workload}.json")
             if not file_path.is_file():
                 continue
@@ -151,8 +153,9 @@ def plot_accuracy(result_dir, output_dir):
                 if sketch == "CMSketchbookAdaptiveCountersPQ":
                     tuning_params[workload][memory_footprint] = (result[-1]["counters_per_chunk"], result[-1]["stub_length"])
                 aae_data[sketch].append((result[-1]["size"], result[-1]["aae"]))
-                insert_data[sketch].append((result[-1]["size"], result[-1]["time_i"] / result[-1]["n_keys"] * 1000.0))
-                query_data[sketch].append((result[-1]["size"], result[-1]["time_q"] / result[-1]["n_unique_keys"] * 1000.0))
+                if workload != "caida" or sketch != "CMSketchbookAdaptiveCountersPQNoTuningMorris":
+                    insert_data[sketch].append((result[-1]["size"], result[-1]["time_i"] / result[-1]["n_keys"] * 1000.0))
+                    query_data[sketch].append((result[-1]["size"], result[-1]["time_q"] / result[-1]["n_unique_keys"] * 1000.0))
         for sketch in sketches:
             axes[0][i].plot(*zip(*aae_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
             axes[1][i].plot(*zip(*insert_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
@@ -164,12 +167,13 @@ def plot_accuracy(result_dir, output_dir):
             axes[i][j].autoscale_view()
             axes[i][j].margins(0.04)
     for i, workload in enumerate(workloads):
-        axes[0][i].set_yscale("symlog", linthresh=(1e01))
+        axes[0][i].set_yscale("symlog", linthresh=1e1)
         axes[0][i].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
         axes[0][i].set_ylim(YLIM_LOW, YLIM_HIGH[workload])
         axes[1][i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR[workload]))
         axes[2][i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR[workload]))
-        axes[2][i].set_ylim(YLIM_LOW, YLIM_HIGH_ALT)
+        axes[2][i].set_ylim(10, YLIM_HIGH_ALT)
+        axes[2][i].set_yscale("symlog", linthresh=1e1)
     fig.subplots_adjust(hspace=0.12, wspace=0.20)
 
     for i, workload in enumerate(workloads):
@@ -184,7 +188,7 @@ def plot_accuracy(result_dir, output_dir):
     axes[2][0].set_ylabel(f"Query Latency [ns]", fontsize=YLABEL_FONT_SIZE)
 
     legend_lines, legend_labels = axes[0][0].get_legend_handles_labels()
-    axes[0][0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.45, 1.55),
+    axes[0][0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.60, 1.55),
                       fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE)
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + ".pdf"), bbox_inches="tight", pad_inches=0.01)
 
@@ -214,8 +218,9 @@ def plot_skew(result_dir, output_dir):
     XLABEL_FONT_SIZE = 9.5
     HEIGHT = 1.45
     WIDTH = HEIGHT * WH_RATIO
-    YLIM_LOW = 1e1
+    YLIM_LOW = 1e0
     YLIM_HIGH = 5e3
+    YTICKS = [0, 1e1, 1e2, 1e3]
     CHAR_EXP_COUNT = 5
 
     char_exps = [f".{100 // CHAR_EXP_COUNT * i:0>2}" if i < CHAR_EXP_COUNT else "1.00" for i in range(CHAR_EXP_COUNT + 1)]
@@ -227,6 +232,7 @@ def plot_skew(result_dir, output_dir):
                 "Tailored",
                 "SALSACM", 
                 "Waving"]
+    CODINGCM_MEMORY_FOOTPRINT = 600000
     MEMORY_FOOTPRINT = 2 ** 20
 
     fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(WIDTH, HEIGHT))
@@ -234,9 +240,10 @@ def plot_skew(result_dir, output_dir):
     aae_data = {sketch: [] for sketch in sketches}
     for char_exp in char_exps:
         for sketch in sketches:
-            if char_exp < char_exps[2] and sketch == "CodingCM":
-                continue    # Remove the points where peeling fails
-            file_path = result_dir / workload_subdir / Path(f"{sketch}_{MEMORY_FOOTPRINT}_zipf_{char_exp}.json")
+            #if char_exp < char_exps[2] and sketch == "CodingCM":
+            #    continue    # Remove the points where peeling fails
+            memory_footprint = CODINGCM_MEMORY_FOOTPRINT if sketch == "CodingCM" else MEMORY_FOOTPRINT
+            file_path = result_dir / workload_subdir / Path(f"{sketch}_{memory_footprint}_zipf_{char_exp}.json")
             if not file_path.is_file():
                 continue
             with open(file_path, 'r') as result_file:
@@ -258,6 +265,7 @@ def plot_skew(result_dir, output_dir):
     ax.set_yscale("symlog", linthresh=(1e01))
     ax.yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
     ax.set_ylim(YLIM_LOW, YLIM_HIGH)
+    ax.set_yticks(YTICKS)
     ax.set_ylabel(f"AAE", fontsize=YLABEL_FONT_SIZE)
     ax.set_title(f"Memory={str(MEMORY_FOOTPRINT // 2 ** 20) + 'MB' if MEMORY_FOOTPRINT >= 2 ** 20 else str(MEMORY_FOOTPRINT // 2 ** 10) + 'KB'}", fontsize=TITLE_FONT_SIZE)
 
@@ -527,7 +535,10 @@ def plot_accuracy_unbiased(result_dir, output_dir):
     HEIGHT = 1.55
     YLIM_LOW = 0
     YLIM_HIGH = 1e3
-    YLIM_HIGH_ALT = 150
+    YLIM_LOW_INSERT = 0
+    YLIM_HIGH_INSERT = 150
+    YLIM_LOW_QUERY = 9e0
+    YLIM_HIGH_QUERY = 1e7
     YTICKS_MINOR = 10
 
     WORKLOAD = "caida"
@@ -577,9 +588,10 @@ def plot_accuracy_unbiased(result_dir, output_dir):
     axes[0].set_yscale("symlog", linthresh=(1e01))
     axes[0].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
     axes[0].set_ylim(YLIM_LOW, YLIM_HIGH)
-    for i in range(1, 3):
-        axes[i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR))
-        axes[i].set_ylim(YLIM_LOW, YLIM_HIGH_ALT)
+    axes[1].set_ylim(YLIM_LOW_INSERT, YLIM_HIGH_INSERT)
+    axes[1].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR))
+    axes[2].set_ylim(YLIM_LOW_QUERY, YLIM_HIGH_QUERY)
+    axes[2].set_yscale("symlog", linthresh=1e1)
     fig.subplots_adjust(hspace=0.15, wspace=0.35)
 
     for i in range(3):
@@ -593,7 +605,7 @@ def plot_accuracy_unbiased(result_dir, output_dir):
     axes[2].set_ylabel("Query Latency [ns]", fontsize=YLABEL_FONT_SIZE)
 
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
-    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.6, 1.38),
+    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.6, 1.30),
                       fancybox=True, shadow=False, ncol=6, fontsize=LEGEND_FONT_SIZE)
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + ".pdf"), bbox_inches="tight", pad_inches=0.01)
 
