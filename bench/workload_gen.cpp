@@ -208,7 +208,6 @@ void standard_string_bench(argparse::ArgumentParser& parser) {
 
 
 void expand_bench(argparse::ArgumentParser& parser) {
-    WorkloadIO wio(parser.get<std::string>("--output-file"), WorkloadIO::iomode::Write, true);
     const uint32_t n_keys = parser.get<uint64_t>("--n-keys");
     const uint64_t universe_size = parser.get<uint64_t>("--universe-size");
     const uint64_t seed = parser.get<uint64_t>("--seed");
@@ -216,20 +215,35 @@ void expand_bench(argparse::ArgumentParser& parser) {
 
     uint32_t fdist_ind = 0;
     std::vector<ByteString> keys;
+    std::vector<uint64_t> int_keys;
+    bool is_string = true;
     while (fdist_ind != std::numeric_limits<uint32_t>::max()) {
         auto [freq_dist, freq_dist_std, freq_dist_char_exp, key_file] = get_fdist(parser, fdist_ind);
 
         const uint32_t key_len_binary = parser.get<uint32_t>("--key-len-binary");
-        std::vector<ByteString> new_keys = read_data_binary(key_file, key_len_binary);
-        keys.insert(keys.end(), new_keys.begin(), new_keys.end());
+        if (key_len_binary > 0) {
+            std::vector<ByteString> new_keys = read_data_binary(key_file, key_len_binary);
+            keys.insert(keys.end(), new_keys.begin(), new_keys.end());
+        }
+        else {
+            std::vector<uint64_t> new_keys = read_data_text(key_file);
+            int_keys.insert(int_keys.end(), new_keys.begin(), new_keys.end());
+            is_string = false;
+        }
     }
     std::shuffle(keys.begin(), keys.end(), rng);
+    std::shuffle(int_keys.begin(), int_keys.end(), rng);
 
+    WorkloadIO wio(parser.get<std::string>("--output-file"), WorkloadIO::iomode::Write, is_string);
     const uint32_t measurement_period = parser.get<uint64_t>("--measurement-period");
-    for (uint32_t i = 0; i + measurement_period <= keys.size(); i += measurement_period) {
+    for (uint32_t i = 0; i + measurement_period <= std::max(keys.size(), int_keys.size()); i += measurement_period) {
         wio.Timer('i');
-        for (uint32_t j = i; j < i + measurement_period; j++)
-            wio.Insert(keys[j]);
+        for (uint32_t j = i; j < i + measurement_period; j++) {
+            if (is_string)
+                wio.Insert(keys[j]);
+            else
+                wio.Insert(int_keys[j]);
+        }
         wio.Timer('i');
         wio.Flush();
     }

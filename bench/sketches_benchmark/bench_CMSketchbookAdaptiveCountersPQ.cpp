@@ -6,12 +6,14 @@
 #include "CMSketchbookAdaptiveCountersPQ.hpp"
 
 static bool include_all_sketches = false;
+static uint32_t force_counter_count = 0;
 
 inline CMSketchbookAdaptiveCountersPQ *init_sketch(const uint32_t memory_budget,
                                                    const uint32_t row_count,
                                                    std::function<uint64_t(double)> f) {
-    const uint32_t counter_count = memory_budget / (static_cast<float>(CMSketchbookAdaptiveCountersPQ::cache_line_size_bytes) 
-                                                    / CMSketchbookAdaptiveCountersPQ::default_counter_per_cache_line);
+    const uint32_t counter_count = force_counter_count > 0 ? force_counter_count 
+                                                           : memory_budget / (static_cast<float>(CMSketchbookAdaptiveCountersPQ::cache_line_size_bytes) 
+                                                                           / CMSketchbookAdaptiveCountersPQ::default_counter_per_cache_line);
     const uint32_t col_count = (counter_count + row_count - 1) / row_count;
     const uint32_t seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()) \
                                 .time_since_epoch().count();
@@ -76,6 +78,8 @@ int main(int argc, char const *argv[]) {
     read_workload(parser.get<std::string>("--workload"));
 
     const uint32_t n_rows = parser.get<uint32_t>("--rows");
+    force_counter_count = parser.get<uint32_t>("--counter-count");
+
     const double size_function_power = parser.get<double>("--size-function-power");
     const double size_function_mult = parser.get<double>("--size-function-mult");
     auto f = [&](double x) { return size_function_power == 0.0 ? std::numeric_limits<uint64_t>::max()
