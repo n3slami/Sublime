@@ -35,6 +35,7 @@ private:
     static constexpr uint32_t min_extension_count = 24, max_extension_count = 64;
     static constexpr float max_spill_probability = 0.03, retune_spill_frac = 0.03;
     static constexpr auto bit_length_to_extension_count = setup_extension_len_lookup_table();
+    static constexpr uint64_t contraction_min_size = 1 << 12;
 
     struct Sketch {
         uint32_t counter_count;
@@ -73,13 +74,17 @@ public:
         n = 0;
         col_count = init_col_count;
         expansion_lim = expansion_f(col_count);
-        contraction_lim = 0;
-        init_col_count_lg = highbit_pos(init_col_count) + 1;
+        contraction_lim = expansion_f(col_count / 2);
+        init_col_count_lg = highbit_pos(init_col_count) + (__builtin_popcountll(init_col_count) > 1);
         col_count_lg = init_col_count_lg;
 
         init_counter_count = row_count * col_count;
+        if constexpr (using_tof_hashing) {
+            if (init_counter_count - (1ULL << highbit_pos(init_counter_count)) < row_count)
+                init_counter_count = (1ULL << highbit_pos(init_counter_count));
+        }
         counter_count = init_counter_count;
-        init_counter_count_lg = highbit_pos(counter_count) + 1;
+        init_counter_count_lg = highbit_pos(counter_count) + (__builtin_popcountll(counter_count) > 1);
         counter_count_lg = init_counter_count_lg;
 
         // Setup Prefetching
@@ -920,7 +925,6 @@ private:
         uint32_t counter_len_cnt[8 * sizeof(uint64_t)] = {};
         compute_counter_len_cnt(sketch, counter_len_cnt);
         auto [counter_per_cache_line, stub_size] = tune_params(counter_len_cnt);
-        std::cerr << "reallocating: counter_per_cache_line=" << counter_per_cache_line << " stub_size=" << stub_size << std::endl;
 
         if (counter_per_cache_line == sketch->counter_per_cache_line && stub_size == sketch->stub_size)
             counter_per_cache_line--;
@@ -963,19 +967,25 @@ private:
         uint32_t hash = original_hash & BITMASK(init_col_count_lg);
         hash = fast_reduce(hash << (8 * sizeof(uint32_t) - init_col_count_lg),
                             init_col_count);
-        hash += ((original_hash >> init_col_count_lg) & BITMASK(col_count_lg - init_col_count_lg))
-                * init_col_count;
+        if (col_count >= init_col_count)
+            hash += ((original_hash >> init_col_count_lg) & BITMASK(col_count_lg - init_col_count_lg))
+                    * init_col_count;
+        else
+            hash &= BITMASK(col_count_lg);
         return hash;
     }
 
 
     inline uint32_t hash_tof(const uint64_t original_hash) const {
-        const uint32_t hash_shamt = counter_count_lg - init_counter_count_lg;
+        const int32_t hash_shamt = counter_count_lg - init_counter_count_lg;
         uint32_t hash = (original_hash & index_mask) << bias_range;
-		int32_t tmp = hash - init_counter_count;
-		hash = (tmp < 0 ? hash : tmp);
-        hash += ((original_hash >> (init_counter_count_lg + bias_range * row_count)) & BITMASK(hash_shamt))
+        int32_t tmp = hash - init_counter_count;
+        hash = (tmp < 0 ? hash : tmp);
+        if (hash_shamt >= 0)
+            hash += ((original_hash >> (init_counter_count_lg + bias_range * row_count)) & BITMASK(hash_shamt))
                 * init_counter_count;
+        else
+            hash &= (index_mask >> (-hash_shamt)) << bias_range;
         return hash;
     }
 
@@ -1009,7 +1019,6 @@ private:
         FlushPrefetchQueue();
         contraction_lim = expansion_lim;
         expansion_lim = expansion_f(2 * col_count);
-        std::cerr << "expanding new expansion_lim=" << expansion_lim << " contraction_lim=" << contraction_lim << std::endl;
 
         Sketch *old_sketch = sketches.back();
         uint32_t counter_len_cnt[8 * sizeof(uint64_t)] = {};
@@ -1042,17 +1051,23 @@ private:
     inline void contract() {
         FlushPrefetchQueue();
         expansion_lim = contraction_lim;
-        contraction_lim = (n <= expansion_f(init_col_count) ? 0 : expansion_f(col_count / 4));
-
-        std::cerr << "contracting new contraction_lim=" << contraction_lim << std::endl;
+        contraction_lim = (col_count / 4 < contraction_min_size ? 0 : expansion_f(col_count / 4));
 
         Sketch *new_sketch = sketches.back();
         sketches.pop_back();
+        if (sketches.empty()) {
+            // Only allow contractions beyond the initial size if the initial size was a power of two
+            if constexpr (using_tof_hashing)
+                assert(__builtin_popcountll(init_counter_count) == 1);
+            else 
+                assert(__builtin_popcountll(init_col_count) == 1);
+            sketches.push_back(allocate_sketch(row_count, col_count / 2));
+        }
         Sketch *old_sketch = sketches.back();
-        col_count /= 2;
         col_count_lg--;
-        counter_count /= 2;
+        col_count /= 2;
         counter_count_lg--;
+        counter_count /= 2;
         if constexpr (using_tof_hashing) {
             for (int i = 0; i < counter_count; i++) {
                 const int64_t a = get_counter(new_sketch, i);

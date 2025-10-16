@@ -12,12 +12,13 @@ SKETCHES_WITH_EXPANSION_RATE_FUNCTION = {"CMSketchbookAdaptiveCountersPQ",
                                          "CMSketchbookAdaptiveCountersPQNoTuning",
                                          "CSketchbookAdaptiveCountersPQ"}
 
-def execute_benchmark(build_dir, output_base, workload_subdir, workload, filter, bpk, size_function_power=None, size_function_mult=None, override_size=None):
+def execute_benchmark(build_dir, output_base, workload_subdir, workload, filter, bpk, size_function_power=None, size_function_mult=None, force_counter_count=None, override_size=None):
     file_to_execute = f"bench/bench_{filter}"
     size_function_power_option = f"--size-function-power {size_function_power}" if size_function_power != None else ""
     size_function_mult_option = f"--size-function-mult {size_function_mult}" if size_function_mult != None else ""
-    command = f"{build_dir}/{file_to_execute} {bpk} -w {workload} {size_function_power_option} {size_function_mult_option} | tee {output_base}/{filter}_{bpk if override_size == None else override_size}_{workload.name}.json"
-    cli_message_command = f"<build_dir>/{file_to_execute} {bpk} -w <workload_dir>/{workload_subdir}/{workload.name} {size_function_power_option} {size_function_mult_option} | tee <output_dir>/{workload_subdir}/{filter}_{bpk if override_size == None else override_size}_{workload.name}.json"
+    counter_count_option = f"--counter-count {force_counter_count}" if force_counter_count != None else ""
+    command = f"{build_dir}/{file_to_execute} {bpk} -w {workload} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee {output_base}/{filter}_{bpk if override_size == None else override_size}_{workload.name}.json"
+    cli_message_command = f"<build_dir>/{file_to_execute} {bpk} -w <workload_dir>/{workload_subdir}/{workload.name} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee <output_dir>/{workload_subdir}/{filter}_{bpk if override_size == None else override_size}_{workload.name}.json"
 
     print(f"[ Executing: {cli_message_command} ]")
     subprocess.run(command, shell=True)
@@ -56,8 +57,12 @@ def skew_bench():
                 "StingyCM", "SALSACM", "CodingCM", "SEADCM", "Waving"]
     CODINGCM_MEMORY_FOOTPRINT = 600000
     MEMORY_FOOTPRINT = 2 ** 20
-    baseline_memory_footprints = [1697728, 1739136, 1658584, 1912352, 1658240, 1400592]
-    sketchbook_memory_footprints = [640000, 620000, 610000, 590000, 570000, 650000]
+    sketchbook_memory_footprints = {"0.00": 640000,
+                                    "0.20": 620000,
+                                    "0.40": 610000,
+                                    "0.80": 570000,
+                                    "1.60": MEMORY_FOOTPRINT,
+                                    "3.20": MEMORY_FOOTPRINT}
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
@@ -65,18 +70,18 @@ def skew_bench():
     workload_path = Path(f"{workload_dir}/synthetic")
     for workload in workload_path.iterdir():
         for sketch in sketches:
-            workload_ind = int(float(workload.name[5:]) * 5)
+            char_exp = workload.name[5:]
             if sketch in SKETCHES_WITH_VALE:
-                #execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, MEMORY_FOOTPRINT)
-                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, sketchbook_memory_footprints[workload_ind], override_size=MEMORY_FOOTPRINT)
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, sketchbook_memory_footprints[char_exp],
+                                  override_size=MEMORY_FOOTPRINT)
             else:
-                #execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, baseline_memory_footprints[workload_ind])
-                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, CODINGCM_MEMORY_FOOTPRINT if sketch == "CodingCM" else MEMORY_FOOTPRINT)
+                memory_footprint = CODINGCM_MEMORY_FOOTPRINT if sketch == "CodingCM" else MEMORY_FOOTPRINT
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint)
 
 
 def vale_tuning_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookAdaptiveCountersPQNoTuning"]
-    memory_footprints = [int(2 ** (16 + i / 5)) for i in range(25)]
+    counter_counts = [int(2 ** (16 + i / 5)) for i in range(25)]
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
@@ -85,15 +90,18 @@ def vale_tuning_bench():
     for workload in workload_path.iterdir():
         if "caida_repeat" not in workload.name:
             continue
-        for sketch, memory_footprint in itertools.product(sketches, memory_footprints):
-            execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint)
+        for sketch, counter_count in itertools.product(sketches, counter_counts):
+            execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, counter_count,
+                              force_counter_count=counter_count)
 
 
 def expansion_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters",
                 "StingyCM", "SALSACM", "CodingCM", "Waving"]
     OVERESTIMATE_MEMORY = 2 ** 24
-    UNDERESTIMATE_MEMORY = 210000
+    UNDERESTIMATE_MEMORY = 2 ** 15
+    size_function_powers = [0.5, 0.75, 1.0]
+    size_function_mults = [5.0, 50.0, 100.0]
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
@@ -102,10 +110,13 @@ def expansion_bench():
     for workload in workload_path.iterdir():
         for sketch in sketches:
             if sketch in SKETCHES_WITH_EXPANSION_RATE_FUNCTION:
-                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY, 1.0, 24)
+                for power, mult in zip(size_function_powers, size_function_mults):
+                    execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY, power, mult, 
+                                      override_size=f"{UNDERESTIMATE_MEMORY}_{power:.2f}")
             else:
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY)
-                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, OVERESTIMATE_MEMORY)
+                if sketch == "CMSketchbookFixedCounters":
+                    execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, OVERESTIMATE_MEMORY)
 
 
 def size_function_bench():
@@ -125,8 +136,8 @@ def size_function_bench():
 
 def contraction_bench():
     sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters"]
-    MEMORY_FOOTPRINT = 2 ** 23
-    START_MEMORY_FOOTPRINT = 210000
+    MEMORY_FOOTPRINT = 3947584
+    START_COUNTER_COUNT = 2 ** 22
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
@@ -135,7 +146,8 @@ def contraction_bench():
     for workload in workload_path.iterdir():
         for sketch in sketches:
             if sketch in SKETCHES_WITH_EXPANSION_RATE_FUNCTION:
-                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, START_MEMORY_FOOTPRINT, 1.0, 24)
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, MEMORY_FOOTPRINT, 
+                                  1.0, 20.0, force_counter_count=START_COUNTER_COUNT, override_size=START_COUNTER_COUNT)
             else:
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, MEMORY_FOOTPRINT)
 

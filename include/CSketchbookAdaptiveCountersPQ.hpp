@@ -74,12 +74,12 @@ public:
         col_count = init_col_count;
         expansion_lim = expansion_f(col_count);
         contraction_lim = 0;
-        init_col_count_lg = highbit_pos(init_col_count) + 1;
+        init_col_count_lg = highbit_pos(init_col_count) + (__builtin_popcountll(init_col_count) > 1);
         col_count_lg = init_col_count_lg;
 
         init_counter_count = row_count * col_count;
         counter_count = init_counter_count;
-        init_counter_count_lg = highbit_pos(counter_count) + 1;
+        init_counter_count_lg = highbit_pos(counter_count) + (__builtin_popcountll(counter_count) > 1);
         counter_count_lg = init_counter_count_lg;
 
         // Setup Prefetching

@@ -413,6 +413,12 @@ argparse::ArgumentParser init_parser(const std::string& name) {
             .default_value(static_cast<uint32_t>(3))
             .scan<'u', uint32_t>();
 
+    parser.add_argument("--counter-count")
+            .help("the number of counters in the sketch, fixes it in advance")
+            .nargs(1)
+            .default_value(static_cast<uint32_t>(0))
+            .scan<'u', uint32_t>();
+
     parser.add_argument("-w", "--workload")
             .help("pass the workload from file")
             .nargs(1);

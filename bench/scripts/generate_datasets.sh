@@ -43,25 +43,21 @@ fi
 OUT_PATH=$(realpath ./workloads)
 
 generate_synthetic() {
-    if ! test -f zipf_.00; then
-        echo "    [++] generating zipf_.00"
-        $WORKLOAD_GEN_PATH -t standard --fdist unif -o zipf_.00
+    if ! test -f zipf_0.00; then
+        echo "    [++] generating zipf_0.00"
+        $WORKLOAD_GEN_PATH -t standard --fdist unif -o zipf_0.00
     else 
-        echo "    [--] zipf_.00 already generated"
+        echo "    [--] zipf_0.00 already generated"
     fi
 
-    i=0
-    x=.20
-    while [ $i -le 4 ]
-    do
+    exps=("0.20" "0.40" "0.80" "1.60" "3.20")
+    for x in "${exps[@]}"; do
         if ! test -f zipf_${x}; then
             echo "    [++] generating zipf_${x}"
             $WORKLOAD_GEN_PATH -t standard --fdist zipf ${x} -o zipf_${x}
         else 
             echo "    [--] zipf_${x} already generated"
         fi
-        x=$(echo $x + 0.2 | bc)
-        i=$(($i + 1))
     done
 }
 
@@ -157,7 +153,12 @@ generate_expand() {
     else 
         echo "    [--] caida_expand already generated"
     fi
-
+    if ! test -f webdocs_expand; then
+        echo "    [++] generating webdocs_expand "
+        $WORKLOAD_GEN_PATH -t expand --measurement-period 5000000 --fdist real $REAL_DATASETS_PATH/webdocs.dat --key-len-binary 0 -o webdocs_expand
+    else 
+        echo "    [--] webdocs_expand already generated"
+    fi
 }
 
 generate_delete() {
