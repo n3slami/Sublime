@@ -14,9 +14,9 @@
 #include "MurmurHash.hpp"
 #include "util.hpp"
 
-#define COUNTER_PER_CACHE_LINE 80
-#define BASE_COUNTER_SIZE      4
-#define MORRIS_RNG_BIT_COUNT   4
+#define COUNTER_PER_CACHE_LINE @FIXED_TUNING_C@
+#define BASE_COUNTER_SIZE      @FIXED_TUNING_S@
+#define MORRIS_RNG_BIT_COUNT   @LOG_REC_INC_PROB@
 
 static constexpr std::array<uint8_t, 128> setup_lookup_tables_word_update_byte_offset_lookup_table() {
     constexpr uint64_t word_size_bytes = sizeof(uint64_t);
