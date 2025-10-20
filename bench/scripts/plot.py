@@ -25,7 +25,7 @@ import logging
 from numpy import floor
 
 rc_fonts = {"font.family": "serif",
-            "font.size": 9.5,
+            "font.size": 10,
             "text.usetex": True,
             "text.latex.preamble": r"\usepackage{mathpazo}"}
 matplotlib.rcParams.update(rc_fonts)
@@ -33,8 +33,13 @@ matplotlib.rcParams.update(rc_fonts)
 logging.getLogger().setLevel(logging.INFO)
 
 SKETCHES_STYLE_KWARGS = {"CMSketchbookAdaptiveCountersPQ": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS}"},
+                         "CMSketchbookAdaptiveCountersPQ_0.50": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS}"},
+                         "CMSketchbookAdaptiveCountersPQ_0.75": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS} ($\\alpha=0.75$)", "linestyle": "--"},
+                         "CMSketchbookAdaptiveCountersPQ_1.00": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS} ($\\alpha=1.0$)", "linestyle": ":"},
                          "CMSketchbookAdaptiveCountersPQNoTuning": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS} (Fixed Tuning)", "linestyle": ":"},
                          "CMSketchbookAdaptiveCountersPQNoTuningMorris": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS} (Prob. Inc.)", "linestyle": ":"},
+                         "VALE": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Adaptive"},
+                         "NoTuning": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Fixed", "linestyle": ":"},
                          "CMSketchbookFixedCounters": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CMS"},
                          "CMS_Over": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CMS (Overestimated)", "linestyle": ":"},
                          "StingyCM": {"marker": '^', "color": "black", "label": "Stingy\\textsubscript{CMS}"},
@@ -51,8 +56,6 @@ SKETCHES_STYLE_KWARGS = {"CMSketchbookAdaptiveCountersPQ": {"marker": 'v', "colo
                          "CodingC": {"marker": '4', "color": "C1", "label": "Coding\\textsubscript{CS}"},
                          "SEADC": {"marker": '+', "color": "darkkhaki", "label": "SEAD\\textsubscript{CS}"}}
 SKETCHES_STYLE_NO_MARKER_KWARGS = {"CMSketchbookAdaptiveCountersPQ": {"color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS}"},
-                                   "VALE": {"color": "fuchsia", "zorder": 12, "label": "Adaptive"},
-                                   "NoTuning": {"color": "fuchsia", "zorder": 12, "label": "Fixed", "linestyle": ":"},
                                    "CMSketchbookAdaptiveCountersPQNoTuning": {"color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS} (Fixed Tuning)", "linestyle": ":"},
                                    "CMSketchbookFixedCounters": {"color": "dimgray", "zorder": 10, "label": "CMS"},
                                    "StingyCM": {"color": "black", "label": "Stingy\\textsubscript{CMS}"},
@@ -74,10 +77,11 @@ DATASET_NAMES = {"unif": r"$\textsc{Uniform}$",
                  "real": r"$\textsc{Real}$", 
                  "caida": r"$\textsc{CAIDA}$",
                  "caida_expand": r"$\textsc{CAIDA}$",
+                 "webdocs_expand": r"$\textsc{WebDocs}$",
                  "caida_repeat": r"$\textsc{CAIDA}$",
                  "caida_delete": r"$\textsc{CAIDA}$",
                  "kosarak": r"$\textsc{Kosarak}$",
-                 "webdocs": r"$\textsc{Webdocs}$"}
+                 "webdocs": r"$\textsc{WebDocs}$"}
 N_UNIQUE_KEYS = {"caida": 1030031,
                  "kosarak": 41270,
                  "webdocs": 5267656}
@@ -100,16 +104,22 @@ def fix_file_contents(contents):
 
 
 def plot_accuracy(result_dir, output_dir):
-    TITLE_FONT_SIZE = 9.5
-    LEGEND_FONT_SIZE = 7
-    YLABEL_FONT_SIZE = 9.5
-    XLABEL_FONT_SIZE = 9.5
-    WIDTH = 7.5
+    TITLE_FONT_SIZE = 10
+    LEGEND_FONT_SIZE = 9
+    YLABEL_FONT_SIZE = 10
+    XLABEL_FONT_SIZE = 10
+    WIDTH = 7.75
     HEIGHT = 5.0
     YLIM_LOW = 0
     YLIM_HIGH = {"caida": 1e3, "kosarak": 3e2, "webdocs": 1e4}
-    YLIM_HIGH_ALT = 1e7
-    YTICKS_MINOR = {"caida": 10, "kosarak": 5, "webdocs": 10}
+    YLIM_LOW_QUERY = 1e1
+    YLIM_HIGH_QUERY = 1.04e2
+    YLIM_LOW_QUERY_OUTLIER = 1.8e6
+    YLIM_HIGH_QUERY_OUTLIER = 1e8
+    CUT_LINES_MULT = .5  # Proportion of vertical to horizontal extent of the cut lines
+    CUT_LINES_D = .5  # Proportion of vertical to horizontal extent of the cut lines
+    YTICKS_MINOR_INSERT = {"caida": 10, "kosarak": 5, "webdocs": 10}
+    YTICKS_MINOR_QUERY = {"caida": 5, "kosarak": 5, "webdocs": 5}
 
     workloads = ["kosarak", "webdocs", "caida"]
     workload_subdir = Path("accuracy_bench")
@@ -131,7 +141,8 @@ def plot_accuracy(result_dir, output_dir):
     all_memory_footprints = list(sorted(set(all_memory_footprints)))
     memory_footprint_labels = {workload: [f"${2 ** (i - 20)}$" if i >= 20 else f"$1/{2 ** (20 - i)}$" for i in memory_powers[workload]] for workload in workloads}
 
-    fig, axes = plt.subplots(nrows=3, ncols=3, sharex="col", figsize=(WIDTH, HEIGHT))
+    fig, axes = plt.subplots(nrows=4, ncols=3, sharex="col", figsize=(WIDTH, HEIGHT),
+                             gridspec_kw=dict(width_ratios=[1, 1, 1], height_ratios=[1, 1, 0.2, 0.75]))
 
     tuning_params = {workload: {} for workload in workloads}
     for i, workload in enumerate(workloads):
@@ -160,6 +171,7 @@ def plot_accuracy(result_dir, output_dir):
             axes[0][i].plot(*zip(*aae_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
             axes[1][i].plot(*zip(*insert_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
             axes[2][i].plot(*zip(*query_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
+            axes[3][i].plot(*zip(*query_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
 
     for i in range(3):
         for j in range(len(workloads)):
@@ -170,11 +182,12 @@ def plot_accuracy(result_dir, output_dir):
         axes[0][i].set_yscale("symlog", linthresh=1e1)
         axes[0][i].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
         axes[0][i].set_ylim(YLIM_LOW, YLIM_HIGH[workload])
-        axes[1][i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR[workload]))
-        axes[2][i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR[workload]))
-        axes[2][i].set_ylim(10, YLIM_HIGH_ALT)
-        axes[2][i].set_yscale("symlog", linthresh=1e1)
-    fig.subplots_adjust(hspace=0.12, wspace=0.20)
+        axes[1][i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR_INSERT[workload]))
+        axes[2][i].set_ylim(YLIM_LOW_QUERY_OUTLIER, YLIM_HIGH_QUERY_OUTLIER)
+        axes[2][i].set_yscale("log")
+        axes[3][i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR_QUERY[workload]))
+        axes[3][i].set_ylim(YLIM_LOW_QUERY, YLIM_HIGH_QUERY)
+    fig.subplots_adjust(hspace=0.12, wspace=0.25)
 
     for i, workload in enumerate(workloads):
         axes[0][i].set_title(DATASET_NAMES[workload], fontsize=TITLE_FONT_SIZE)
@@ -183,12 +196,21 @@ def plot_accuracy(result_dir, output_dir):
         axes[-1][i].set_xticks(memory_footprints[workload])
         axes[-1][i].set_xticklabels(memory_footprint_labels[workload], fontsize=XLABEL_FONT_SIZE)
         axes[-1][i].set_xlim(memory_footprints[workload][0] / 1.1, 1.1 * memory_footprints[workload][-1])
-    axes[0][0].set_ylabel(f"AAE", fontsize=YLABEL_FONT_SIZE)
-    axes[1][0].set_ylabel(f"Insert Latency [ns]", fontsize=YLABEL_FONT_SIZE)
-    axes[2][0].set_ylabel(f"Query Latency [ns]", fontsize=YLABEL_FONT_SIZE)
+        axes[2][i].spines.bottom.set_visible(False)
+        axes[2][i].get_xaxis().set_visible(False)
+        axes[3][i].spines.top.set_visible(False)
+        cut_line_kwargs = dict(marker=[(-1, -CUT_LINES_D), (1, CUT_LINES_D)], markersize=5,
+                               linestyle="none", color='k', mec='k', mew=1, clip_on=False)
+        axes[2][i].plot([0, 1], [0, 0], transform=axes[2][i].transAxes, **cut_line_kwargs)
+        axes[3][i].plot([0, 1], [1, 1], transform=axes[3][i].transAxes, **cut_line_kwargs)
+    axes[0][0].set_ylabel("AAE", fontsize=YLABEL_FONT_SIZE)
+    axes[1][0].set_ylabel("Insert Latency [ns]", fontsize=YLABEL_FONT_SIZE)
+    axes[1][0].yaxis.set_label_coords(-0.20, 0.10 * HEIGHT)
+    axes[3][0].set_ylabel("Query Latency [ns]", fontsize=YLABEL_FONT_SIZE)
+    axes[3][0].yaxis.set_label_coords(-0.20, 0.13 * HEIGHT)
 
     legend_lines, legend_labels = axes[0][0].get_legend_handles_labels()
-    axes[0][0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.60, 1.55),
+    axes[0][0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.35, 1.62),
                       fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE)
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + ".pdf"), bbox_inches="tight", pad_inches=0.01)
 
@@ -212,10 +234,10 @@ def plot_accuracy(result_dir, output_dir):
 
 
 def plot_skew(result_dir, output_dir):
-    TITLE_FONT_SIZE = 9.5
-    LEGEND_FONT_SIZE = 7
-    YLABEL_FONT_SIZE = 9.5
-    XLABEL_FONT_SIZE = 9.5
+    TITLE_FONT_SIZE = 10
+    LEGEND_FONT_SIZE = 9
+    YLABEL_FONT_SIZE = 10
+    XLABEL_FONT_SIZE = 10
     HEIGHT = 1.45
     WIDTH = HEIGHT * WH_RATIO
     YLIM_LOW = 1e0
@@ -266,7 +288,7 @@ def plot_skew(result_dir, output_dir):
     ax.yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
     ax.set_ylim(YLIM_LOW, YLIM_HIGH)
     ax.set_yticks(YTICKS)
-    ax.set_ylabel(f"AAE", fontsize=YLABEL_FONT_SIZE)
+    ax.set_ylabel("AAE", fontsize=YLABEL_FONT_SIZE)
     ax.set_title(f"Memory={str(MEMORY_FOOTPRINT // 2 ** 20) + 'MB' if MEMORY_FOOTPRINT >= 2 ** 20 else str(MEMORY_FOOTPRINT // 2 ** 10) + 'KB'}", fontsize=TITLE_FONT_SIZE)
 
     legend_lines, legend_labels = ax.get_legend_handles_labels()
@@ -276,10 +298,10 @@ def plot_skew(result_dir, output_dir):
 
 
 def plot_vale_tuning(result_dir, output_dir):
-    TITLE_FONT_SIZE = 9.5
-    LEGEND_FONT_SIZE = 7
-    YLABEL_FONT_SIZE = 9.5
-    XLABEL_FONT_SIZE = 9.5
+    TITLE_FONT_SIZE = 10
+    LEGEND_FONT_SIZE = 9
+    YLABEL_FONT_SIZE = 10
+    XLABEL_FONT_SIZE = 10
     HEIGHT = 1.45
     WIDTH = HEIGHT * WH_RATIO
     YTICKS_MINOR = 0.5
@@ -312,7 +334,7 @@ def plot_vale_tuning(result_dir, output_dir):
                 result = json.loads(json_string)
                 mem_data[sketch].append((actual_counter_count, result[-1]["size"] / (2 ** 20)))
     for sketch in sketches:
-        ax.plot(*zip(*mem_data[sketch]), **SKETCHES_STYLE_NO_MARKER_KWARGS[label_conv[sketch]], **LINES_STYLE)
+        ax.plot(*zip(*mem_data[sketch]), **SKETCHES_STYLE_KWARGS[label_conv[sketch]], markevery=[2, 3, 4], **LINES_STYLE)
 
     ax.autoscale_view()
     ax.margins(0.04)
@@ -331,17 +353,131 @@ def plot_vale_tuning(result_dir, output_dir):
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + ".pdf"), bbox_inches="tight", pad_inches=0.01)
 
 
-def plot_expansion(result_dir, output_dir):
-    TITLE_FONT_SIZE = 9.5
-    LEGEND_FONT_SIZE = 7
-    YLABEL_FONT_SIZE = 9.5
-    XLABEL_FONT_SIZE = 9.5
+def plot_skew_vale_tuning(result_dir, output_dir):
+    TITLE_FONT_SIZE = 10
+    LEGEND_FONT_SIZE = 9
+    YLABEL_FONT_SIZE = 10
+    XLABEL_FONT_SIZE = 10
     HEIGHT = 1.45
+    WH_RATIO = 2.50 / 1.6
     WIDTH = 2 * HEIGHT * WH_RATIO
-    XTICKS = [2e5, 1e6, 1e7]
-    XTICK_LABELS = ["$2 \\cdot 10^5$", "$10^6$", "$10^7$"]
+    YTICKS_MINOR = 0.5
+    YLIM_LOW = 1e0
+    YLIM_HIGH = 5e3
+    YTICKS = [10 ** i for i in range(-2, 6)]
 
-    WORKLOAD = "caida_expand"
+    char_exps = ["0.00", "0.20", "0.40", "0.80", "1.60", "3.20"]
+    workload_subdir = Path("skew_bench")
+    sketches = ["CMSketchbookAdaptiveCountersPQ",
+                "CMSketchbookFixedCounters",
+                "StingyCM",
+                "CodingCM",
+                "Tailored",
+                "SALSACM", 
+                "Waving"]
+    CODINGCM_MEMORY_FOOTPRINT = 600000
+    MEMORY_FOOTPRINT = 2 ** 20
+
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(WIDTH, HEIGHT))
+
+    aae_data = {sketch: [] for sketch in sketches}
+    for char_exp in char_exps:
+        for sketch in sketches:
+            memory_footprint = CODINGCM_MEMORY_FOOTPRINT if sketch == "CodingCM" else MEMORY_FOOTPRINT
+            file_path = result_dir / workload_subdir / Path(f"{sketch}_{memory_footprint}_zipf_{char_exp}.json")
+            if not file_path.is_file():
+                continue
+            with open(file_path, 'r') as result_file:
+                contents = result_file.read()
+                if len(contents) == 0:
+                    continue
+                json_string = "[" + fix_file_contents(contents[:-2]) + "]"
+                result = json.loads(json_string)
+                x_pos = 0 if float(char_exp) == 0 else (math.log(float(char_exp) * 5, 2) + 1) * (3.2 / 4) ** 2
+                aae_data[sketch].append((x_pos, max(0.01, result[-1]["aae"])))
+    for sketch in sketches:
+        axes[0].plot(*zip(*aae_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
+
+    WORKLOAD = "caida_repeat"
+    workload_subdir = Path("vale_tuning_bench")
+    sketches = ["CMSketchbookAdaptiveCountersPQ",
+                "CMSketchbookAdaptiveCountersPQNoTuning"]
+    label_conv = {"CMSketchbookAdaptiveCountersPQ": "VALE",
+                  "CMSketchbookAdaptiveCountersPQNoTuning": "NoTuning"}
+    counter_counts = [int(2 ** (16 + i / 5)) for i in range(26)]
+    counter_powers = [i for i in range(16, 22)]
+    counter_power_labels = ["$2^{" + str(i) + "}$" for i in counter_powers]
+    init_counter_per_cache_line = [68, 63]
+
+    mem_data = {sketch: [] for sketch in sketches}
+    for counter_count in counter_counts:
+        for i, sketch in enumerate(sketches):
+            file_path = result_dir / workload_subdir / Path(f"{sketch}_{counter_count}_{WORKLOAD}.json")
+            if not file_path.is_file():
+                continue
+            with open(file_path, 'r') as result_file:
+                contents = result_file.read()
+                if len(contents) == 0:
+                    continue
+                json_string = "[" + fix_file_contents(contents[:-2]) + "]"
+                result = json.loads(json_string)
+                mem_data[sketch].append((counter_count, result[-1]["size"] / (2 ** 20)))
+    for sketch in sketches:
+        axes[1].plot(*zip(*mem_data[sketch]), **SKETCHES_STYLE_KWARGS[label_conv[sketch]], **LINES_STYLE,
+                     markevery=[i for i in range(0, len(mem_data[sketch]), 5)])
+
+    fig.subplots_adjust(wspace=0.30)
+    for ax in axes:
+        ax.autoscale_view()
+        ax.margins(0.04)
+
+    axes[0].set_xlabel(f"{DATASET_NAMES['zipf']} Exponent", fontsize=XLABEL_FONT_SIZE)
+    axes[0].set_xticks([3.2 * i / (len(char_exps) - 1) for i in range(len(char_exps))], [float(char_exp) for char_exp in char_exps])
+    axes[0].set_yscale("log")
+    axes[0].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
+    #axes[0].set_ylim(YLIM_LOW, YLIM_HIGH)
+    axes[0].set_yticks(YTICKS)
+    axes[0].set_ylabel("AAE", fontsize=YLABEL_FONT_SIZE)
+    axes[0].set_title(f"Memory={str(MEMORY_FOOTPRINT // 2 ** 20) + 'MB' if MEMORY_FOOTPRINT >= 2 ** 20 else str(MEMORY_FOOTPRINT // 2 ** 10) + 'KB'}", fontsize=TITLE_FONT_SIZE)
+
+    axes[1].set_xlabel("No. of Counters", fontsize=XLABEL_FONT_SIZE)
+    axes[1].set_xscale("log")
+    axes[1].xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+    axes[1].set_xticks([2 ** power for power in counter_powers], counter_power_labels)
+    axes[1].set_ylabel("Memory [MB]", fontsize=YLABEL_FONT_SIZE)
+    axes[1].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR))
+    axes[1].set_title(f"{DATASET_NAMES[WORKLOAD]}", fontsize=TITLE_FONT_SIZE)
+
+    legend_lines_skew, legend_labels_skew = axes[0].get_legend_handles_labels()
+    legend_lines_vale_tuning, legend_labels_vale_tuning = axes[1].get_legend_handles_labels()
+    #legend_lines = legend_lines_skew + [matplotlib.lines.Line2D([0, 1], [0, 1], color="white", alpha=0)] + legend_lines_vale_tuning
+    #legend_labels = legend_labels_skew + ["", ] + legend_labels_vale_tuning
+    legend_lines = legend_lines_skew + legend_lines_vale_tuning
+    legend_labels = legend_labels_skew + legend_labels_vale_tuning
+    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.25, 1.8),
+                   fancybox=True, shadow=False, ncol=3, fontsize=LEGEND_FONT_SIZE)
+
+    legend_sep = matplotlib.lines.Line2D([5.025, 5.025], [3e7, 5.25e11], linestyle=':', color="grey")
+    legend_sep.set_clip_on(False)
+    axes[0].add_line(legend_sep)
+
+    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + ".pdf"), bbox_inches="tight", pad_inches=0.01)
+
+
+def plot_expansion(result_dir, output_dir):
+    TITLE_FONT_SIZE = 10
+    LEGEND_FONT_SIZE = 9
+    YLABEL_FONT_SIZE = 10
+    XLABEL_FONT_SIZE = 10
+    HEIGHT = 1.45
+    WH_RATIO = 2.65 / 1.6
+    WIDTH = 2 * HEIGHT * WH_RATIO
+    XTICKS = [5e6, 1e7, 1e8]
+    XTICK_LABELS = ["$5 \\cdot 10^6$", "$10^7$", "$10^8$"]
+    YTICKS = [10 ** i for i in range(6)]
+    MEMORY_YTICKS = [10 ** i for i in range(-4, 1)]
+
+    WORKLOAD = "webdocs_expand"
     workload_subdir = Path("expansion_bench")
     sketches = ["CMSketchbookAdaptiveCountersPQ",
                 "CMSketchbookFixedCounters",
@@ -351,22 +487,37 @@ def plot_expansion(result_dir, output_dir):
                 "SALSACM", 
                 "Waving"]
     OVERESTIMATING_SKETCH = "CMS_Over"
-    memory_footprints = [2 ** 18, 2 ** 24]
+    memory_footprints = [2 ** 15, 2 ** 24]
+    size_function_powers = [0.5, 0.75, 1.0]
+    sketchbook_power_names = [f"{sketches[0]}_{power:.2f}" for power in size_function_powers]
 
     fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(WIDTH, HEIGHT))
 
-    for memory_footprint in memory_footprints:
-        aae_data = {sketch: [] for sketch in sketches + [OVERESTIMATING_SKETCH, ]}
-        mem_data = {sketch: [] for sketch in sketches + [OVERESTIMATING_SKETCH, ]}
-        for sketch in sketches:
-            file_path = result_dir / workload_subdir / Path(f"{sketch}_{memory_footprint}_{WORKLOAD}.json")
+    aae_data = {sketch: [] for sketch in sketches[1:] + [OVERESTIMATING_SKETCH, ] + sketchbook_power_names}
+    mem_data = {sketch: [] for sketch in sketches[1:] + [OVERESTIMATING_SKETCH, ] + sketchbook_power_names}
+    for sketch in sketches + [OVERESTIMATING_SKETCH, ]:
+        memory_footprint = memory_footprints[-1] if sketch == OVERESTIMATING_SKETCH else memory_footprints[0]
+        if sketch == "CMSketchbookAdaptiveCountersPQ":
+            for power in size_function_powers:
+                file_path = result_dir / workload_subdir / Path(f"{sketch}_{memory_footprint}_{power:.2f}_{WORKLOAD}.json")
+                print(file_path)
+                if not file_path.is_file():
+                    continue
+                with open(file_path, 'r') as result_file:
+                    contents = result_file.read()
+                    if len(contents) == 0:
+                        continue
+                    json_string = "[" + fix_file_contents(contents[:-2]) + "]"
+                    results = json.loads(json_string)
+                    results = [results[2 ** i - 1] for i in range(math.ceil(math.log(len(results), 2)) - 1)] + results[-1:]
+                    for result in results:
+                        aae_data[sketch + f"_{power:.2f}"].append((result["n_keys"], max(result["aae"], 1)))
+                        mem_data[sketch + f"_{power:.2f}"].append((result["n_keys"], result["size"] / result["n_keys"]))
+        else:
+            sketch_alias = sketch if sketch != OVERESTIMATING_SKETCH else "CMSketchbookFixedCounters"
+            file_path = result_dir / workload_subdir / Path(f"{sketch_alias}_{memory_footprint}_{WORKLOAD}.json")
             if not file_path.is_file():
                 continue
-            if memory_footprint == memory_footprints[-1]:
-                if sketch == "CMSketchbookFixedCounters":
-                    sketch = OVERESTIMATING_SKETCH
-                else:
-                    continue
             with open(file_path, 'r') as result_file:
                 contents = result_file.read()
                 if len(contents) == 0:
@@ -376,10 +527,19 @@ def plot_expansion(result_dir, output_dir):
                 results = [results[2 ** i - 1] for i in range(math.ceil(math.log(len(results), 2)) - 1)] + results[-1:]
                 for result in results:
                     aae_data[sketch].append((result["n_keys"], max(result["aae"], 1)))
-                    mem_data[sketch].append((result["n_keys"], result["size"] / 2 ** 20))
-        for sketch in sketches + [OVERESTIMATING_SKETCH, ]:
-            axes[0].plot(*zip(*aae_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
-            axes[1].plot(*zip(*mem_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
+                    mem_data[sketch].append((result["n_keys"], result["size"] / result["n_keys"]))
+    for sketch in sketchbook_power_names + [sketches[1], OVERESTIMATING_SKETCH] + sketches[2:]:
+        axes[0].plot(*zip(*aae_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
+        axes[1].plot(*zip(*mem_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
+
+    annotation_off_x = [1 / 1.77 for i in range(len(sketchbook_power_names))]
+    annotation_off_y = [1 / 4.5, 1 / 3.4, 1 / 3]
+    for i, (power, sketch) in enumerate(zip(size_function_powers, sketchbook_power_names)):
+        axes[0].annotate(power, (aae_data[sketch][-1][0] * annotation_off_x[i], aae_data[sketch][-1][1] * annotation_off_y[i]), fontsize=0.8*XLABEL_FONT_SIZE)
+    annotation_off_x = [1 / 2 for i in range(len(sketchbook_power_names))]
+    annotation_off_y = [2, 1.1, 1.5]
+    for i, (power, sketch) in enumerate(zip(size_function_powers, sketchbook_power_names)):
+        axes[1].annotate(power, (mem_data[sketch][-1][0] * annotation_off_x[i], mem_data[sketch][-1][1] * annotation_off_y[i]), fontsize=0.8*XLABEL_FONT_SIZE)
 
     for ax in axes.flatten():
         ax.autoscale_view()
@@ -387,31 +547,31 @@ def plot_expansion(result_dir, output_dir):
         ax.set_xlabel(f"No. of Keys", fontsize=XLABEL_FONT_SIZE)
         ax.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
         ax.set_xscale("log")
-        ax.set_xticks(XTICKS, XTICK_LABELS)
-    axes[0].set_yscale("log")
-    axes[0].set_ylabel(f"{DATASET_NAMES[WORKLOAD]} \\\\" + "\\hspace*{0.65cm} AAE", fontsize=YLABEL_FONT_SIZE)
-    axes[1].yaxis.set_label_position("right")
-    axes[1].yaxis.tick_right()
-    axes[1].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(1))
-    axes[1].set_ylim(memory_footprints[0] / 2 ** 20 / 1.5, memory_footprints[1] / 2 ** 20 * 1.5)
-    axes[1].set_ylabel("Memory [MB]", fontsize=YLABEL_FONT_SIZE)
-    fig.subplots_adjust(hspace=0.15, wspace=0.05)
+        #ax.set_xticks(XTICKS, XTICK_LABELS)
+        ax.set_yscale("log")
+        ax.yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
+    axes[0].set_ylim(YTICKS[0] / 2, 2 * YTICKS[-1])
+    axes[0].set_yticks(YTICKS)
+    axes[0].set_ylabel("AAE", fontsize=YLABEL_FONT_SIZE)
+    axes[1].set_yticks(MEMORY_YTICKS)
+    axes[1].set_ylabel("Memory [B/Key]", fontsize=YLABEL_FONT_SIZE)
+    fig.subplots_adjust(hspace=0.15, wspace=0.45)
 
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
-    legend_lines = legend_lines[0:2] + [legend_lines[-1], ] + legend_lines[2:-1]
-    legend_labels = legend_labels[0:2] + [legend_labels[-1], ] + legend_labels[2:-1]
-    axes[1].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-1.45, 1.4),
-                   fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE)
+    legend_lines = [legend_lines[0], ] + legend_lines[3:]
+    legend_labels = [legend_labels[0], ] + legend_labels[3:]
+    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.33, 1.5),
+                   fancybox=True, shadow=False, ncol=3, fontsize=LEGEND_FONT_SIZE)
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + ".pdf"), bbox_inches="tight", pad_inches=0.01)
 
 
 def plot_size_function(result_dir, output_dir):
-    TITLE_FONT_SIZE = 9.5
-    LEGEND_FONT_SIZE = 7
-    YLABEL_FONT_SIZE = 9.5
-    XLABEL_FONT_SIZE = 9.5
+    TITLE_FONT_SIZE = 10
+    LEGEND_FONT_SIZE = 9
+    YLABEL_FONT_SIZE = 10
+    XLABEL_FONT_SIZE = 10
     HEIGHT = 1.45
-    WIDTH = HEIGHT * WH_RATIO
+    WIDTH = 2 * HEIGHT * WH_RATIO
     ANNOTATION_IND = -2
     XTICKS = [2e5, 1e6, 1e7]
     XTICK_LABELS = ["$2 \\cdot 10^5$", "$10^6$", "$10^7$"]
@@ -423,12 +583,14 @@ def plot_size_function(result_dir, output_dir):
     SKETCH = "CMSketchbookAdaptiveCountersPQ"
     size_function_powers = [i / 4 for i in range(5)]
     annotations = [f"${power}$" for power in size_function_powers]
-    pos_deltas = [(-1e6, 0.5e3), (3e6, -3.5e2), (3e6, -2e2), (3e6, 1.5e1), (3e6, 5e-1)]
+    aae_pos_deltas = [(-1e6, 5e2), (2.5e6, -3.5e2), (2.5e6, -2e2), (2.5e6, 1.5e1), (2.5e6, 5e-1)]
+    mem_pos_deltas = [(2.5e6, -1.1e-2), (2.5e6, -4.0e-2), (2.5e6, 2.5e-2), (2.5e6, 1e-1), (-5e5, 2e0)]
     size_function_power_labels = [f"{power:.2f}" for power in size_function_powers]
 
-    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(WIDTH, HEIGHT))
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(WIDTH, HEIGHT))
 
     aae_data = {f"{SKETCH}_{power_label}": [] for power_label in size_function_power_labels}
+    mem_data = {f"{SKETCH}_{power_label}": [] for power_label in size_function_power_labels}
     for power_label in size_function_power_labels:
         sketch = f"{SKETCH}_{power_label}"
         file_path = result_dir / workload_subdir / Path(f"{sketch}_{WORKLOAD}.json")
@@ -441,45 +603,53 @@ def plot_size_function(result_dir, output_dir):
             json_string = "[" + fix_file_contents(contents[:-2]) + "]"
             results = json.loads(json_string)
             results = [results[2 ** i - 1] for i in range(math.ceil(math.log(len(results), 2)))]
-            if power_label == "0.50":
-                results[-1]["aae"] *= 0.9
             for result in results:
                 aae_data[sketch].append((result["n_keys"], result["aae"]))
-    for power_label, annotation, pos_delta in zip(size_function_power_labels, annotations, pos_deltas):
+                mem_data[sketch].append((result["n_keys"], result["size"] / 2 ** 20))
+    for power_label, annotation, aae_pos_delta, mem_pos_delta in zip(size_function_power_labels, annotations, aae_pos_deltas, mem_pos_deltas):
         sketch = f"{SKETCH}_{power_label}"
-        ax.plot(*zip(*aae_data[sketch]), **SKETCHES_STYLE_NO_MARKER_KWARGS[SKETCH], **LINES_STYLE)
-        ax.annotate(annotation, (aae_data[sketch][ANNOTATION_IND][0] + pos_delta[0], aae_data[sketch][ANNOTATION_IND][1] + pos_delta[1]), fontsize=0.8*XLABEL_FONT_SIZE)
+        axes[0].plot(*zip(*aae_data[sketch]), **SKETCHES_STYLE_NO_MARKER_KWARGS[SKETCH], **LINES_STYLE)
+        axes[0].annotate(annotation, (aae_data[sketch][ANNOTATION_IND][0] + aae_pos_delta[0], aae_data[sketch][ANNOTATION_IND][1] + aae_pos_delta[1]), fontsize=0.8*XLABEL_FONT_SIZE)
+        axes[1].plot(*zip(*mem_data[sketch]), **SKETCHES_STYLE_NO_MARKER_KWARGS[SKETCH], **LINES_STYLE)
+        axes[1].annotate(annotation, (mem_data[sketch][ANNOTATION_IND][0] + mem_pos_delta[0], mem_data[sketch][ANNOTATION_IND][1] + mem_pos_delta[1]), fontsize=0.8*XLABEL_FONT_SIZE)
+    fig.subplots_adjust(hspace=0.15, wspace=0.05)
 
-    ax.autoscale_view()
-    ax.margins(0.04)
+    for ax in axes:
+        ax.autoscale_view()
+        ax.margins(0.04)
+        ax.set_xlabel(f"No. of Keys", fontsize=XLABEL_FONT_SIZE)
+        ax.set_xscale("log")
+        ax.set_xticks(XTICKS, XTICK_LABELS)
+        ax.set_yscale("log")
 
-    ax.set_xlabel(f"No. of Keys", fontsize=XLABEL_FONT_SIZE)
-    ax.set_xscale("log")
-    ax.set_xticks(XTICKS, XTICK_LABELS)
-    ax.set_ylabel(f"AAE", fontsize=YLABEL_FONT_SIZE)
-    ax.set_yscale("log")
-    ax.set_yticks(YTICKS, YTICK_LABELS)
-    ax.set_title(f"{DATASET_NAMES[WORKLOAD]}", fontsize=TITLE_FONT_SIZE)
+    axes[0].yaxis.set_label_coords(-0.26, HEIGHT / 2)
+    axes[0].set_ylabel("AAE", fontsize=YLABEL_FONT_SIZE)
+    axes[0].set_yticks(YTICKS, YTICK_LABELS)
+    axes[1].set_ylabel("Memory [MB]", fontsize=YLABEL_FONT_SIZE)
+    axes[1].yaxis.set_label_position("right")
+    axes[1].yaxis.tick_right()
 
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + ".pdf"), bbox_inches="tight", pad_inches=0.01)
 
 
 def plot_contraction(result_dir, output_dir):
-    TITLE_FONT_SIZE = 9.5
-    LEGEND_FONT_SIZE = 7
-    YLABEL_FONT_SIZE = 9.5
-    XLABEL_FONT_SIZE = 9.5
+    TITLE_FONT_SIZE = 10
+    LEGEND_FONT_SIZE = 9
+    YLABEL_FONT_SIZE = 10
+    XLABEL_FONT_SIZE = 10
     WIDTH = 5.2
     HEIGHT = 1.45
+    WH_RATIO = 2.66 / 1.6
     WIDTH = 2 * HEIGHT * WH_RATIO
     XLIM_LOW = 1
-    XLIM_HIGH = 2.8e7
+    XLIM_HIGH = 4e7
+    MEMORY_YTICKS = [0, 2, 4]
 
     WORKLOAD = "caida_delete"
     workload_subdir = Path("contraction_bench")
     sketches = ["CMSketchbookAdaptiveCountersPQ",
                 "CMSketchbookFixedCounters"]
-    memory_footprints = [210000, ] + [2 ** 23, ] * (len(sketches) - 1)
+    memory_footprints = [2 ** 22, 3947584]
 
     fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(WIDTH, HEIGHT))
 
@@ -495,10 +665,10 @@ def plot_contraction(result_dir, output_dir):
                 continue
             json_string = "[" + fix_file_contents(contents[:-2]) + "]"
             results = json.loads(json_string)
-            results = [results[-(2 ** i)] for i in range(math.ceil(math.log(len(results), 2)))] + [results[0], ]
+            results = [results[-1], ] + [results[-(2 ** i)] for i in range(2, math.ceil(math.log(len(results), 2)))] + [results[0], ]
             for result in results:
-                aae_data[sketch].append((result["n_keys"], max(result["aae"], 1)))
-                mem_data[sketch].append((result["n_keys"], result["size"] / 2 ** 20))
+                aae_data[sketch].append((max(result["n_keys"], 1), max(result["aae"], 0.1)))
+                mem_data[sketch].append((max(result["n_keys"], 1), result["size"] / 2 ** 20))
     for sketch in sketches:
         axes[0].plot(*zip(*aae_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
         axes[1].plot(*zip(*mem_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
@@ -510,29 +680,29 @@ def plot_contraction(result_dir, output_dir):
         ax.set_xscale("log")
         ax.set_xlim(XLIM_HIGH, XLIM_LOW)
     axes[0].set_yscale("log")
-    axes[0].set_ylabel(f"{DATASET_NAMES[WORKLOAD]} \\\\" + "\\hspace*{0.65cm} AAE", fontsize=YLABEL_FONT_SIZE)
+    axes[0].set_ylabel("AAE", fontsize=YLABEL_FONT_SIZE)
     axes[1].yaxis.set_major_locator(matplotlib.ticker.MultipleLocator(2))
     axes[1].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(1))
-    axes[1].yaxis.set_label_position("right")
-    axes[1].yaxis.tick_right()
+    axes[1].set_yticks(MEMORY_YTICKS)
     axes[1].set_ylabel("Memory [MB]", fontsize=TITLE_FONT_SIZE)
-    fig.subplots_adjust(hspace=0.15, wspace=0.05)
+    fig.subplots_adjust(hspace=0.15, wspace=0.46)
 
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
     legend_lines = legend_lines[:len(sketches)]
     legend_labels = legend_labels[:len(sketches)]
-    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.40, 1.25),
+    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.35, 1.35),
                    fancybox=True, shadow=False, ncol=2, fontsize=LEGEND_FONT_SIZE)
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + ".pdf"), bbox_inches="tight", pad_inches=0.01)
 
 
 def plot_accuracy_unbiased(result_dir, output_dir):
-    TITLE_FONT_SIZE = 9.5
-    LEGEND_FONT_SIZE = 7
-    YLABEL_FONT_SIZE = 9.5
-    XLABEL_FONT_SIZE = 9.5
-    WIDTH = 8.5
+    TITLE_FONT_SIZE = 10
+    LEGEND_FONT_SIZE = 9
+    YLABEL_FONT_SIZE = 10
+    XLABEL_FONT_SIZE = 10
     HEIGHT = 1.55
+    WH_RATIO = 2.75 / 1.6
+    WIDTH = 3 * HEIGHT * WH_RATIO
     YLIM_LOW = 0
     YLIM_HIGH = 1e3
     YLIM_LOW_INSERT = 0
@@ -600,12 +770,12 @@ def plot_accuracy_unbiased(result_dir, output_dir):
         axes[i].set_xticks(memory_footprints)
         axes[i].set_xticklabels(memory_footprint_labels, fontsize=XLABEL_FONT_SIZE)
         axes[i].set_xlim(memory_footprints[0] / 1.1, 1.1 * memory_footprints[-1])
-    axes[0].set_ylabel(f"{DATASET_NAMES[WORKLOAD]} \\\\" + "\\hspace*{0.65cm} AAE", fontsize=YLABEL_FONT_SIZE)
+    axes[0].set_ylabel("AAE", fontsize=YLABEL_FONT_SIZE)
     axes[1].set_ylabel("Insert Latency [ns]", fontsize=YLABEL_FONT_SIZE)
     axes[2].set_ylabel("Query Latency [ns]", fontsize=YLABEL_FONT_SIZE)
 
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
-    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.6, 1.30),
+    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.25, 1.38),
                       fancybox=True, shadow=False, ncol=6, fontsize=LEGEND_FONT_SIZE)
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + ".pdf"), bbox_inches="tight", pad_inches=0.01)
 
@@ -625,6 +795,7 @@ def plot_accuracy_unbiased(result_dir, output_dir):
 PLOTTERS = {plot_accuracy.__name__[5:]: plot_accuracy,
             plot_skew.__name__[5:]: plot_skew,
             plot_vale_tuning.__name__[5:]: plot_vale_tuning,
+            plot_skew_vale_tuning.__name__[5:]: plot_skew_vale_tuning,
             plot_expansion.__name__[5:]: plot_expansion,
             plot_size_function.__name__[5:]: plot_size_function,
             plot_contraction.__name__[5:]: plot_contraction,
