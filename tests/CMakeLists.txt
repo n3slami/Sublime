@@ -7,36 +7,27 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(doctest)
 
-add_executable(CMSketchbookFixedCountersTests ./CMSketchbookFixedCountersTests.cpp)
-target_link_libraries(CMSketchbookFixedCountersTests CMSketchbookFixedCountersLib doctest)
-add_test(NAME test_sb_cm_fixed COMMAND CMSketchbookFixedCountersTests)
+# CMS
+add_executable(CMSTests ./CMSTests.cpp)
+target_link_libraries(CMSTests CMSLib doctest)
+add_test(NAME cms COMMAND CMSTests)
 
-add_executable(CMSketchbookSemiAdaptiveCountersTests ./CMSketchbookSemiAdaptiveTests.cpp)
-target_link_libraries(CMSketchbookSemiAdaptiveCountersTests CMSketchbookSemiAdaptiveCountersLib doctest)
-add_test(NAME test_sb_cm_semiada COMMAND CMSketchbookSemiAdaptiveCountersTests)
-
-add_executable(CMSketchbookAdaptiveCountersTests ./CMSketchbookAdaptiveCountersTests.cpp)
-target_link_libraries(CMSketchbookAdaptiveCountersTests CMSketchbookAdaptiveCountersLib doctest)
-add_test(NAME test_sb_cm_ada COMMAND CMSketchbookAdaptiveCountersTests)
+add_executable(SublimeCMSTests ./SublimeCMSTests.cpp)
+target_link_libraries(SublimeCMSTests SublimeCMSLib CMSLib doctest)
+add_test(NAME sublime_cms COMMAND SublimeCMSTests)
 
 
-add_executable(CSketchbookFixedCountersTests ./CSketchbookFixedCountersTests.cpp)
-target_link_libraries(CSketchbookFixedCountersTests CSketchbookFixedCountersLib doctest)
-add_test(NAME test_sb_c_fixed COMMAND CSketchbookFixedCountersTests)
+# CS
+add_executable(CSTests ./CSTests.cpp)
+target_link_libraries(CSTests CSLib doctest)
+add_test(NAME cs COMMAND CSTests)
 
-add_executable(CSketchbookSemiAdaptiveCountersTests ./CSketchbookSemiAdaptiveTests.cpp)
-target_link_libraries(CSketchbookSemiAdaptiveCountersTests CSketchbookFixedCountersLib doctest)
-add_test(NAME test_sb_c_semiada COMMAND CSketchbookSemiAdaptiveCountersTests)
-
-add_executable(CSketchbookAdaptiveCountersTests ./CSketchbookAdaptiveCountersTests.cpp)
-target_link_libraries(CSketchbookAdaptiveCountersTests CSketchbookAdaptiveCountersLib doctest)
-add_test(NAME test_sb_c_ada COMMAND CSketchbookAdaptiveCountersTests)
+add_executable(SublimeCSTests ./SublimeCSTests.cpp)
+target_link_libraries(SublimeCSTests SublimeCSLib CSLib doctest)
+add_test(NAME sublime_cs COMMAND SublimeCSTests)
 
 
-add_test(NAME test_all COMMAND CMSketchbookFixedCountersTests 
-                               CMSketchbookSemiAdaptiveCountersTests
-                               CMSketchbookAdaptiveCountersTests
-                               CSketchbookFixedCountersTests
-                               CSketchbookSemiAdaptiveCountersTests
-                               CSketchbookAdaptiveCountersTests)
+# All
+add_test(NAME all COMMAND CMSTests SublimeCMSTests 
+                          CSTests  SublimeCSTests)
 

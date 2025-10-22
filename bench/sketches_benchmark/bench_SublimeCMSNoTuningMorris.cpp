@@ -3,53 +3,52 @@
 #include <unordered_map>
 
 #include "../bench_template.hpp"
-#include "CMSketchbookAdaptiveCountersPQNoTuningMorris.hpp"
+#include "SublimeCMSNoTuningMorris.hpp"
 
 
-inline CMSketchbookAdaptiveCountersPQ *init_sketch(const uint32_t memory_budget,
-                                                   const uint32_t row_count,
-                                                   std::function<uint64_t(size_t)> f) {
-    const uint32_t counter_count = memory_budget / (static_cast<float>(CMSketchbookAdaptiveCountersPQ::cache_line_size_bytes) 
-                                                    / CMSketchbookAdaptiveCountersPQ::counter_per_cache_line);
+inline SublimeCMS *init_sketch(const uint32_t memory_budget, const uint32_t row_count,
+                               std::function<uint64_t(size_t)> f) {
+    const uint32_t counter_count = memory_budget / (static_cast<float>(SublimeCMS::cache_line_size_bytes) 
+                                                    / SublimeCMS::counter_per_cache_line);
     const uint32_t col_count = (counter_count + row_count - 1) / row_count;
     const uint32_t seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()) \
                                 .time_since_epoch().count();
-    CMSketchbookAdaptiveCountersPQ *sketch = new CMSketchbookAdaptiveCountersPQ(col_count, row_count, f, seed);
+    SublimeCMS *sketch = new SublimeCMS(col_count, row_count, f, seed);
     return sketch;
 }
 
-inline void insert_sketch(CMSketchbookAdaptiveCountersPQ *sketch, const std::string& key) {
+inline void insert_sketch(SublimeCMS *sketch, const std::string& key) {
     sketch->Insert(key.c_str(), key.size());
 }
 
 template <typename T>
-inline void insert_sketch(CMSketchbookAdaptiveCountersPQ *sketch, T key) {
+inline void insert_sketch(SublimeCMS *sketch, T key) {
     sketch->Insert(key);
 }
 
-inline void delete_sketch(CMSketchbookAdaptiveCountersPQ *sketch, const std::string& key) {
+inline void delete_sketch(SublimeCMS *sketch, const std::string& key) {
     sketch->Delete(key.c_str(), key.size());
 }
 
 template <typename T>
-inline void delete_sketch(CMSketchbookAdaptiveCountersPQ *sketch, T key) {
+inline void delete_sketch(SublimeCMS *sketch, T key) {
     sketch->Delete(key);
 }
 
-inline int32_t query_sketch(CMSketchbookAdaptiveCountersPQ *sketch, const std::string& key) {
+inline int32_t query_sketch(SublimeCMS *sketch, const std::string& key) {
     return sketch->Query(key.c_str(), key.size());
 }
 
 template <typename T>
-inline int32_t query_sketch(CMSketchbookAdaptiveCountersPQ *sketch, T key) {
+inline int32_t query_sketch(SublimeCMS *sketch, T key) {
     return sketch->Query(key);
 }
 
-inline uint32_t size_of_sketch(CMSketchbookAdaptiveCountersPQ *sketch) {
+inline uint32_t size_of_sketch(SublimeCMS *sketch) {
     return sketch->Size();
 }
 
-inline std::unordered_map<std::string, uint32_t> get_vale_parameters(CMSketchbookAdaptiveCountersPQ *sketch) {
+inline std::unordered_map<std::string, uint32_t> get_vale_parameters(SublimeCMS *sketch) {
     std::unordered_map<std::string, uint32_t> res;
     res["counters_per_chunk"] = sketch->GetCountersPerChunk();
     res["stub_length"] = sketch->GetStubLength();
@@ -58,7 +57,7 @@ inline std::unordered_map<std::string, uint32_t> get_vale_parameters(CMSketchboo
 }
 
 int main(int argc, char const *argv[]) {
-    auto parser = init_parser("bench-CMSketchbookAdaptiveCountersPQNoTuning");
+    auto parser = init_parser("bench-SublimeNoTuningMorris");
 
     try {
         parser.parse_args(argc, argv);

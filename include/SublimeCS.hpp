@@ -14,8 +14,8 @@
 #include "MurmurHash.hpp"
 #include "util.hpp"
 
-class CSketchbookAdaptiveCountersPQ {
-    friend class CSketchbookAdaptiveCountersTest;
+class SublimeCS {
+    friend class SublimeCSTest;
 
 public:
     // Tuning Stuff
@@ -65,15 +65,15 @@ private:
     };
 
 public:
-    CSketchbookAdaptiveCountersPQ(size_t init_col_count, size_t init_row_count,
-                                     std::function<uint64_t(double)> expansion_f,
-                                     uint32_t seed_gen_seed)
-                                     : row_count(init_row_count), init_col_count(init_col_count),
-                                       expansion_f(expansion_f), seed_gen_seed(seed_gen_seed) {
+    SublimeCS(size_t init_col_count, size_t init_row_count, std::function<uint64_t(double)> expansion_f, uint32_t seed_gen_seed)
+                                     : row_count(init_row_count), 
+                                       init_col_count(init_col_count),
+                                       expansion_f(expansion_f),
+                                       seed_gen_seed(seed_gen_seed) {
         n = 0;
         col_count = init_col_count;
         expansion_lim = expansion_f(col_count);
-        contraction_lim = 0;
+        contraction_lim = expansion_f(col_count / 2.0);
         init_col_count_lg = highbit_pos(init_col_count) + (__builtin_popcountll(init_col_count) > 1);
         col_count_lg = init_col_count_lg;
 
@@ -97,14 +97,15 @@ public:
     }
     
     // Should probably write a copy constructor...
-    CSketchbookAdaptiveCountersPQ(const CSketchbookAdaptiveCountersPQ&) = delete;
-    CSketchbookAdaptiveCountersPQ& operator=(const CSketchbookAdaptiveCountersPQ&) = delete;
+    SublimeCS(const SublimeCS&) = delete;
+    SublimeCS& operator=(const SublimeCS&) = delete;
 
-    ~CSketchbookAdaptiveCountersPQ() {
+    ~SublimeCS() {
         while (!sketches.empty()) {
             Sketch *sketch = sketches.back();
             free_spills(sketch);
             delete[] sketch;
+            sketches.pop_back();
         }
         delete[] seeds;
     }
@@ -184,7 +185,7 @@ public:
             contract();
         if (n == (contraction_lim + expansion_lim) / 2) {
             FlushPrefetchQueue();
-            reallocate_sketch(sketch);
+            reallocate_sketch(sketch, false);
             sketches[sketches.size() - 1] = sketch;
         }
     }
@@ -237,10 +238,10 @@ public:
     }
 
 
-    size_t Size(bool include_all_sketches = false) const {
+    size_t Size(bool include_all_sketches=false) const {
         size_t res = 0;
         for (int32_t sketch_ind = sketches.size() - 1; sketch_ind >= 0; sketch_ind--) {
-            const Sketch *sketch = sketches.back();
+            const Sketch *sketch = sketches[sketch_ind];
             const uint32_t cache_line_count = (sketch->row_count * sketch->col_count + sketch->counter_per_cache_line - 1) 
                 / sketch->counter_per_cache_line;
             const size_t base_size = cache_line_count * cache_line_size_bytes;
@@ -251,7 +252,7 @@ public:
             for (int i = 0; i < cache_line_count; i++) {
                 const uint8_t *ptr = sketch->sketch + i * cache_line_size_bytes;
                 const uint64_t *words = reinterpret_cast<const uint64_t *>(ptr);
-                if (words[cache_line_size_words - sketch->num_extension_words] >> 63)
+                if (has_separate_array(sketch, words))
                     extra_arrays++;
             }
             res += base_size + extra_arrays * sizeof(uint32_t) * sketch->counter_per_cache_line;
@@ -447,10 +448,9 @@ private:
             return (a ? a + 64 : b) + 1;
         }
         else {
-            uint32_t res = std::numeric_limits<uint32_t>::max();
+            uint32_t res = 0;
             for (int32_t i = sketch->num_extension_words - 1; i >= 0; i--)
-                res = ((res == std::numeric_limits<uint32_t>::max() && extensions[i]) ? highbit_pos(extensions[i]) + 64 * i + 1
-                                                                                      : res);
+                res = std::max(res, (extensions[i] ? highbit_pos(extensions[i]) + 64 * i + 1 : 0));
             return res;
         }
     }
@@ -481,10 +481,10 @@ private:
             }
         }
         else {
-            const uint32_t pos_word = pos / 64;
+            const int32_t pos_word = pos / 64;
             for (int32_t i = sketch->num_extension_words - 1; i > pos_word; i--) {
-                const uint64_t prev_extension = i > 0 ? extensions[i - 1] & (~BITMASK(std::max(0, static_cast<int32_t>(pos) - (i - 1) * 64)))
-                                                      : 0ULL;
+                const uint64_t prev_extension = i > pos_word ? extensions[i - 1] & (~BITMASK(std::max(0, static_cast<int32_t>(pos) - (i - 1) * 64)))
+                                                             : 0ULL;
                 extensions[i] = (extensions[i] << shamt) | (prev_extension >> (64 - shamt));
             }
             const uint64_t a = extensions[pos_word] & BITMASK(pos % 64);
@@ -531,7 +531,7 @@ private:
     }
 
 
-    inline uint32_t *get_spills_ptr_from_extension_bitmap(const uint64_t *extension_bitmap) const {
+    inline uint32_t *get_ptr_from_extension_bitmap(const uint64_t *extension_bitmap) const {
         return reinterpret_cast<uint32_t *>(extension_bitmap[0] & BITMASK(min_extension_count * extension_size));
     }
 
@@ -543,10 +543,9 @@ private:
         const uint8_t *cache_line_ptr = sketch->sketch + cache_line_ind * cache_line_size_bytes;
 
         // Calculate the stub
-        int64_t res;
-        memcpy(&res, cache_line_ptr + sketch->word_update_byte_offset[inter_cache_line_ind], sizeof(res));
-        const int64_t sign = (res >> (sketch->word_update_shamt[inter_cache_line_ind] + sketch->stub_size - 1)) & 1ULL;
-        res = (res >> sketch->word_update_shamt[inter_cache_line_ind]) & (sketch->stub_mask >> 1);
+        const uint64_t *read_word = reinterpret_cast<const uint64_t *>(cache_line_ptr + sketch->word_update_byte_offset[inter_cache_line_ind]);
+        int64_t res = (read_word[0] >> sketch->word_update_shamt[inter_cache_line_ind]) & (sketch->stub_mask >> 1);
+        const int64_t sign = (read_word[0] >> (sketch->word_update_shamt[inter_cache_line_ind] + sketch->stub_size - 1)) & 1LL;
 
         // Take into account the extensions, if any
         const uint64_t *words = reinterpret_cast<const uint64_t *>(cache_line_ptr);
@@ -560,7 +559,7 @@ private:
                                                                 >> (64 - sketch->last_extension_word_bit_count);
             // Check for pointers
             if ((extension_bitmap[sketch->num_extension_words - 1] >> (sketch->last_extension_word_bit_count - 1)) & 1) {
-                const uint32_t *ptr = get_spills_ptr_from_extension_bitmap(extension_bitmap);
+                const uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
                 res |= ptr[inter_cache_line_ind] << (sketch->stub_size - 1);
             }
             else {
@@ -615,6 +614,12 @@ private:
         return ptr;
     }
 
+
+    __attribute__((always_inline))
+    inline bool has_separate_array(const Sketch *sketch, const uint64_t *cache_line_words) const {
+        return cache_line_words[cache_line_size_words - sketch->num_extension_words] >> 63;
+    }
+
     
     //__attribute__((always_inline))
     inline void write_extensions_to_cache_line(Sketch *sketch, uint64_t *words, uint64_t *extension_bitmap) {
@@ -636,11 +641,10 @@ private:
         uint8_t *cache_line_ptr = sketch->sketch + cache_line_ind * cache_line_size_bytes;
 
         // Set the stub
-        uint64_t stamp;
-        memcpy(&stamp, cache_line_ptr + sketch->word_update_byte_offset[inter_cache_line_ind], sizeof(stamp));
-        stamp &= ~(sketch->stub_mask << sketch->word_update_shamt[inter_cache_line_ind]);
-        stamp |= ((sign << (sketch->stub_size - 1)) | (value & (sketch->stub_mask >> 1))) << sketch->word_update_shamt[inter_cache_line_ind];
-        memcpy(cache_line_ptr + sketch->word_update_byte_offset[inter_cache_line_ind], &stamp, sizeof(stamp));
+        uint64_t *write_word = reinterpret_cast<uint64_t *>(cache_line_ptr + sketch->word_update_byte_offset[inter_cache_line_ind]);
+        write_word[0] &= ~(sketch->stub_mask << sketch->word_update_shamt[inter_cache_line_ind]);
+        write_word[0] |= ((sign << (sketch->stub_size - 1)) | (value & (sketch->stub_mask >> 1))) 
+                            << sketch->word_update_shamt[inter_cache_line_ind];
 
         // Handle the extensions
         uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
@@ -654,8 +658,7 @@ private:
                 extension_bitmap[i] = words[cache_line_size_words - i - 1];
             extension_bitmap[sketch->num_extension_words - 1] = words[cache_line_size_words - sketch->num_extension_words] 
                                                                 >> (64 - sketch->last_extension_word_bit_count);
-            const bool already_has_array_ptr = extension_bitmap[sketch->num_extension_words - 1] 
-                                                                >> (sketch->last_extension_word_bit_count - 1);
+            const bool already_has_array_ptr = has_separate_array(sketch, words);
             const uint32_t total_extension_len = (already_has_array_ptr ? extension_size * sketch->num_extension + 1
                                                                         : get_extension_length(sketch, extension_bitmap));
             uint32_t new_extension_len = extension_size, extension_value = value >> (sketch->stub_size - 1);
@@ -666,7 +669,7 @@ private:
                 case 1: {   // !old_has_extension && new_has_extension
                     if (already_has_array_ptr) {
                         // Update separate array
-                        uint32_t *ptr = get_spills_ptr_from_extension_bitmap(extension_bitmap);
+                        uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
                         ptr[inter_cache_line_ind] = extension_value;
                     }
                     else if (new_extension_len + total_extension_len > extension_size * sketch->num_extension) {
@@ -685,10 +688,17 @@ private:
                     break;
                 }
                 case 2: {   // old_has_extension && !new_has_extension
-                    // Handle Locally
-                    const uint32_t pos = get_extension_pos(sketch, extension_bitmap, extension_rank);
-                    const uint32_t old_extension_len = get_extension_pos(sketch, extension_bitmap, extension_rank + 1) - pos;
-                    shift_extensions_right_from_pos(sketch, extension_bitmap, pos, old_extension_len);
+                    if (already_has_array_ptr) {
+                        // Update separate array
+                        uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
+                        ptr[inter_cache_line_ind] = 0;
+                    }
+                    else {
+                        // Handle Locally
+                        const uint32_t pos = get_extension_pos(sketch, extension_bitmap, extension_rank);
+                        const uint32_t old_extension_len = get_extension_pos(sketch, extension_bitmap, extension_rank + 1) - pos;
+                        shift_extensions_right_from_pos(sketch, extension_bitmap, pos, old_extension_len);
+                    }
                     break;
                 }
                 case 3: {   // old_has_extension && new_has_extension
@@ -696,7 +706,7 @@ private:
                     const uint32_t old_extension_len = get_extension_pos(sketch, extension_bitmap, extension_rank + 1) - pos;
                     if (already_has_array_ptr) {
                         // Update separate array
-                        uint32_t *ptr = get_spills_ptr_from_extension_bitmap(extension_bitmap);
+                        uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
                         ptr[inter_cache_line_ind] = extension_value;
                     }
                     else if (new_extension_len + total_extension_len - old_extension_len > extension_size * sketch->num_extension) {
@@ -755,13 +765,13 @@ private:
                 extension_bitmap[i] = words[cache_line_size_words - i - 1];
             extension_bitmap[sketch->num_extension_words - 1] = words[cache_line_size_words - sketch->num_extension_words] 
                                                                 >> (64 - sketch->last_extension_word_bit_count);
-            const bool already_has_array_ptr = extension_bitmap[sketch->num_extension_words - 1] >> (sketch->last_extension_word_bit_count - 1);
+            const bool already_has_array_ptr = has_separate_array(sketch, words);
             const uint32_t total_extension_len = (already_has_array_ptr ? extension_size * sketch->num_extension + 1
                                                                         : get_extension_length(sketch, extension_bitmap));
             if (has_extension) {
                 if (already_has_array_ptr) {
                     // Update separate array
-                    uint32_t *ptr = get_spills_ptr_from_extension_bitmap(extension_bitmap);
+                    uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
                     ptr[inter_cache_line_ind]++;
                 }
                 else {
@@ -794,7 +804,7 @@ private:
             else {
                 if (already_has_array_ptr) {
                     // Update separate array
-                    uint32_t *ptr = get_spills_ptr_from_extension_bitmap(extension_bitmap);
+                    uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
                     ptr[inter_cache_line_ind]++;
                 }
                 else if (total_extension_len + 2 * extension_size > extension_size * sketch->num_extension) {
@@ -833,13 +843,13 @@ private:
                 extension_bitmap[i] = words[cache_line_size_words - i - 1];
             extension_bitmap[sketch->num_extension_words - 1] = words[cache_line_size_words - sketch->num_extension_words] 
                                                                 >> (64 - sketch->last_extension_word_bit_count);
-            const bool already_has_array_ptr = extension_bitmap[sketch->num_extension_words - 1] >> (sketch->last_extension_word_bit_count - 1);
+            const bool already_has_array_ptr = has_separate_array(sketch, words);
             const uint32_t total_extension_len = (already_has_array_ptr ? extension_size * sketch->num_extension + 1
                                                                         : get_extension_length(sketch, extension_bitmap));
 
             if (already_has_array_ptr) {
                 // Update separate array
-                uint32_t *ptr = get_spills_ptr_from_extension_bitmap(extension_bitmap);
+                uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
                 ptr[inter_cache_line_ind]--;
                 const uint64_t extensions_depleted = ptr[inter_cache_line_ind] == 0;
                 set_overflowing_to_0(words, inter_cache_line_ind, extensions_depleted);
@@ -937,10 +947,13 @@ private:
     }
 
 
-    inline void reallocate_sketch(Sketch *&sketch) {
+    inline void reallocate_sketch(Sketch *&sketch, bool decreasing=true) {
         uint32_t counter_len_cnt[8 * sizeof(uint64_t)] = {};
         compute_counter_len_cnt(sketch, counter_len_cnt);
         auto [counter_per_cache_line, stub_size] = tune_params(counter_len_cnt);
+
+        if (decreasing && stub_size == sketch->stub_size)
+            counter_per_cache_line = std::min(counter_per_cache_line, sketch->counter_per_cache_line - 1);
 
         const uint32_t cache_line_count = 50 + (sketch->counter_count + counter_per_cache_line - 1) / counter_per_cache_line;
         Sketch *res = reinterpret_cast<Sketch *>(new uint8_t[sizeof(Sketch) + cache_line_count * cache_line_size_bytes]);
@@ -1017,10 +1030,8 @@ private:
                 extension_bitmap[i] = words[cache_line_size_words - i - 1];
             extension_bitmap[sketch->num_extension_words - 1] = words[cache_line_size_words - sketch->num_extension_words] 
                                                                 >> (64 - sketch->last_extension_word_bit_count);
-            const bool already_has_array_ptr = extension_bitmap[sketch->num_extension_words - 1] 
-                                                >> (sketch->last_extension_word_bit_count - 1);
-            if (already_has_array_ptr) {
-                uint32_t *ptr = get_spills_ptr_from_extension_bitmap(extension_bitmap);
+            if (has_separate_array(sketch, words)) {
+                uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
                 delete[] ptr;
             }
         }
@@ -1063,9 +1074,7 @@ private:
     inline void contract() {
         FlushPrefetchQueue();
         expansion_lim = contraction_lim;
-        contraction_lim = (n <= expansion_f(init_col_count) ? 0 : expansion_f(col_count / 4));
-
-        std::cerr << "contracting new contraction_lim=" << contraction_lim << std::endl;
+        contraction_lim = (n <= expansion_f(init_col_count) ? 0 : expansion_f(col_count / 4.0));
 
         Sketch *new_sketch = sketches.back();
         sketches.pop_back();

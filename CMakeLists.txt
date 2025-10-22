@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16.3)
-project(Sketchbook
+project(Sublime
         VERSION 1.0
         HOMEPAGE_URL https://github.com/)
 
@@ -19,50 +19,50 @@ else()
     set(USE_MULTI_THREADED OFF)
 endif ()
 
-set(BITHACKING_COMPILE_FLAGS -Ofast -march=native)
+set(BITHACKING_COMPILE_FLAGS -march=native)
 #set(BITHACKING_COMPILE_FLAGS -Ofast -mbmi2 -msse4.2 -D__SSE4_2_)
 
-add_library(CMSketchbookFixedCountersLib STATIC ./include/CMSketchbookFixedCounters.hpp)
-set_target_properties(CMSketchbookFixedCountersLib PROPERTIES LINKER_LANGUAGE CXX)
-target_include_directories(CMSketchbookFixedCountersLib PUBLIC ./include)
-target_compile_options(CMSketchbookFixedCountersLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+add_library(CMSLib STATIC ./include/CMS.hpp)
+set_target_properties(CMSLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(CMSLib PUBLIC ./include)
+target_compile_options(CMSLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
-add_library(CMSketchbookAdaptiveCountersPQLib STATIC ./include/CMSketchbookAdaptiveCountersPQ.hpp)
-set_target_properties(CMSketchbookAdaptiveCountersPQLib PROPERTIES LINKER_LANGUAGE CXX)
-target_include_directories(CMSketchbookAdaptiveCountersPQLib PUBLIC ./include)
-target_compile_options(CMSketchbookAdaptiveCountersPQLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+add_library(SublimeCMSLib STATIC ./include/SublimeCMS.hpp)
+set_target_properties(SublimeCMSLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(SublimeCMSLib PUBLIC ./include)
+target_compile_options(SublimeCMSLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
-configure_file(./include/CMSketchbookAdaptiveCountersPQNoTuning.hpp.in ./include/CMSketchbookAdaptiveCountersPQNoTuning.hpp @ONLY)
-add_library(CMSketchbookAdaptiveCountersPQNoTuningLib STATIC ${CMAKE_CURRENT_BINARY_DIR}/include/CMSketchbookAdaptiveCountersPQNoTuning.hpp)
-set_target_properties(CMSketchbookAdaptiveCountersPQNoTuningLib PROPERTIES LINKER_LANGUAGE CXX)
-target_include_directories(CMSketchbookAdaptiveCountersPQNoTuningLib PUBLIC ./include 
-                                                                            ${CMAKE_CURRENT_BINARY_DIR}/include)
-target_compile_options(CMSketchbookAdaptiveCountersPQNoTuningLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+configure_file(./include/SublimeCMSNoTuning.hpp.in ./include/SublimeCMSNoTuning.hpp @ONLY)
+add_library(SublimeCMSNoTuningLib STATIC ${CMAKE_CURRENT_BINARY_DIR}/include/SublimeCMSNoTuning.hpp)
+set_target_properties(SublimeCMSNoTuningLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(SublimeCMSNoTuningLib PUBLIC ./include 
+                                                        ${CMAKE_CURRENT_BINARY_DIR}/include)
+target_compile_options(SublimeCMSNoTuningLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
-configure_file(./include/CMSketchbookAdaptiveCountersPQNoTuningMorris.hpp.in ./include/CMSketchbookAdaptiveCountersPQNoTuningMorris.hpp @ONLY)
-add_library(CMSketchbookAdaptiveCountersPQNoTuningMorrisLib STATIC ${CMAKE_CURRENT_BINARY_DIR}/include/CMSketchbookAdaptiveCountersPQNoTuningMorris.hpp)
-set_target_properties(CMSketchbookAdaptiveCountersPQNoTuningMorrisLib PROPERTIES LINKER_LANGUAGE CXX)
-target_include_directories(CMSketchbookAdaptiveCountersPQNoTuningMorrisLib PUBLIC ./include
-                                                                                  ${CMAKE_CURRENT_BINARY_DIR}/include)
-target_compile_options(CMSketchbookAdaptiveCountersPQNoTuningMorrisLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+configure_file(./include/SublimeCMSNoTuningMorris.hpp.in ./include/SublimeCMSNoTuningMorris.hpp @ONLY)
+add_library(SublimeCMSNoTuningMorrisLib STATIC ${CMAKE_CURRENT_BINARY_DIR}/include/SublimeCMSNoTuningMorris.hpp)
+set_target_properties(SublimeCMSNoTuningMorrisLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(SublimeCMSNoTuningMorrisLib PUBLIC ./include 
+                                                              ${CMAKE_CURRENT_BINARY_DIR}/include)
+target_compile_options(SublimeCMSNoTuningMorrisLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
 
-add_library(CSketchbookFixedCountersLib STATIC ./include/CSketchbookFixedCounters.hpp)
-set_target_properties(CSketchbookFixedCountersLib PROPERTIES LINKER_LANGUAGE CXX)
-target_include_directories(CSketchbookFixedCountersLib PUBLIC ./include)
-target_compile_options(CSketchbookFixedCountersLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+add_library(CSLib STATIC ./include/CS.hpp)
+set_target_properties(CSLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(CSLib PUBLIC ./include)
+target_compile_options(CSLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
-add_library(CSketchbookAdaptiveCountersPQLib STATIC ./include/CSketchbookAdaptiveCountersPQ.hpp)
-set_target_properties(CSketchbookAdaptiveCountersPQLib PROPERTIES LINKER_LANGUAGE CXX)
-target_include_directories(CSketchbookAdaptiveCountersPQLib PUBLIC ./include)
-target_compile_options(CSketchbookAdaptiveCountersPQLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+add_library(SublimeCSLib STATIC ./include/SublimeCS.hpp)
+set_target_properties(SublimeCSLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(SublimeCSLib PUBLIC ./include)
+target_compile_options(SublimeCSLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
-configure_file(./include/CSketchbookAdaptiveCountersPQNoTuning.hpp.in ./include/CSketchbookAdaptiveCountersPQNoTuning.hpp @ONLY)
-add_library(CSketchbookAdaptiveCountersPQNoTuningLib STATIC ${CMAKE_CURRENT_BINARY_DIR}/include/CSketchbookAdaptiveCountersPQNoTuning.hpp)
-set_target_properties(CSketchbookAdaptiveCountersPQNoTuningLib PROPERTIES LINKER_LANGUAGE CXX)
-target_include_directories(CSketchbookAdaptiveCountersPQNoTuningLib PUBLIC ./include
-                                                                           ${CMAKE_CURRENT_BINARY_DIR}/include)
-target_compile_options(CSketchbookAdaptiveCountersPQNoTuningLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+configure_file(./include/SublimeCSNoTuning.hpp.in ./include/SublimeCSNoTuning.hpp @ONLY)
+add_library(SublimeCSNoTuningLib STATIC ${CMAKE_CURRENT_BINARY_DIR}/include/SublimeCSNoTuning.hpp)
+set_target_properties(SublimeCSNoTuningLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(SublimeCSNoTuningLib PUBLIC ./include 
+                                                       ${CMAKE_CURRENT_BINARY_DIR}/include)
+target_compile_options(SublimeCSNoTuningLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
 
 
@@ -72,10 +72,10 @@ target_include_directories(MGDummyLib  PUBLIC ./include)
 target_compile_options(MGDummyLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
 
-#if (BUILD_TESTS)
-#    message(STATUS "Building tests")
-#    add_subdirectory(tests)
-#endif ()
+if (BUILD_TESTS)
+    message(STATUS "Building tests")
+    add_subdirectory(tests)
+endif ()
 
 if (BUILD_EXAMPLES)
     message(STATUS "Building examples")

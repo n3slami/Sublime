@@ -6,11 +6,13 @@ global build_dir
 global workload_dir
 global output_prefix
 
-SKETCHES_WITH_VALE = {"CMSketchbookAdaptiveCountersPQ",
-                      "CSketchbookAdaptiveCountersPQ"}
-SKETCHES_WITH_EXPANSION_RATE_FUNCTION = {"CMSketchbookAdaptiveCountersPQ",
-                                         "CMSketchbookAdaptiveCountersPQNoTuning",
-                                         "CSketchbookAdaptiveCountersPQ"}
+SKETCHES_WITH_VALE = {"SublimeCMS",
+                      "SublimeCS"}
+SKETCHES_WITH_EXPANSION_RATE_FUNCTION = {"SublimeCMS",
+                                         "SublimeCMSNoTuning",
+                                         "SublimeCMSNoTuningMorris",
+                                         "SublimeCS",
+                                         "SublimeCSNoTuning"}
 
 def execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, bpk, size_function_power=None, size_function_mult=None, force_counter_count=None, override_size=None):
     file_to_execute = f"bench/bench_{sketch}"
@@ -45,13 +47,10 @@ def rebuild_execute_benchmark(build_dir, output_base, c, s, p, workload_subdir, 
 
 
 def accuracy_bench():
-    sketches = ["CMSketchbookFixedCounters", "StingyCM", "SALSACM", "CodingCM", "SEADCM", "Waving"]
+    sketches = ["CMS", "StingyCM", "SALSACM", "CodingCM", "SEADCM", "Waving"]
     memory_footprints = {"caida": [2 ** i for i in range(17, 23)],
                          "kosarak": [2 ** i for i in range(15, 21)],
                          "webdocs": [2 ** i for i in range(17, 23)]}
-    sketchbook_memory_reduction = {"caida": (2 ** 19, 1.5),
-                                   "kosarak": (2 ** 17, 1.5),
-                                   "webdocs": (2 ** 21, 1.8)}
     vale_params = {"caida": [(39, 10), (42, 9), (47, 8), (53, 7), (69, 5), (80, 4)],
                    "kosarak": [(39, 10), (43, 9), (50, 7), (68, 5), (73, 5), (81, 4)],
                    "webdocs": [(31, 12), (34, 12), (38, 10), (41, 10), (50, 7), (64, 5)]}
@@ -65,12 +64,12 @@ def accuracy_bench():
         if workload.name not in memory_footprints:
             continue
 
-        sketch = "CMSketchbookAdaptiveCountersPQNoTuning"
+        sketch = "SublimeCMSNoTuning"
         for memory_footprint, (c, s) in zip(memory_footprints[workload.name], vale_params[workload.name]):
             rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir, workload, sketch, memory_footprint)
 
         if workload.name == "caida":
-            sketch = "CMSketchbookAdaptiveCountersPQNoTuningMorris"
+            sketch = "SublimeCMSNoTuningMorris"
             for memory_footprint, (c, s, p) in zip(memory_footprints[workload.name], morris_params):
                 rebuild_execute_benchmark(build_dir, output_base, c, s, p, workload_subdir, workload, sketch, memory_footprint)
         
@@ -79,8 +78,7 @@ def accuracy_bench():
 
 
 def skew_bench():
-    sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters",
-                "StingyCM", "SALSACM", "Waving"]
+    sketches = ["SublimeCMS", "CMS", "StingyCM", "SALSACM", "Waving"]
     CODINGCM_MEMORY_FOOTPRINT = 600000
     MEMORY_FOOTPRINT = 2 ** 20
     sketchbook_memory_footprints = {"0.00": 640000,
@@ -106,7 +104,7 @@ def skew_bench():
 
 
 def vale_tuning_bench():
-    sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookAdaptiveCountersPQNoTuning"]
+    sketches = ["SublimeCMS", "SublimeCMSNoTuning"]
     COUNTER_COUNT = 2 ** 20
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
@@ -120,8 +118,7 @@ def vale_tuning_bench():
 
 
 def expansion_bench():
-    sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters",
-                "StingyCM", "SALSACM", "Waving"]
+    sketches = ["SublimeCMS", "CMS", "StingyCM", "SALSACM", "Waving"]
     OVERESTIMATE_MEMORY = 2 ** 24
     UNDERESTIMATE_MEMORY = 2 ** 15
     size_function_powers = [0.5, 0.75, 1.0]
@@ -139,12 +136,12 @@ def expansion_bench():
                                       override_size=f"{UNDERESTIMATE_MEMORY}_{power:.2f}")
             else:
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, UNDERESTIMATE_MEMORY)
-                if sketch == "CMSketchbookFixedCounters":
+                if sketch == "CMS":
                     execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, OVERESTIMATE_MEMORY)
 
 
 def contraction_bench():
-    sketches = ["CMSketchbookAdaptiveCountersPQ", "CMSketchbookFixedCounters"]
+    sketches = ["SublimeCMS", "CMS"]
     MEMORY_FOOTPRINT = 3947584
     START_COUNTER_COUNT = 2 ** 22
     workload_subdir = inspect.stack()[0][3]
@@ -162,21 +159,19 @@ def contraction_bench():
 
 
 def accuracy_unbiased_bench():
-    sketches = ["CSketchbookFixedCounters", "StingyC", "CodingC", "Waving"]
+    sketches = ["CS", "StingyC", "CodingC", "Waving"]
     memory_footprints = [2 ** i for i in range(17, 23)]
     vale_params = [(39, 10), (42, 9), (45, 8), (51, 7), (64, 5), (75, 4)]
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
-    SKETCHBOOK_MEMORY_REDUCTION_THRESHOLD = 2 ** 20
-    SKETCHBOOK_MEMORY_REDUCTION_MULT = 1.5
 
     workload_path = Path(f"{workload_dir}/real")
     for workload in workload_path.iterdir():
         if workload.name != "caida":
             continue
 
-        sketch = "CSketchbookAdaptiveCountersPQNoTuning"
+        sketch = "SublimeCSNoTuning"
         for memory_footprint, (c, s) in zip(memory_footprints, vale_params):
             rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir, workload, sketch, memory_footprint)
 

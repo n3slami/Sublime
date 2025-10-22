@@ -1,59 +1,59 @@
 #include <cstdint>
 #include <functional>
+#include <unordered_map>
 
 #include "../bench_template.hpp"
-#include "CSketchbookAdaptiveCountersPQ.hpp"
+#include "SublimeCMS.hpp"
 
 static bool include_all_sketches = false;
 static uint32_t force_counter_count = 0;
 
-inline CSketchbookAdaptiveCountersPQ *init_sketch(const uint32_t memory_budget,
-                                                  const uint32_t row_count,
-                                                  std::function<uint64_t(double)> f) {
+inline SublimeCMS *init_sketch(const uint32_t memory_budget, const uint32_t row_count,
+                               std::function<uint64_t(double)> f) {
     const uint32_t counter_count = force_counter_count > 0 ? force_counter_count 
-                                                           : memory_budget / (static_cast<float>(CSketchbookAdaptiveCountersPQ::cache_line_size_bytes) 
-                                                                           / CSketchbookAdaptiveCountersPQ::default_counter_per_cache_line);
+                                                           : memory_budget / (static_cast<float>(SublimeCMS::cache_line_size_bytes) 
+                                                                           / SublimeCMS::default_counter_per_cache_line);
     const uint32_t col_count = (counter_count + row_count - 1) / row_count;
     const uint32_t seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()) \
                                 .time_since_epoch().count();
-    CSketchbookAdaptiveCountersPQ *sketch = new CSketchbookAdaptiveCountersPQ(col_count, row_count, f, seed);
+    SublimeCMS *sketch = new SublimeCMS(col_count, row_count, f, seed);
     return sketch;
 }
 
-inline void insert_sketch(CSketchbookAdaptiveCountersPQ *sketch, const std::string &key) {
+inline void insert_sketch(SublimeCMS *sketch, const std::string& key) {
     sketch->Insert(key.c_str(), key.size());
 }
 
-template<typename T>
-inline void insert_sketch(CSketchbookAdaptiveCountersPQ *sketch, T key) {
+template <typename T>
+inline void insert_sketch(SublimeCMS *sketch, T key) {
     sketch->Insert(key);
 }
 
-inline void delete_sketch(CSketchbookAdaptiveCountersPQ *sketch, const std::string& key) {
+inline void delete_sketch(SublimeCMS *sketch, const std::string& key) {
     include_all_sketches = true;
     sketch->Delete(key.c_str(), key.size());
 }
 
-template<typename T>
-inline void delete_sketch(CSketchbookAdaptiveCountersPQ *sketch, T key) {
+template <typename T>
+inline void delete_sketch(SublimeCMS *sketch, T key) {
     include_all_sketches = true;
     sketch->Delete(key);
 }
 
-inline int32_t query_sketch(CSketchbookAdaptiveCountersPQ *sketch, const std::string& key) {
+inline int32_t query_sketch(SublimeCMS *sketch, const std::string& key) {
     return sketch->Query(key.c_str(), key.size());
 }
 
-template<typename T>
-inline int32_t query_sketch(CSketchbookAdaptiveCountersPQ *sketch, T key) {
+template <typename T>
+inline int32_t query_sketch(SublimeCMS *sketch, T key) {
     return sketch->Query(key);
 }
 
-inline uint32_t size_of_sketch(CSketchbookAdaptiveCountersPQ *sketch) {
+inline uint32_t size_of_sketch(SublimeCMS *sketch) {
     return sketch->Size(include_all_sketches);
 }
 
-inline std::unordered_map<std::string, uint32_t> get_vale_parameters(CSketchbookAdaptiveCountersPQ *sketch) {
+inline std::unordered_map<std::string, uint32_t> get_vale_parameters(SublimeCMS *sketch) {
     std::unordered_map<std::string, uint32_t> res;
     res["counters_per_chunk"] = sketch->GetCountersPerChunk();
     res["stub_length"] = sketch->GetStubLength();
@@ -62,7 +62,7 @@ inline std::unordered_map<std::string, uint32_t> get_vale_parameters(CSketchbook
 
 
 int main(int argc, char const *argv[]) {
-    auto parser = init_parser("bench-CSketchbookAdaptiveCountersPQ");
+    auto parser = init_parser("bench-SublimeCMS");
 
     try {
         parser.parse_args(argc, argv);
@@ -88,7 +88,7 @@ int main(int argc, char const *argv[]) {
         experiment_string(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch), 
                           reinterpret_cast<void *>(get_vale_parameters));
     else 
-        experiment(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch),
+        experiment(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch), 
                    reinterpret_cast<void *>(get_vale_parameters));
 }
 

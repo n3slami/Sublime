@@ -6,52 +6,53 @@
 #include <iostream>
 #include <assert.h>
 
-#include "CSketchbookFixedCounters.hpp"
+#include "CMS.hpp"
 
-class CSketchbookFixedCountersTest {
+class CMSTest {
 public:
     static void ExpandAndContract() {
-        auto f = [](uint64_t x) { return x * x; };
-        CSketchbookFixedCounters<int64_t> sketch(10, 10, f, 1);
+        const uint32_t init_col_count = 10;
+        const uint32_t init_row_count = 10;
+        auto f = [](double x) { return static_cast<uint64_t>(x * x); };
+        CMS<uint64_t> sketch(init_col_count, init_row_count, f, 1);
 
-        const uint32_t one_count = 100;
+        const uint32_t one_count = f(init_col_count);
         for (int i = 0; i < one_count; i++)
             sketch.Insert(1);
         REQUIRE_EQ(sketch.Query(1), one_count);
         REQUIRE_EQ(sketch.Query(2), 0);
-
         int pos = -1;
-        const uint64_t sign_hash = sketch.get_sign_hash(1);
         for (int i = 0; i < sketch.col_count; i++) {
-            if (get_counter(sketch, i) != 0) {
+            if (get_counter(sketch, i) > 0) {
                 pos = i;
-                REQUIRE_EQ(get_counter(sketch, pos), (sign_hash & 1ULL) ? 100 : -100);
+                REQUIRE_EQ(get_counter(sketch, pos), 100);
             }
             else 
                 REQUIRE_EQ(get_counter(sketch, i), 0);
         }
         REQUIRE_NE(pos, -1);
+
         sketch.Insert(1);
-        REQUIRE_EQ(sketch.row_count, 10);
-        REQUIRE_EQ(sketch.col_count, 20);
-        REQUIRE_EQ(get_counter(sketch, pos), ((sign_hash & 1ULL) ? 101 : -101));
-        REQUIRE_EQ(get_counter(sketch, 10 + pos), ((sign_hash & 1ULL) ? 100 : -100));
+        REQUIRE_EQ(sketch.col_count, 2 * init_col_count);
+        REQUIRE_EQ(sketch.row_count, init_row_count);
+        REQUIRE_EQ(get_counter(sketch, pos), 101);
+        REQUIRE_EQ(get_counter(sketch, 10 + pos), 100);
 
         sketch.Delete(1);
-        assert(sketch.row_count == 10 && sketch.col_count == 10);
-        REQUIRE_EQ(sketch.row_count, 10);
-        REQUIRE_EQ(sketch.col_count, 10);
-        REQUIRE_EQ(get_counter(sketch, pos), ((sign_hash & 1ULL) ? 100 : -100));
+        sketch.Delete(1);
+        REQUIRE_EQ(sketch.col_count, init_col_count);
+        REQUIRE_EQ(sketch.row_count, init_row_count);
+        REQUIRE_EQ(get_counter(sketch, pos), 99);
     }
 
 private:
     template<typename T>
-    static T get_counter(CSketchbookFixedCounters<T> &sketchbook, uint32_t i) {
+    static T get_counter(CMS<T> &sketchbook, uint32_t i) {
         return reinterpret_cast<T *>(sketchbook.sketches.back())[i];
     }
 
     template<typename T>
-    static void PrintSketch(CSketchbookFixedCounters<T> &sketchbook) {
+    static void PrintSketch(CMS<T> &sketchbook) {
         T *sketch = (T*) sketchbook.sketches.back();
         for (int i = 0; i < sketchbook.row_count; i++) {
             for (int j = 0; j < sketchbook.col_count; j++)
@@ -64,10 +65,8 @@ private:
     }
 };
 
-
-TEST_SUITE("CSketchbookFixedCounters") {
+TEST_SUITE("CMSketchbookFixedCounters") {
     TEST_CASE("expand and contract") {
-        CSketchbookFixedCountersTest::ExpandAndContract();
+        CMSTest::ExpandAndContract();
     }
 }
-

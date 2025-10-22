@@ -3,59 +3,57 @@
 #include <functional>
 
 #include "../bench_template.hpp"
-#include "CMSketchbookFixedCounters.hpp"
+#include "CS.hpp"
 
 template<typename T>
-inline CMSketchbookFixedCounters<T> *init_sketch(const uint32_t memory_budget,
-                                                 const uint32_t row_count,
-                                                 std::function<uint64_t(size_t)> f) {
+inline CS<T> *init_sketch(const uint32_t memory_budget, const uint32_t row_count, std::function<uint64_t(size_t)> f) {
     const uint32_t counter_count = (memory_budget + sizeof(T) - 1) / sizeof(T);
     const uint32_t col_count = (counter_count + row_count - 1) / row_count;
     top_aae_are_count = col_count;  // No. of top items to compute AAE and ARE for 
     const uint32_t seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()) \
                                 .time_since_epoch().count();
-    CMSketchbookFixedCounters<T> *sketch = new CMSketchbookFixedCounters<T>(col_count, row_count, f, seed);
+    CS<T> *sketch = new CS<T>(col_count, row_count, f, seed);
     return sketch;
 }
 
 template<typename T>
-inline void insert_sketch(CMSketchbookFixedCounters<T> *sketch, const std::string& key) {
+inline void insert_sketch(CS<T> *sketch, const std::string& key) {
     sketch->Insert(key.c_str(), key.size());
 }
 
 template<typename T, typename K>
-inline void insert_sketch(CMSketchbookFixedCounters<T> *sketch, K key) {
+inline void insert_sketch(CS<T> *sketch, K key) {
     sketch->Insert(key);
 }
 
 template<typename T>
-inline void delete_sketch(CMSketchbookFixedCounters<T> *sketch, const std::string& key) {
+inline void delete_sketch(CS<T> *sketch, const std::string& key) {
     sketch->Delete(key.c_str(), key.size());
 }
 
 template<typename T, typename K>
-inline void delete_sketch(CMSketchbookFixedCounters<T> *sketch, K key) {
+inline void delete_sketch(CS<T> *sketch, K key) {
     sketch->Delete(key);
 }
 
 template<typename T>
-inline int32_t query_sketch(CMSketchbookFixedCounters<T> *sketch, const std::string& key) {
+inline int32_t query_sketch(CS<T> *sketch, const std::string& key) {
     return sketch->Query(key.c_str(), key.size());
 }
 
 template<typename T, typename K>
-inline int32_t query_sketch(CMSketchbookFixedCounters<T> *sketch, K key) {
+inline int32_t query_sketch(CS<T> *sketch, K key) {
     return sketch->Query(key);
 }
 
 template<typename T>
-inline uint32_t size_of_sketch(CMSketchbookFixedCounters<T> *sketch) {
+inline uint32_t size_of_sketch(CS<T> *sketch) {
     return sketch->Size();
 }
 
 
 int main(int argc, char const *argv[]) {
-    auto parser = init_parser("bench-CMSketchbookFixedCounters");
+    auto parser = init_parser("bench-CS");
 
     try {
         parser.parse_args(argc, argv);
@@ -74,7 +72,7 @@ int main(int argc, char const *argv[]) {
     const double size_function_mult = parser.get<double>("--size-function-mult");
     auto f = [&](size_t x) { return size_function_power == 0.0 ? std::numeric_limits<uint64_t>::max()
                                     : static_cast<uint64_t>(pow(x, 1.0 / size_function_power) * size_function_mult); };
-    auto sketch = init_sketch<uint64_t>(memory_budget, n_rows, f);
+    auto sketch = init_sketch<int64_t>(memory_budget, n_rows, f);
     if (wio.StringKeys())
         experiment_string(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch));
     else 
