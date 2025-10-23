@@ -1,9 +1,3 @@
-[submodule "bench/sketches_benchmark/include/bitsense"]
-	path = bench/sketches_benchmark/include/bitsense
-	url = https://github.com/N2-Sys/BitSense.git
-[submodule "bench/sketches_benchmark/include/sead_counter"]
-	path = bench/sketches_benchmark/include/sead_counter
-	url = https://github.com/SEADCounter/SEADCounter.git
 [submodule "bench/sketches_benchmark/include/waving_sketch"]
 	path = bench/sketches_benchmark/include/waving_sketch
 	url = https://github.com/WavingSketch/Waving-Sketch.git

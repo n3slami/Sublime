@@ -16,16 +16,11 @@ list(APPEND Targets "SublimeCMS" "SublimeCMSNoTuning" "SublimeCMSNoTuningMorris"
                     "CMS"
                     "StingyCM"
                     "CodingCM"
-                    "BitSenseCM"
-                    "SEADCM"
                     "SALSACM"
                     "SublimeCS" "SublimeCSNoTuning"
                     "CS"
                     "StingyC"
                     "CodingC"
-                    "BitSenseC"
-                    "SEADC"
-                    "Switch"
                     "Tailored"
                     "OTailored"
                     "Waving"
@@ -63,29 +58,6 @@ function(compile_bench ds)
         set_target_properties(CodingCMLib PROPERTIES LINKER_LANGUAGE CXX)
         target_compile_options(CodingCMLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
         target_link_libraries(bench_${ds} CodingCMLib)
-    elseif (ds STREQUAL "BitSenseCM")
-        add_library(BitSenseCMLib STATIC ./sketches_benchmark/include/bitsense/simulator/src/sketch/BSCMSketch.h
-                                         ./sketches_benchmark/include/bitsense/simulator/src/common/bitsense.h
-                                         ./sketches_benchmark/include/bitsense/simulator/src/common/sketch.h
-                                         ./sketches_benchmark/include/bitsense/simulator/src/common/flowkey.h
-                                         ./sketches_benchmark/include/bitsense/simulator/src/common/data.h
-                                         ./sketches_benchmark/include/bitsense/simulator/src/common/hash.h
-                                         ./sketches_benchmark/include/bitsense/simulator/src/common/test.h
-                                         ./sketches_benchmark/include/bitsense/simulator/src/common/utils.h
-                                         ./sketches_benchmark/include/bitsense/simulator/src/common/logger.h)
-        set_target_properties(BitSenseCMLib PROPERTIES LINKER_LANGUAGE CXX)
-        target_compile_options(BitSenseCMLib PUBLIC ${BITHACKING_COMPILE_FLAGS} -mno-avx512f)
-        target_link_libraries(bench_${ds} BitSenseCMLib BitSenseOmniTools)
-    elseif (ds STREQUAL "SEADCM")
-        add_library(SEADCMLib STATIC ./sketches_benchmark/include/sead_counter/SEAD_Counter_Sketch/cmsketch.h
-                                     ./sketches_benchmark/include/sead_counter/SEAD_Counter_Sketch/SmallActiveCounter.h)
-        target_include_directories(SEADCMLib PUBLIC ./sketches_benchmark/include/sead_counter/SEAD_Counter_Sketch)
-        target_compile_definitions(SEADCMLib PUBLIC COUNTER_SIZE=12)
-        target_compile_definitions(SEADCMLib PUBLIC per_estimator_int=12)
-        target_compile_definitions(SEADCMLib PUBLIC per_estimator_bit=12.5)
-        set_target_properties(SEADCMLib PROPERTIES LINKER_LANGUAGE CXX)
-        target_compile_options(SEADCMLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
-        target_link_libraries(bench_${ds} SEADCMLib)
     elseif (ds STREQUAL "SALSACM")
         add_library(SALSACMLib STATIC ./sketches_benchmark/include/salsa/Salsa/SalsaCMS.hpp
                                       ./sketches_benchmark/include/salsa/Salsa/SalsaCMS.cpp
@@ -115,33 +87,6 @@ function(compile_bench ds)
         set_target_properties(CodingCLib PROPERTIES LINKER_LANGUAGE CXX)
         target_compile_options(CodingCLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
         target_link_libraries(bench_${ds} CodingCLib)
-    elseif (ds STREQUAL "BitSenseC")
-        add_library(BitSenseCLib STATIC ./sketches_benchmark/include/bitsense/simulator/src/sketch/BSCountSketch.h
-                                        ./sketches_benchmark/include/bitsense/simulator/src/common/bitsense.h
-                                        ./sketches_benchmark/include/bitsense/simulator/src/common/sketch.h
-                                        ./sketches_benchmark/include/bitsense/simulator/src/common/flowkey.h
-                                        ./sketches_benchmark/include/bitsense/simulator/src/common/data.h
-                                        ./sketches_benchmark/include/bitsense/simulator/src/common/hash.h
-                                        ./sketches_benchmark/include/bitsense/simulator/src/common/test.h
-                                        ./sketches_benchmark/include/bitsense/simulator/src/common/utils.h
-                                        ./sketches_benchmark/include/bitsense/simulator/src/common/logger.h)
-        set_target_properties(BitSenseCLib PROPERTIES LINKER_LANGUAGE CXX)
-        target_compile_options(BitSenseCLib PUBLIC ${BITHACKING_COMPILE_FLAGS} -mno-avx512f)
-        target_link_libraries(bench_${ds} BitSenseCLib BitSenseOmniTools)
-    elseif (ds STREQUAL "SEADC")
-        add_library(SEADCLib STATIC ./sketches_benchmark/include/sead_counter/SEAD_Counter_Sketch/csketch.h)
-        target_include_directories(SEADCLib PUBLIC ./sketches_benchmark/include/sead_counter/SEAD_Counter_Sketch)
-        target_compile_definitions(SEADCLib PUBLIC COUNTER_SIZE=12)
-        target_compile_definitions(SEADCLib PUBLIC per_estimator_int=12)
-        target_compile_definitions(SEADCLib PUBLIC per_estimator_bit=12.5)
-        set_target_properties(SEADCLib PROPERTIES LINKER_LANGUAGE CXX)
-        target_compile_options(SEADCLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
-        target_link_libraries(bench_${ds} SEADCLib)
-    elseif (ds STREQUAL "Switch")
-        add_library(SwitchLib STATIC ./sketches_benchmark/include/Switch.hpp)
-        set_target_properties(SwitchLib PROPERTIES LINKER_LANGUAGE CXX)
-        target_compile_options(SwitchLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
-        target_link_libraries(bench_${ds} SwitchLib)
     elseif (ds STREQUAL ".*Tailored")
         add_library(${ds}Lib STATIC ./sketches_benchmark/include/${ds}.hpp)
         set_target_properties(${ds}Lib PROPERTIES LINKER_LANGUAGE CXX)
@@ -157,24 +102,6 @@ function(compile_bench ds)
         target_link_libraries(bench_${ds} MGDummyLib)
     endif()
 endfunction(compile_bench)
-
-add_subdirectory(./sketches_benchmark/include/bitsense/simulator/third_party/eigen)
-add_subdirectory(./sketches_benchmark/include/bitsense/simulator/third_party/fmt)
-add_subdirectory(./sketches_benchmark/include/bitsense/simulator/third_party/toml)
-# Configuring tomlplusplus & eigen needs a bit more work
-include_directories(./sketches_benchmark/include/bitsense/simulator/third_party/toml/include)
-include_directories(./sketches_benchmark/include/bitsense/simulator/third_party/eigen)
-
-find_package(Boost REQUIRED)
-include_directories(${Boost_INCLUDE_DIRS})
-
-add_library(BitSenseOmniTools ./sketches_benchmark/include/bitsense/simulator/src/impl/utils.cpp
-                              ./sketches_benchmark/include/bitsense/simulator/src/impl/logger.cpp
-                              ./sketches_benchmark/include/bitsense/simulator/src/impl/data.cpp
-                              ./sketches_benchmark/include/bitsense/simulator/src/impl/test.cpp
-                              ./sketches_benchmark/include/bitsense/simulator/src/impl/hash.cpp)
-target_include_directories(BitSenseOmniTools PUBLIC ./sketches_benchmark/include/bitsense/simulator/src/)
-target_link_libraries(BitSenseOmniTools fmt)
 
 foreach(ds ${Targets})
     compile_bench(${ds})
