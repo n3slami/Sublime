@@ -18,13 +18,35 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-if [ "$#" -ne 2 ]; then
-    echo "Illegal number of parameters, usage: generate_datasets.sh <build_path> <real_datasets_path>"
-fi
+FIGURE_OPTIONS=("accuracy" "skew" "vale_tuning" "expansion" "contraction" "accuracy_unbiased")
 
+FIGURES="accuracy,skew,vale_tuning,expansion,contraction,accuracy_unbiased"
+
+function print_help_message_exit() {
+    echo "Usage: generate_datasets.sh <build_path> <real_datasets_path> [-f|--figures ${FIGURES}]"
+    echo "The figures parameter is a list of comma-separated names describing what workloads to generate:"
+    echo "      - accuracy:          measures average absolute error and insertion and query speed on real datasets          (Fig. 10 in the paper)"
+    echo "      - skew:              measures average absolute error over synthetic Zipfian datasets with varying skew       (Fig. 11-A) in the paper)"
+    echo "      - vale_tuning:       measures the memory savings of adaptively tuning VALE when the skew varies              (Fig. 11-B) in the paper)"
+    echo "      - expansion:         measures average absolute error and memory on a growing stream                          (Fig.  8 in the paper)"
+    echo "      - contraction:       measures average absolute error and memory as all keys in a stream are deleted          (Fig. 12 in the paper)"
+    echo "      - accuracy_unbiased: measures unbiased average absolute error and insertion and query speed on real datasets (Fig. 13 in the paper)"
+    echo "By default, all datasets are generated"
+    exit $1
+}
+
+if [[ "$#" -lt 2 ]]; then
+    echo "Too few parameters"
+    print_help_message_exit 1
+fi
 BUILD_PATH=$(realpath $1)
 if [ ! -d "$BUILD_PATH" ]; then
-    echo "Build path does not exist"
+    echo "Sublime build path does not exist"
+    exit 1
+fi
+WORKLOAD_GEN_PATH=$(realpath $BUILD_PATH/bench/workload_gen)
+if [ ! -f "$WORKLOAD_GEN_PATH" ]; then
+    echo "Workload generator does not exist"
     exit 1
 fi
 REAL_DATASETS_PATH=$(realpath $2)
@@ -32,13 +54,33 @@ if [ ! -d "$REAL_DATASETS_PATH" ]; then
     echo "Real datasets path does not exist"
     exit 1
 fi
+shift # past memento build path
+shift # past real datasets path
 
-WORKLOAD_GEN_PATH=$(realpath $BUILD_PATH/bench/workload_gen)
-if [ ! -f "$WORKLOAD_GEN_PATH" ]; then
-    echo "Workload generator does not exist"
-    exit 1
-fi
-
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -f|--figures)
+            FIGURES="$2"
+            IFS="," read -ra FIGURES_ARRAY <<< "$FIGURES"
+            for i in "${FIGURES_ARRAY[@]}"; do 
+                if ! printf "%s\n" "${FIGURE_OPTIONS[@]}" | grep -Fxq "$i"; then
+                    echo "Unknown figure $i"
+                    print_help_message_exit 1
+                fi
+            done
+            shift # past argument
+            shift # past value
+            ;;
+        -*|--*)
+            echo "Unknown option $1"
+            print_help_message_exit 1
+            ;;
+        *)
+            echo "Unknown argument $1"
+            print_help_message_exit 1
+            ;;
+    esac
+done
 
 OUT_PATH=$(realpath ./workloads)
 
@@ -264,36 +306,44 @@ generate_delete() {
 }
 
 
-echo "[!!] generate_synthetic start"
-mkdir -p $OUT_PATH/synthetic && cd $OUT_PATH/synthetic || exit 1
-if ! generate_synthetic ; then
-    echo "[!!] generate_synthetic failed"
-    exit 1
+if [[ "$FIGURES" == *"skew"* || "$FIGURES" == *"vale_tuning"* ]]; then
+    echo "[!!] generate_synthetic start"
+    mkdir -p $OUT_PATH/synthetic && cd $OUT_PATH/synthetic || exit 1
+    if ! generate_synthetic ; then
+        echo "[!!] generate_synthetic failed"
+        exit 1
+    fi
+    echo "[!!] generate_synthetic done"
 fi
-echo "[!!] generate_synthetic done"
 
-echo "[!!] generate_real start"
-mkdir -p $OUT_PATH/real && cd $OUT_PATH/real || exit 1
-if ! generate_real ; then
-    echo "[!!] generate_real failed"
-    exit 1
+if [[ "$FIGURES" == *"accuracy"* || "$FIGURES" == *"accuracy_unbiased"* ]]; then
+    echo "[!!] generate_real start"
+    mkdir -p $OUT_PATH/real && cd $OUT_PATH/real || exit 1
+    if ! generate_real ; then
+        echo "[!!] generate_real failed"
+        exit 1
+    fi
+    echo "[!!] generate_real done"
 fi
-echo "[!!] generate_real done"
 
-echo "[!!] generate_expand start"
-mkdir -p $OUT_PATH/expand && cd $OUT_PATH/expand || exit 1
-if ! generate_expand ; then
-    echo "[!!] generate_expand failed"
-    exit 1
+if [[ "$FIGURES" == *"expansion"* ]]; then
+    echo "[!!] generate_expand start"
+    mkdir -p $OUT_PATH/expand && cd $OUT_PATH/expand || exit 1
+    if ! generate_expand ; then
+        echo "[!!] generate_expand failed"
+        exit 1
+    fi
+    echo "[!!] generate_expand done"
 fi
-echo "[!!] generate_expand done"
 
-echo "[!!] generate_delete start"
-mkdir -p $OUT_PATH/delete && cd $OUT_PATH/delete || exit 1
-if ! generate_delete ; then
-    echo "[!!] generate_delete failed"
-    exit 1
+if [[ "$FIGURES" == *"contraction"* ]]; then
+    echo "[!!] generate_delete start"
+    mkdir -p $OUT_PATH/delete && cd $OUT_PATH/delete || exit 1
+    if ! generate_delete ; then
+        echo "[!!] generate_delete failed"
+        exit 1
+    fi
+    echo "[!!] generate_delete done"
 fi
-echo "[!!] generate_delete done"
 
 echo "[!!] success, all workloads generated"

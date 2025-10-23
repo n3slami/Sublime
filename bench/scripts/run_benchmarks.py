@@ -47,7 +47,7 @@ def rebuild_execute_benchmark(build_dir, output_base, c, s, p, workload_subdir, 
 
 
 def accuracy_bench():
-    sketches = ["CMS", "StingyCM", "SALSACM", "CodingCM", "SEADCM", "Waving"]
+    sketches = ["CMS", "StingyCM", "Tailored", "SALSACM", "CodingCM", "SEADCM", "Waving"]
     memory_footprints = {"caida": [2 ** i for i in range(17, 23)],
                          "kosarak": [2 ** i for i in range(15, 21)],
                          "webdocs": [2 ** i for i in range(17, 23)]}
@@ -78,7 +78,7 @@ def accuracy_bench():
 
 
 def skew_bench():
-    sketches = ["SublimeCMS", "CMS", "StingyCM", "SALSACM", "Waving"]
+    sketches = ["SublimeCMS", "CMS", "StingyCM", "Tailored", "SALSACM", "Waving"]
     CODINGCM_MEMORY_FOOTPRINT = 600000
     MEMORY_FOOTPRINT = 2 ** 20
     sketchbook_memory_footprints = {"0.00": 640000,
@@ -118,7 +118,7 @@ def vale_tuning_bench():
 
 
 def expansion_bench():
-    sketches = ["SublimeCMS", "CMS", "StingyCM", "SALSACM", "Waving"]
+    sketches = ["SublimeCMS", "CMS", "StingyCM", "Tailored", "SALSACM", "Waving"]
     OVERESTIMATE_MEMORY = 2 ** 24
     UNDERESTIMATE_MEMORY = 2 ** 15
     size_function_powers = [0.5, 0.75, 1.0]

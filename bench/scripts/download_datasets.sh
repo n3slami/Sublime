@@ -48,7 +48,7 @@ for dataset in ${!urls[@]}; do
             echo "Download failed. Please try again."
         fi
         if [[ "${dataset}" == "webdocs" ]]; then
-            decompress ${dataset}
+            decompress ${FILE_DAT}.gz
         fi
     fi
 done
