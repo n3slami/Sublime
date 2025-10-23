@@ -78,7 +78,18 @@ generate_real() {
                                                           real $REAL_DATASETS_PATH/10.dat \
                                                           -o caida
         else 
-            $WORKLOAD_GEN_PATH -t standard_string --fdist real $REAL_DATASETS_PATH/0.dat -o caida
+            $WORKLOAD_GEN_PATH -t standard_string --fdist real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          -o caida
         fi
     else 
         echo "    [--] caida already generated"
@@ -123,9 +134,39 @@ generate_real() {
                                                           -o caida_repeat
         else 
             $WORKLOAD_GEN_PATH -t standard_string --fdist real $REAL_DATASETS_PATH/0.dat \
-                                                               $REAL_DATASETS_PATH/0.dat \
-                                                               $REAL_DATASETS_PATH/0.dat \
-                                                               -o caida_repeat
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          real $REAL_DATASETS_PATH/0.dat \
+                                                          -o caida_repeat
         fi
     else 
         echo "    [--] caida_repeat already generated"
@@ -163,7 +204,18 @@ generate_expand() {
                                                                              real $REAL_DATASETS_PATH/10.dat \
                                                                              -o caida_expand
         else 
-            $WORKLOAD_GEN_PATH -t expand --measurement-period 20000 --fdist real $REAL_DATASETS_PATH/0.dat -o caida_expand
+            $WORKLOAD_GEN_PATH -t expand --measurement-period 200000 --fdist real $REAL_DATASETS_PATH/0.dat \
+                                                                             real $REAL_DATASETS_PATH/0.dat \
+                                                                             real $REAL_DATASETS_PATH/0.dat \
+                                                                             real $REAL_DATASETS_PATH/0.dat \
+                                                                             real $REAL_DATASETS_PATH/0.dat \
+                                                                             real $REAL_DATASETS_PATH/0.dat \
+                                                                             real $REAL_DATASETS_PATH/0.dat \
+                                                                             real $REAL_DATASETS_PATH/0.dat \
+                                                                             real $REAL_DATASETS_PATH/0.dat \
+                                                                             real $REAL_DATASETS_PATH/0.dat \
+                                                                             real $REAL_DATASETS_PATH/0.dat \
+                                                                             -o caida_expand
         fi
     else 
         echo "    [--] caida_expand already generated"
@@ -181,19 +233,30 @@ generate_delete() {
         echo "    [++] generating caida_delete"
         if test -f $REAL_DATASETS_PATH/1.dat; then
             $WORKLOAD_GEN_PATH -t delete --fdist real $REAL_DATASETS_PATH/0.dat \
-                                                      real $REAL_DATASETS_PATH/1.dat \
-                                                      real $REAL_DATASETS_PATH/2.dat \
-                                                      real $REAL_DATASETS_PATH/3.dat \
-                                                      real $REAL_DATASETS_PATH/4.dat \
-                                                      real $REAL_DATASETS_PATH/5.dat \
-                                                      real $REAL_DATASETS_PATH/6.dat \
-                                                      real $REAL_DATASETS_PATH/7.dat \
-                                                      real $REAL_DATASETS_PATH/8.dat \
-                                                      real $REAL_DATASETS_PATH/9.dat \
-                                                      real $REAL_DATASETS_PATH/10.dat \
-                                                      -o caida_delete
+                                                 real $REAL_DATASETS_PATH/1.dat \
+                                                 real $REAL_DATASETS_PATH/2.dat \
+                                                 real $REAL_DATASETS_PATH/3.dat \
+                                                 real $REAL_DATASETS_PATH/4.dat \
+                                                 real $REAL_DATASETS_PATH/5.dat \
+                                                 real $REAL_DATASETS_PATH/6.dat \
+                                                 real $REAL_DATASETS_PATH/7.dat \
+                                                 real $REAL_DATASETS_PATH/8.dat \
+                                                 real $REAL_DATASETS_PATH/9.dat \
+                                                 real $REAL_DATASETS_PATH/10.dat \
+                                                 -o caida_delete
         else 
-            $WORKLOAD_GEN_PATH -t delete --fdist real $REAL_DATASETS_PATH/0.dat -o caida_delete
+            $WORKLOAD_GEN_PATH -t delete --fdist real $REAL_DATASETS_PATH/0.dat \
+                                                 real $REAL_DATASETS_PATH/0.dat \
+                                                 real $REAL_DATASETS_PATH/0.dat \
+                                                 real $REAL_DATASETS_PATH/0.dat \
+                                                 real $REAL_DATASETS_PATH/0.dat \
+                                                 real $REAL_DATASETS_PATH/0.dat \
+                                                 real $REAL_DATASETS_PATH/0.dat \
+                                                 real $REAL_DATASETS_PATH/0.dat \
+                                                 real $REAL_DATASETS_PATH/0.dat \
+                                                 real $REAL_DATASETS_PATH/0.dat \
+                                                 real $REAL_DATASETS_PATH/0.dat \
+                                                 -o caida_delete
         fi
     else 
         echo "    [--] caida_delete already generated"
