@@ -37,7 +37,7 @@ uniform_real_distribution<float> distr(0, 1);
 class Tailored {
 public:
     int w, d;
-    unsigned  char* counter [MAX_HASH_NUM];
+    uint8_t *counter [MAX_HASH_NUM];
     uint64_t COUNTER_SIZE_MAX_CNT = (1ULL << (COUNTER_SIZE - 1)) - 1;
     int hash_seed;
     uint64_t index[MAX_HASH_NUM];    //index of each d
@@ -56,9 +56,9 @@ public:
         count = 0;
         srand(time(0));
         hash_seed = rand() ;
-        counter[0] = new unsigned char[w0]();
-        counter[1] = new unsigned char[w1]();
-        counter[2] = new unsigned char[w2]();
+        counter[0] = new uint8_t[w0]();
+        counter[1] = new uint8_t[w1]();
+        counter[2] = new uint8_t[w2]();
         h1 = 5;
         h2 = 10;
 
@@ -89,7 +89,7 @@ public:
         if (p_0 <= p1){
             uint64_t hash_v_1 = MurmurHash32(str, str_len, hash_seed+1);
             uint64_t location_1 = hash_v_1 % w1;
-            char t1 = counter[1][location_1];
+            uint8_t t1 = counter[1][location_1];
             if ((t1 & (0x1f)) < 0x1f){
                 counter[1][location_1]++ ;
             }
@@ -130,7 +130,7 @@ public:
         if (p_0 <= p2){
             uint64_t hash_v_2 = MurmurHash32(str, str_len, hash_seed+2);
             uint64_t location_2 = hash_v_2 % w2;
-            char t2 = counter[2][location_2];
+            uint8_t t2 = counter[2][location_2];
             if ((t2 & 0x0f) < 0x0f){
                 counter[2][location_2] ++;
             }
@@ -139,7 +139,7 @@ public:
                 uint64_t loc_2 = location_2 | 1;
                 int cnt2 = 1;
                 while (cnt2 <=  h2 ){
-                    char t2 =  counter[2][loc_2];
+                    uint8_t t2 =  counter[2][loc_2];
                     if ( (t2 & 0x60)  < 0x60 ){
                         counter[2][loc_2] += 0x20;
                         flag_2 = true;
@@ -176,7 +176,7 @@ public:
         uint32_t query = UINT32_MAX;
         uint64_t hash_v_0 = MurmurHash32(str, str_len, hash_seed+0);
         uint64_t location_0 = hash_v_0 % w0;
-        char v_0 = counter[0][location_0];
+        uint8_t v_0 = counter[0][location_0];
         if( v_0 < 0xff){
             query = Min(v_0 / p0 ,query);
         }
@@ -191,7 +191,7 @@ public:
             uint64_t loc = location_1 | 1;
             int cnt_1 = 1;
             while (cnt_1 <= h1){
-                char t1 = counter[1][loc];
+                uint8_t t1 = counter[1][loc];
                 temp_value += ((t1 & 0x40) >> 6) * 32 * pow(2,cnt_1 -1);
                 uint32_t tmp = loc & (-loc);
                 loc = (loc | (tmp << 1)) ^ tmp;
@@ -210,7 +210,7 @@ public:
 ////    int coefficient = 64;
 //        while (cnt <= 2)
 //        {
-//            char t1= counter[1][loc] ;
+//            uint8_t t1= counter[1][loc] ;
 //            temp_value += ((t1 & 0xc0)>> 6) * 64 * pow(4,cnt-1);
 //            uint32_t tmp = loc & (-loc);
 //            loc = (loc | (tmp << 1)) ^ tmp;
@@ -234,7 +234,7 @@ public:
             uint64_t loc_2 = location_2 | 1;
             int cnt_2 = 1;
             while (cnt_2 <= h2){
-                char t2 = counter[2][loc_2];
+                uint8_t t2 = counter[2][loc_2];
                 v_2 += ((t2  & 0x60) >> 5)* 16 * pow(4,cnt_2-1);
                 uint32_t tmp_2 = loc_2 & (-loc_2);
                 loc_2 = (loc_2 | (tmp_2 << 1)) ^ tmp_2;

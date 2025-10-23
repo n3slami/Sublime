@@ -47,7 +47,7 @@ def rebuild_execute_benchmark(build_dir, output_base, c, s, p, workload_subdir, 
 
 
 def accuracy_bench():
-    sketches = ["CMS", "StingyCM", "Tailored", "SALSACM", "CodingCM", "SEADCM", "Waving"]
+    sketches = ["CMS", "StingyCM", "Tailored", "SALSACM", "CodingCM", "Waving"]
     memory_footprints = {"caida": [2 ** i for i in range(17, 23)],
                          "kosarak": [2 ** i for i in range(15, 21)],
                          "webdocs": [2 ** i for i in range(17, 23)]}
