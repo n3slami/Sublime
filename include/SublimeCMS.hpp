@@ -72,8 +72,6 @@ public:
                                        expansion_f(expansion_f), seed_gen_seed(seed_gen_seed) {
         n = 0;
         col_count = init_col_count;
-        expansion_lim = expansion_f(col_count);
-        contraction_lim = (__builtin_popcountll(init_col_count) > 1 ? 0 : expansion_f(col_count / 2.0));
         init_col_count_lg = highbit_pos(init_col_count) + (__builtin_popcountll(init_col_count) > 1);
         col_count_lg = init_col_count_lg;
 
@@ -85,6 +83,9 @@ public:
         counter_count = init_counter_count;
         init_counter_count_lg = highbit_pos(counter_count) + (__builtin_popcountll(counter_count) > 1);
         counter_count_lg = init_counter_count_lg;
+
+        expansion_lim = expansion_f(col_count);
+        contraction_lim = (__builtin_popcountll(init_counter_count) > 1 ? 0 : expansion_f(col_count / 2.0));
 
         // Setup Prefetching
         std::fill(prefetch_queue_op, prefetch_queue_op + prefetch_queue_len, OpType::None);
