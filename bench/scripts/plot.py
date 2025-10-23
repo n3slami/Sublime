@@ -611,6 +611,8 @@ def plot_accuracy_unbiased(result_dir, output_dir):
 
 PLOTTERS = {plot_accuracy.__name__[5:]: plot_accuracy,
             plot_skew_vale_tuning.__name__[5:]: plot_skew_vale_tuning,
+            "skew": plot_skew_vale_tuning,
+            "vale_tuning": plot_skew_vale_tuning,
             plot_expansion.__name__[5:]: plot_expansion,
             plot_contraction.__name__[5:]: plot_contraction,
             plot_accuracy_unbiased.__name__[5:]: plot_accuracy_unbiased}
