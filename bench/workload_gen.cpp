@@ -194,7 +194,7 @@ void standard_string_bench(argparse::ArgumentParser& parser) {
         auto [freq_dist, freq_dist_std, freq_dist_char_exp, key_file] = get_fdist(parser, fdist_ind);
 
         std::vector<ByteString> new_keys;
-         new_keys = read_data_binary(key_file, key_len_binary);
+        new_keys = read_data_binary(key_file, key_len_binary);
         keys.insert(keys.end(), new_keys.begin(), new_keys.end());
     }
     std::shuffle(keys.begin(), keys.end(), rng);
