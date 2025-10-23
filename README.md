@@ -51,8 +51,8 @@ docker build -t sublime_eval .
 mkdir -p ../paper_results/figures/ && docker run -v ../paper_results/figures:/usr/local/paper_results/figures -it sublime_eval
 ```
 The above creates a **directory next to the cloned repository** named
-`paper_results` and puts the generated figures and tables within. The figures
-and tables will be placed in the `paper_results/figures` subdirectory and will
+`paper_results` and puts the generated figures and tables in the
+`paper_results/figures` subdirectory within. The figures and tables will will
 be numbered to match the paper.
 
 ## Executing Natively

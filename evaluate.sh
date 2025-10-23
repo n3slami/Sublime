@@ -67,7 +67,6 @@ python3 ${project_root}/bench/scripts/run_benchmarks.py ${project_root}/build wo
 
 cd ${project_root} 
 cd ../paper_results/
-pwd
 if ! python3 -c "import matplotlib"; then
     .venv/bin/pip install matplotlib
 fi
