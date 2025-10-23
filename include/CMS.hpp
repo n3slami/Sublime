@@ -27,7 +27,7 @@ public:
         n = 0;
         col_count = init_col_count;
         expansion_lim = expansion_f(col_count);
-        contraction_lim = expansion_f(col_count / 2.0);
+        contraction_lim = (__builtin_popcountll(init_col_count) > 1 ? 0 : expansion_f(col_count / 2.0));
         init_col_count_lg = highbit_pos(init_col_count) + (__builtin_popcountll(init_col_count) > 1);
         col_count_lg = init_col_count_lg;
         init_counter_count = row_count * col_count;

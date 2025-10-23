@@ -172,7 +172,7 @@ public:
             }
         }
         n--;
-        if (n == contraction_lim)
+        if (n < contraction_lim)
             contract();
     }
 
