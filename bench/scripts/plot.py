@@ -219,9 +219,9 @@ def plot_accuracy(result_dir, output_dir):
     legend_lines, legend_labels = axes[0][0].get_legend_handles_labels()
     axes[0][0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.35, 1.62),
                       fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE)
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + ".pdf"), bbox_inches="tight", pad_inches=0.01)
+    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_10).pdf"), bbox_inches="tight", pad_inches=0.01)
 
-    with open(output_dir / f"{inspect.stack()[0][3][5:]}_table.tex", 'w') as accuracy_table:
+    with open(output_dir / f"{inspect.stack()[0][3][5:]}_table_(Fig_10).tex", 'w') as accuracy_table:
         accuracy_table.writelines(["\\begin{tabular}[b]{" + 'c' * (2 * len(workloads) + 1) + "} \n",
                                    "\\toprule \n",
                                    " & ".join(["\\multirow{2}{*}{Memory [MB]}", ] + ["\\multicolumn{2}{c}{" + DATASET_NAMES[workload] + "}" for workload in workloads]) + " \\\\ \n",
@@ -336,7 +336,7 @@ def plot_skew_vale_tuning(result_dir, output_dir):
     legend_sep.set_clip_on(False)
     axes[0].add_line(legend_sep)
 
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + ".pdf"), bbox_inches="tight", pad_inches=0.01)
+    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_11).pdf"), bbox_inches="tight", pad_inches=0.01)
 
 
 def plot_expansion(result_dir, output_dir):
@@ -439,7 +439,7 @@ def plot_expansion(result_dir, output_dir):
     legend_labels = [legend_labels[0], ] + legend_labels[3:]
     axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.1, 1.55),
                    fancybox=True, shadow=False, ncol=3, fontsize=LEGEND_FONT_SIZE)
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + ".pdf"), bbox_inches="tight", pad_inches=0.01)
+    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_12).pdf"), bbox_inches="tight", pad_inches=0.01)
 
 
 def plot_contraction(result_dir, output_dir):
@@ -505,7 +505,7 @@ def plot_contraction(result_dir, output_dir):
     legend_labels = legend_labels[:len(sketches)]
     axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.35, 1.35),
                    fancybox=True, shadow=False, ncol=2, fontsize=LEGEND_FONT_SIZE)
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + ".pdf"), bbox_inches="tight", pad_inches=0.01)
+    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_13).pdf"), bbox_inches="tight", pad_inches=0.01)
 
 
 def plot_accuracy_unbiased(result_dir, output_dir):
@@ -594,9 +594,9 @@ def plot_accuracy_unbiased(result_dir, output_dir):
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
     axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.25, 1.38),
                       fancybox=True, shadow=False, ncol=6, fontsize=LEGEND_FONT_SIZE)
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + ".pdf"), bbox_inches="tight", pad_inches=0.01)
+    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_14).pdf"), bbox_inches="tight", pad_inches=0.01)
 
-    with open(output_dir / f"{inspect.stack()[0][3][5:]}_table.tex", 'w') as accuracy_table:
+    with open(output_dir / f"{inspect.stack()[0][3][5:]}_table_(Fig_14).tex", 'w') as accuracy_table:
         accuracy_table.writelines(["\\begin{tabular}[b]{ccc} \n",
                                    "\\toprule \n",
                                    " & ".join(["Memory [MB]", "$c$", "$s$"]) + " \\\\ \n",
