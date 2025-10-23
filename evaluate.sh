@@ -56,21 +56,18 @@ if [[ $? -ne 0 ]]; then
 fi
 
 cd ../.. && mkdir -p paper_results && cd paper_results
-touch figures/tmp.txt
+mkdir -p figures && touch figures/tmp.txt
 if [ ! -d ".venv" ]; then
     python3 -m venv .venv
 fi
 bash ${project_root}/bench/scripts/download_datasets.sh
 bash ${project_root}/bench/scripts/generate_datasets.sh ${project_root}/build real_datasets -f ${FIGURES}
 source .venv/bin/activate
-python3 ${project_root}/bench/scripts/run_benchmarks.py ${project_root}/build workloads -f ${FIGURES//,/ }
-deactivate
+python3 ${project_root}/bench/scripts/run_benchmarks.py ${project_root}/build workloads -b ${FIGURES//,/ }
 
 cd ${project_root} 
-git checkout master
 cd ../paper_results/
 pwd
-source .venv/bin/activate
 if ! python3 -c "import matplotlib"; then
     .venv/bin/pip install matplotlib
 fi
