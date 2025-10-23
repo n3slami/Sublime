@@ -21,7 +21,7 @@ download() {
     DATASET=$1
     URL=${urls[${DATASET}]}
     echo "Downloading '${DATASET}'..."
-    wget -q --progress=bar ${URL}
+    wget -q --progress=bar ${URL} -P ./${DIR_DATA}
     return $?
 }
 
