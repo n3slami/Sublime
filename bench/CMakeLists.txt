@@ -36,14 +36,14 @@ function(compile_bench ds)
     set_target_properties(bench_${ds} PROPERTIES LINKER_LANGUAGE CXX)
     target_link_libraries(bench_${ds} argparse)
 
-    if (ds STREQUAL "SublimeCMS")
+    if (ds STREQUAL "CMS")
+        target_link_libraries(bench_${ds} CMSLib)
+    elseif (ds STREQUAL "SublimeCMS")
         target_link_libraries(bench_${ds} SublimeCMSLib)
     elseif (ds STREQUAL "SublimeCMSNoTuning")
         target_link_libraries(bench_${ds} SublimeCMSNoTuningLib)
     elseif (ds STREQUAL "SublimeCMSNoTuningMorris")
         target_link_libraries(bench_${ds} SublimeCMSNoTuningMorrisLib)
-    elseif (ds STREQUAL "CMS")
-        target_link_libraries(bench_${ds} CMSLib)
     elseif (ds STREQUAL "StingyCM")
         add_library(StingyCMLib STATIC ./sketches_benchmark/include/StingyCM.hpp 
                                        ./sketches_benchmark/include/MurmurHash.h 
@@ -67,12 +67,12 @@ function(compile_bench ds)
         set_target_properties(SALSACMLib PROPERTIES LINKER_LANGUAGE CXX)
         target_compile_options(SALSACMLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
         target_link_libraries(bench_${ds} SALSACMLib)
+    elseif (ds STREQUAL "CS")
+        target_link_libraries(bench_${ds} CSLib)
     elseif (ds STREQUAL "SublimeCS")
         target_link_libraries(bench_${ds} SublimeCSLib)
     elseif (ds STREQUAL "SublimeCSNoTuning")
         target_link_libraries(bench_${ds} SublimeCSNoTuningLib)
-    elseif (ds STREQUAL "CS")
-        target_link_libraries(bench_${ds} CSLib)
     elseif (ds STREQUAL "StingyC")
         add_library(StingyCLib STATIC ./sketches_benchmark/include/StingyC.hpp 
                                       ./sketches_benchmark/include/MurmurHash.h 
@@ -110,3 +110,4 @@ endforeach()
 # Setup workload generation binary
 add_executable(workload_gen workload_gen.cpp zipf/zipf.h zipf/zipf.c)
 target_link_libraries(workload_gen argparse)
+
