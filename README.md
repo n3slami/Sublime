@@ -92,7 +92,7 @@ commands
 ```Bash
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . -j8
+make -j8
 ```
 You can control which parts are configured and compiled with the following
 CMake options:
