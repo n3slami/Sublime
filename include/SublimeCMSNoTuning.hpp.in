@@ -14,9 +14,21 @@
 #include "MurmurHash.hpp"
 #include "util.hpp"
 
-#define COUNTER_PER_CACHE_LINE @FIXED_TUNING_C@
-#define STUB_SIZE              @FIXED_TUNING_S@
+#define COUNTER_PER_CACHE_LINE @FIXED_TUNING_C@     // The fixed number of counter per chunk.
+#define STUB_SIZE              @FIXED_TUNING_S@     // The fixed stub length.
 
+/**
+ * Computes, at compile time, the lookup table indicating which word each stub
+ * starts in within its chunk.
+ *
+ * Here, we assume that stubs are at most 32-bits long. We compute which 64-bit
+ * words they lie in and their offsets within these words. We align the
+ * words to 64-bit addresses when possible, and to 32-bit addresses
+ * otherwise. Doing so ensure that the micro-ops issued to the CPU only
+ * have to fetch one 64-bit word in most cases and two 64-bit words in the
+ * worst case. This allows reading, incrementing, and decrementing a stub
+ * in 1-2 micro-ops.
+ */
 static constexpr std::array<uint8_t, 128> setup_lookup_tables_word_update_byte_offset_lookup_table() {
     constexpr uint64_t word_size_bytes = sizeof(uint64_t);
     constexpr uint64_t word_size_bits = word_size_bytes * 8;
@@ -31,6 +43,10 @@ static constexpr std::array<uint8_t, 128> setup_lookup_tables_word_update_byte_o
     return word_update_byte_offset;
 }
 
+/**
+ * Computes, at compile time, the lookup table indicating the offset at which
+ * each stub start within its word.
+ */
 static constexpr std::array<uint8_t, 128> setup_lookup_tables_word_update_shamt_lookup_table() {
     constexpr uint64_t word_size_bytes = sizeof(uint64_t);
     constexpr uint64_t word_size_bits = word_size_bytes * 8;
@@ -46,221 +62,119 @@ static constexpr std::array<uint8_t, 128> setup_lookup_tables_word_update_shamt_
 }
 
 class SublimeCMS {
-private:
-    enum class OpType {
-        Insert,
-        Delete,
-        Query,
-        None
-    };
-
-    struct Sketch {
-        uint8_t * const sketch;
-    };
-
 public:
-    static constexpr uint32_t cache_line_size = 512, counter_per_cache_line = COUNTER_PER_CACHE_LINE, stub_size = STUB_SIZE;
-    static constexpr uint32_t cache_line_size_bytes = cache_line_size / 8;
-    static constexpr auto bit_length_to_extension_count = setup_extension_len_lookup_table();
-    static constexpr auto word_update_byte_offset = setup_lookup_tables_word_update_byte_offset_lookup_table();
-    static constexpr auto word_update_shamt = setup_lookup_tables_word_update_shamt_lookup_table();
-
-    SublimeCMS(size_t init_col_count, size_t init_row_count, std::function<uint64_t(double)> expansion_f, uint32_t seed_gen_seed)
-                                     : row_count(init_row_count), 
-                                       init_col_count(init_col_count),
-                                       expansion_f(expansion_f), seed_gen_seed(seed_gen_seed) {
-        n = 0;
-        col_count = init_col_count;
-        init_col_count_lg = highbit_pos(init_col_count) + 1;
-        col_count_lg = init_col_count_lg;
-
-        init_counter_count = row_count * col_count;
-        counter_count = init_counter_count;
-        init_counter_count_lg = highbit_pos(counter_count) + 1;
-        counter_count_lg = init_counter_count_lg;
-
-        expansion_lim = expansion_f(col_count);
-        contraction_lim = 0;
-
-        // Setup Prefetching
-        std::fill(prefetch_queue_op, prefetch_queue_op + prefetch_queue_len, OpType::None);
-
-        // Setup Tof Hashing
-		bias_range = std::min(static_cast<uint32_t>(((64 - counter_count_lg)) / (row_count - 1)), 8U);
-        bias_mask = BITMASK(bias_range);
-        index_range	= std::min(static_cast<uint32_t>(64 - bias_range * row_count),
-                               static_cast<uint32_t>(counter_count_lg - bias_range));
-		index_mask = BITMASK(index_range);
-
-        sketches.push_back(allocate_sketch(row_count, col_count));
-        gen_seeds();
-    }
+    /**
+     * Construct SublimeCMS with a fixed tuning of VALE. In our code, we follow
+     * the traditional naming convention of calling arrays "rows" and each
+     * counter in each array a "column." 
+     *
+     * @param init_col_count The initial number of columns in the sketch, i.e.,
+     * counters in each array.
+     * @param init_row_count The number of rows in the sketch, i.e., the number
+     * of arrays.
+     * @param expansion_f The inverse of the size function `W` defined in the
+     * paper. It gives the number of keys required to trigger an expansion or a
+     * contraction.
+     * @param seed_gen_seed Mother seed used to generate the seeds of the hash
+     * functions, if using multiple of them.
+     */
+    SublimeCMS(size_t init_col_count, size_t init_row_count,
+               std::function<uint64_t(double)> expansion_f,
+               uint32_t seed_gen_seed);
     
     // Should probably write a copy constructor...
     SublimeCMS(const SublimeCMS&) = delete;
     SublimeCMS& operator=(const SublimeCMS&) = delete;
 
-    ~SublimeCMS() {
-        for (uint32_t i = 0; i < sketches.size(); i++) {
-            const uint32_t cols = col_count >> (sketches.size() - i - 1);
-            const uint32_t cache_line_count = (row_count * cols + counter_per_cache_line - 1) / counter_per_cache_line;
-            free_spills(sketches[i], cache_line_count);
-            delete[] sketches[i];
-        }
-        sketches.clear();
-        delete seeds;
-    }
+    ~SublimeCMS();
 
+    /**
+     * Inserts the key `elem` by converting it to a string of length
+     * `sizeof(elem)`, incrementing its frequency.
+     *
+     * @param elem The key to insert.
+     */
     template <typename T>
     void Insert(const T elem) {
         Insert(reinterpret_cast<const char *>(&elem), sizeof(elem));
     }
 
-    void Insert(const char *elem, const uint32_t length) {
-        if (n == expansion_lim)
-            expand();
-        uint8_t *sketch = sketches.back();
-        if constexpr (using_tof_hashing) {
-            uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
-            const uint32_t index = hash_tof(hash_value);
-            hash_value >>= index_range;
-            for (int i = 0; i < row_count; i++) {
-                uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
-                pos = pos < counter_count ? pos : pos - counter_count;
-                push_prefetch_request(sketch, pos, OpType::Insert);
-                handle_last_prefetch_request(sketch);
-                hash_value >>= bias_range;
-            }
-        }
-        else {
-            for (int i = 0; i < row_count; i++) {
-                const uint32_t pos = col_count * i + hash_key(elem, length, i);
-                push_prefetch_request(sketch, pos, OpType::Insert);
-                handle_last_prefetch_request(sketch);
-            }
-        }
-        n++;
-    }
+    /**
+     * Inserts the string key `elem` with `length` characters, incrementing its
+     * frequency.
+     *
+     * @param elem Pointer to the string key.
+     * @param length Length of the key in bytes.
+     */
+    void Insert(const char *elem, const uint32_t length);
 
 
+    /**
+     * Deletes the key `elem` by converting it to a string of length
+     * `sizeof(elem)`, decrementing its frequency.
+     *
+     * @param elem The key to delete.
+     */
     template <typename T>
     void Delete(const T elem) {
         Delete(reinterpret_cast<const char *>(&elem), sizeof(elem));
     }
 
 
-    void Delete(const char *elem, const uint32_t length) {
-        uint8_t *sketch = sketches.back();
-        if constexpr (using_tof_hashing) {
-            uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
-            uint32_t index = hash_tof(hash_value);
-            hash_value >>= index_range;
-            const uint32_t old_prefetch_clock = prefetch_clock;
-            prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
-            for (int i = 0; i < row_count; i++) {
-                uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
-                pos = pos < counter_count ? pos : pos - counter_count;
-                push_prefetch_request(sketch, pos, OpType::Delete);
-                handle_last_prefetch_request(sketch);
-                hash_value >>= bias_range;
-            }
-        }
-        else {
-            for (int i = 0; i < row_count; i++) {
-                const uint32_t pos = col_count * i + hash_key(elem, length, i);
-                push_prefetch_request(sketch, pos, OpType::Delete);
-                handle_last_prefetch_request(sketch);
-            }
-        }
-        n--;
-        if (n < contraction_lim)
-            contract();
-    }
+    /**
+     * Deletes the string key `elem` with `length` characters, decrementing its
+     * frequency.
+     *
+     * @param elem Pointer to the string key.
+     * @param length Length of the key in bytes.
+     */
+    void Delete(const char *elem, const uint32_t length);
 
     
+    /**
+     * Return an estimate of the frequency of the key `elem` by converting it
+     * to a string of length `sizeof(elem)`, decrementing its frequency.
+     *
+     * @param elem Pointer to the string key.
+     * @return An estimate of the key's frequency.
+     */
     template <typename T>
     uint64_t Query(const T elem) const {
         return Query(reinterpret_cast<const char *>(&elem), sizeof(elem));
     }
 
 
-    uint64_t Query(const char *elem, const uint32_t length) const {
-        uint64_t res = MAX_VALUE(8 * sizeof(uint32_t));
-        const uint8_t *sketch = sketches.back();
-        if constexpr (using_tof_hashing) {
-            uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
-            uint32_t index = hash_tof(hash_value);
-            hash_value >>= index_range;
-            for (int i = 0; i < row_count; i++) {
-                uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
-                pos = pos < counter_count ? pos : pos - counter_count;
-                res = std::min(res, get_counter(sketch, pos));
-                hash_value >>= bias_range;
-            }
-        }
-        else {
-            for (int i = 0; i < row_count; i++)
-                res = std::min(res, get_counter(sketch, col_count * i + hash_key(elem, length, i)));
-        }
-        return res;
-    }
+    /**
+     * Return an estimate of the frequency of the string key `elem` with
+     * `length` characters.
+     *
+     * @param elem Pointer to the string key.
+     * @param length Length of the key in bytes.
+     * @return An estimate of the key's frequency.
+     */
+    uint64_t Query(const char *elem, const uint32_t length) const;
 
 
-    void FlushPrefetchQueue() {
-        uint8_t *sketch = sketches.back();
-        const uint32_t loop_clock = prefetch_clock;
-        for (prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
-                prefetch_clock != loop_clock;
-                prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len) {
-            if constexpr (using_tof_hashing) {
-                switch (prefetch_queue_op[prefetch_clock]) {
-                    case OpType::Insert:
-                        increment_counter(sketch, prefetch_queue_cache_line[prefetch_clock],
-                                                  prefetch_queue_cache_line_offset[prefetch_clock]);
-                    case OpType::Delete:
-                        decrement_counter(sketch, prefetch_queue_cache_line[prefetch_clock],
-                                                  prefetch_queue_cache_line_offset[prefetch_clock]);
-                    default:
-                        ;
-                }
-            }
-            else {
-                switch (prefetch_queue_op[prefetch_clock]) {
-                    case OpType::Insert:
-                        increment_counter(sketch, prefetch_queue[prefetch_clock]);
-                    case OpType::Delete:
-                        decrement_counter(sketch, prefetch_queue[prefetch_clock]);
-                    default:
-                        ;
-                }
-            }
-            prefetch_queue_op[prefetch_clock] = OpType::None;
-        }
-    }
+    /**
+     * Flushes all updates whose cache line requests are still in flight. The
+     * purpose of this function is to allow users ensure that queries take into
+     * account all previous updates, even those that are in flight. It also
+     * used to apply all updates before expanding or contracting the sketch or
+     * retuning VALE's parameters.
+     */
+    void FlushPrefetchQueue();
 
 
-    size_t Size(bool include_all_sketches=false) const {
-        size_t res = 0;
-        for (int32_t sketch_ind = sketches.size() - 1; sketch_ind >= 0; sketch_ind--) {
-            const uint8_t *sketch = sketches[sketch_ind];
-            const uint32_t cache_line_count = (row_count * col_count + counter_per_cache_line - 1) / counter_per_cache_line;
-            const size_t base_size = cache_line_count * cache_line_size_bytes;
-            const uint32_t sep_1 = counter_per_cache_line;
-            const uint32_t sep_2 = sep_1 + counter_per_cache_line * stub_size;
-            const uint32_t sep_3 = sep_2 + last_extension_word_bit_count;
-            uint32_t extra_arrays = 0;
-            for (int i = 0; i < cache_line_count; i++) {
-                const uint8_t *ptr = sketch + i * cache_line_size_bytes;
-                const uint64_t *words = reinterpret_cast<const uint64_t *>(ptr);
-                if (has_separate_array(words))
-                    extra_arrays++;
-            }
-            res += base_size + extra_arrays * sizeof(uint32_t) * counter_per_cache_line;
-            if (!include_all_sketches)
-                break;
-        }
-        return res;
-    }
+    /**
+     * Returns the total size of the sketch, in bytes.
+     *
+     * @param include_all_sketches If set to true, includes the size of the
+     * sketches stored in the record in the output of the function. The default
+     * of false corresponds to the setting where the sketch is used to process
+     * an insertion-only stream, where the record of sketches is not needed.
+     * @return The total size of the sketch, in bytes.
+     */
+    size_t Size(bool include_all_sketches=false) const;
 
 
     uint32_t GetCountersPerChunk() const {
@@ -273,448 +187,312 @@ public:
     }
 
 
+    // General cache line information.
+    static constexpr uint32_t cache_line_size = 512;
+    static constexpr uint32_t cache_line_size_bytes = cache_line_size / 8;
+    static constexpr uint32_t cache_line_size_words = cache_line_size / (8 * sizeof(uint64_t));
+
+    // Fix VALE's parameters.
+    static constexpr uint32_t counter_per_cache_line = COUNTER_PER_CACHE_LINE, stub_size = STUB_SIZE;
+
 private:
+    // VALE's extension fragment length
+    static constexpr uint32_t extension_size = 2;
+    static_assert((8 * sizeof(uint64_t)) % extension_size == 0,
+                  "Word size must be divisible by the extension fragment size \
+                   to simplify and speed up the code.");
+    // Number of fragments that fit in the extension pool.
+    static constexpr uint32_t num_extension = (cache_line_size - 1 - counter_per_cache_line * (stub_size + 1)) / extension_size;
+    // Number of words in the extension pool.
+    static constexpr uint32_t num_extension_words = extension_size * num_extension / 64 + 1;
+    // Number of bits of the extension pool in its last word. May be less than
+    // 64 due to its how the extension pool is sized.
+    static constexpr uint64_t last_extension_word_bit_count = extension_size * num_extension + 1 - 64 * (num_extension_words - 1);
+
+    // Lookup table used to quickly determine the word a stub lies in within a
+    // chunk.
+    static constexpr auto word_update_byte_offset = setup_lookup_tables_word_update_byte_offset_lookup_table();
+    // Lookup table used to quickly offset of a stub within its word.
+    static constexpr auto word_update_shamt = setup_lookup_tables_word_update_shamt_lookup_table();
+
+    // Masked used to derive the `delimiters` bitmap in the bit manipulation
+    // workflow leveraging rank-and-select.
+    static constexpr uint64_t select_mask = 0x5555555555555555;
+
+    // Global count of the number of keys in the stream
     uint64_t n;
-    uint64_t expansion_lim, contraction_lim;
+    
+    // The value `n`, i.e., the total key count, has to reach to trigger an expansion.
+    uint64_t expansion_lim;
+    // The value `n`, i.e., the total key count, has to reach to trigger a contraction.
+    uint64_t contraction_lim;
+
+    // Mother seed used to generate the seeds of the hash functions, if using
+    // multiple of them.
     uint32_t seed_gen_seed;
+    // Hash function seeds.
     uint32_t *seeds;
-    size_t init_col_count, col_count, init_counter_count, counter_count;
+
+    // Current number of counter in each array in the sketch.
+    size_t col_count;
+    // Current total number of counters in the sketch.
+    size_t counter_count;
+    size_t init_col_count, init_counter_count;
+    // Number of arrays in the sketch
     const size_t row_count;
+    // The base-2 logarithm of the total number of counters and the column
+    // count. Used to compute consistent hashing.
     uint32_t init_col_count_lg, col_count_lg, init_counter_count_lg, counter_count_lg;
+
+    // Expansion function. This is the inverse of the size function `W`
+    // presented in the paper. It gives the number of keys required to trigger
+    // an expansion or a contraction.
     std::function<uint64_t(double)> expansion_f;
+
+    // Record of sketches.
     std::vector<uint8_t *> sketches;
 
-    // Prefetching Queue
-    static constexpr bool using_tof_hashing = true;
-    static constexpr uint64_t prefetch_queue_len = 32;
-    uint64_t prefetch_queue[prefetch_queue_len];
-    uint64_t prefetch_queue_cache_line[prefetch_queue_len];
-    uint64_t prefetch_queue_cache_line_offset[prefetch_queue_len];
-    OpType prefetch_queue_op[prefetch_queue_len];
-    uint32_t prefetch_clock = 0;
-
-    // Tof Hashing Stuff
+    // Tof hashing (hash splicing) parameters
+    static constexpr bool using_tof_hashing = true;     // If false, use simple hashing.
     uint32_t bias_range, index_range;
     uint64_t bias_mask, index_mask;
 
-    static constexpr uint64_t select_mask = 0x5555555555555555;
-    static constexpr uint32_t cache_line_size_words = cache_line_size / (8 * sizeof(uint64_t));
-    static constexpr uint32_t extension_size = 2;
-    static constexpr uint32_t num_extension = (cache_line_size - 1 - counter_per_cache_line * (stub_size + 1)) / extension_size;
-    static constexpr uint32_t num_extension_words = extension_size * num_extension / 64 + 1;
-    static constexpr uint64_t last_extension_word_bit_count = extension_size * num_extension + 1 - 64 * (num_extension_words - 1);
+    // Prefetching queue length.
+    static constexpr uint64_t prefetch_queue_len = 32;
+    // Prefetching queue used when employing simple hashing.
+    uint64_t prefetch_queue[prefetch_queue_len];
+    // Prefetching queue used when employing hash splicing.
+    uint64_t prefetch_queue_cache_line[prefetch_queue_len], prefetch_queue_cache_line_offset[prefetch_queue_len];
+    // Operations of the prefetching queue.
+    enum class OpType {
+        Insert,
+        Delete,
+        Query,
+        None
+    };
+    // Operations recorded in the prefetching queue.
+    OpType prefetch_queue_op[prefetch_queue_len];
+    // Clock tracking the beginning of the queue.
+    uint32_t prefetch_clock = 0;
 
-    static_assert((8 * sizeof(uint64_t)) % extension_size == 0,
-                  "Word size must be divisible by the extension size, at least for now");
 
-
-    //__attribute__((always_inline))
+    /**
+     * Compute the chunk's offset within the entire sketch a counter at offset
+     * `pos` lies in.
+     *
+     * @param pos The offset of the counter within the entire sketch whose
+     * chunk offset is to be computed.
+     * @return The offset of the chunk within the sketch (in terms of the
+     * number of chunks) the counter lies in.
+     */
     inline uint32_t get_cache_line_ind(const uint32_t pos) const {
         return static_cast<int32_t>(pos) / counter_per_cache_line;
     }
 
 
+    /**
+     * Push a prefetch request for a chunk to the prefetching queue.
+     *
+     * @param sketch The state of the sketch to prefetch from.
+     * @param pos The counter offset among all of the arrays to prefetch. 
+     * @param op The type of the operation that must be applied after
+     * prefetching is complete.
+     */
+    inline void push_prefetch_request(uint8_t *sketch, const uint32_t pos, const OpType op);
+
+
+    /**
+     * Apply the oldest corresponding to the oldest chunk requested from the
+     * prefetching queue, which is now (most likely) brought into cache.
+     *
+     * @param sketch The state of the sketch to apply the operation to.
+     */
+    inline void handle_last_prefetch_request(uint8_t *sketch);
+
+
+    /**
+     * Set the bit in the overflows bitmap corresponding to the counter at the
+     * offset `pos` within a chunk to `state`. We do this using branchless code
+     * that leverages the conditional move instruction `cmov`.
+     *
+     * @param words A pointer to the chunk's location in memory.
+     * @param pos The offset of the counter whose corresponding overflows bit
+     * must be set.
+     * @param state The value the overflows bit must be set to.
+     */
     __attribute__((always_inline))
-    inline void push_prefetch_request(uint8_t *sketch, const uint32_t pos, const OpType op) {
-        if constexpr (using_tof_hashing) {
-            prefetch_queue_cache_line[prefetch_clock] = get_cache_line_ind(pos);
-            prefetch_queue_cache_line_offset[prefetch_clock] = pos - counter_per_cache_line * prefetch_queue_cache_line[prefetch_clock];
-            prefetch_queue_op[prefetch_clock] = op;
-            __builtin_prefetch(sketch + prefetch_queue_cache_line[prefetch_clock] * cache_line_size_bytes);
-        }
-        else {
-            prefetch_queue[prefetch_clock] = pos;
-            prefetch_queue_op[prefetch_clock] = op;
-            __builtin_prefetch(sketch + get_cache_line_ind(pos) * cache_line_size_bytes);
-        }
-        prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
-    }
-
-
-    __attribute__((always_inline))
-    inline void handle_last_prefetch_request(uint8_t *sketch) {
-        if constexpr (using_tof_hashing) {
-            switch (prefetch_queue_op[prefetch_clock]) {
-                case OpType::Insert:
-                    increment_counter(sketch, prefetch_queue_cache_line[prefetch_clock],
-                                              prefetch_queue_cache_line_offset[prefetch_clock]);
-                    break;
-                case OpType::Delete:
-                    decrement_counter(sketch, prefetch_queue_cache_line[prefetch_clock],
-                                              prefetch_queue_cache_line_offset[prefetch_clock]);
-                    break;
-                default:
-                    break;
-            }
-        }
-        else {
-            switch (prefetch_queue_op[prefetch_clock]) {
-                case OpType::Insert:
-                    increment_counter(sketch, prefetch_queue[prefetch_clock]);
-                    break;
-                case OpType::Delete:
-                    decrement_counter(sketch, prefetch_queue[prefetch_clock]);
-                    break;
-                default:
-                    break;
-            }
-        }
-    }
-
-
-    //__attribute__((always_inline))
     inline void set_overflowing(uint64_t words[], const uint32_t pos, const bool state) {
         words[pos / 64] = state ? words[pos / 64] | (1ULL << (pos % 64))
                                 : words[pos / 64] & ~(1ULL << (pos % 64));
     }
 
-    //__attribute__((always_inline))
+    /**
+     * Set the bit in the overflows bitmap corresponding to the counter at the
+     * offset `pos` within a chunk to 0. We do this using branchless code that
+     * leverages the conditional move instruction `cmov`. The operation is only
+     * applies if the `bit_value` "enable" input is set to 1.
+     *
+     * @param words A pointer to the chunk's location in memory.
+     * @param pos The offset of the counter whose corresponding overflows bit
+     * must be set to 0.
+     * @param bit_value Controls whether the operation actually modifies the
+     * corresponding overflows bit, acting as an "enable" input. The
+     * modification is carried out if `bit_value=1` and it is not if
+     * `bit_value=0`.
+     */
+    __attribute__((always_inline))
     inline void set_overflowing_to_0(uint64_t words[], const uint32_t pos, const uint64_t bit_value=1) {
         words[pos / 64] &= ~(bit_value << (pos % 64));
     }
 
 
-    //__attribute__((always_inline))
+    /**
+     * Set the bit in the overflows bitmap corresponding to the counter at the
+     * offset `pos` within a chunk to 1. We do this using branchless code that
+     * leverages the conditional move instruction `cmov`. The operation is only
+     * applies if the `bit_value` "enable" input is set to 1.
+     *
+     * @param words A pointer to the chunk's location in memory.
+     * @param pos The offset of the counter whose corresponding overflows bit
+     * must be set to 1.
+     * @param bit_value Controls whether the operation actually modifies the
+     * corresponding overflows bit, acting as an "enable" input. The
+     * modification is carried out if `bit_value=1` and it is not if
+     * `bit_value=0`.
+     */
+    __attribute__((always_inline))
     inline void set_overflowing_to_1(uint64_t words[], const uint32_t pos, const uint64_t bit_value=1) {
         words[pos / 64] |= bit_value << (pos % 64);
     }
     
 
-    //__attribute__((always_inline))
+    __attribute__((always_inline))
     inline bool is_overflowing(const uint64_t words[], const uint32_t pos) const {
         return (words[pos / 64] >> (pos % 64)) & 1ULL;
     }
 
 
-    //__attribute__((always_inline))
-    inline uint64_t get_extension_mask(const uint64_t val) const {
+    __attribute__((always_inline))
+    inline uint64_t get_delimiters_bitmap_word(const uint64_t val) const {
         return (val & (val >> 1)) & select_mask;
     }
 
 
-    //__attribute__((always_inline))
-    inline uint32_t get_extension_rank(const uint64_t words[], const uint32_t pos) const {
-        uint32_t res = 0;
-        for (uint32_t i = 0; i < pos / 64; i++)
-            res += __builtin_popcountll(words[i]);
-        res += bit_rank(words[pos / 64], pos % 64);
-        return res;
-    }
+    /**
+     * Compute the rank of a chunk's counter among the overflowing counters.
+     *
+     * @param words A pointer to the chunk's location in memory.
+     * @param pos The offset of the counter within the chunk.
+     * @return The rank of the chunk's counter among the overflowing counters.
+     */
+    inline uint32_t get_extension_rank(const uint64_t words[], const uint32_t pos) const;
     
 
-    //__attribute__((always_inline))
-    inline uint32_t get_extension_pos(const uint64_t extensions[], const uint32_t rank) const {
-        uint64_t masks[num_extension_words];
-        for (uint32_t i = 0; i < num_extension_words; i++)
-            masks[i] = get_extension_mask(extensions[i]);
-        int extension_pos = (rank == 0 ? -2 : bit_select(masks[0], rank - 1));
-        if constexpr (num_extension_words == 2) {
-            const int32_t other_attempt = bit_select(masks[1], rank - 1 - __builtin_popcountll(masks[0]));
-            extension_pos = (extension_pos >= 64 ? other_attempt + 64 : extension_pos);
-        }
-        else if constexpr (num_extension_words > 2) {
-            extension_pos = (extension_pos < 64 ? extension_pos : -3);
-            uint32_t running_rank = rank - __builtin_popcountll(masks[0]);
-            for (uint32_t i = 1; i < num_extension_words; i++) {
-                const uint32_t select_result = running_rank > 64 ? 64 : bit_select(masks[i], running_rank - 1);
-                extension_pos = ((extension_pos == -3 && select_result < 64) ? select_result + i * 64 : extension_pos);
-                running_rank -= __builtin_popcountll(masks[i]);
-            }
-        }
-        return extension_pos + 2;
-    }
+    /**
+     * Applies the select primitive to compute the bit position of an extension
+     * with rank `rank` within the extension pool. We have separated and
+     * optimized the common cases where the extension pool fits in 1-2 words.
+     * This allows us to avoid the branch mispredictions of a loop and
+     * maintaining its corresponding variables.
+     *
+     * @param extensions A copy of the extension pool. 
+     * @param rank The rank of the target extension, or, equivalently, the rank
+     * of the overflowing counter among the chunk's overflowing counters.
+     * @return The position, in bits, of the target extension.
+     */
+    inline uint32_t get_extension_pos(const uint64_t extensions[], const uint32_t rank) const;
 
 
-    //__attribute__((always_inline))
-    inline uint32_t get_extension_length(uint64_t extensions[]) const {
-        if constexpr (num_extension_words == 1)
-            return highbit_pos(extensions[0]) + 1;
-        else if constexpr (num_extension_words == 2) {
-            const uint32_t a = highbit_pos(extensions[1]);
-            const uint32_t b = highbit_pos(extensions[0]);
-            return (a ? a + 64 : b) + 1;
-        }
-        else {
-            uint32_t res = 0;
-            for (int32_t i = num_extension_words - 1; i >= 0; i--)
-                res = std::max(res, (extensions[i] ? highbit_pos(extensions[i]) + 64 * i + 1 : 0));
-            return res;
-        }
-    }
+    /**
+     * Get the total length of a chunk's extensions, in bits. Used to decide
+     * whether a chunk should start using a tails array. We have separated and
+     * optimized the common cases where the extension pool fits in 1-2 words.
+     * This allows us to avoid the branch mispredictions of a loop and minimize
+     * the number of executed instruction.
+     *
+     * @param extensions A copy of the extension pool. 
+     * @return The total length of the chunk's extensions, in bits.
+     */
+    inline uint32_t get_extension_length(uint64_t extensions[]) const;
 
 
-    //__attribute__((always_inline))
-    inline void shift_extensions_left_from_pos(uint64_t extensions[], const uint32_t pos, const uint32_t shamt) const {
+    /**
+     * Shift all bits from the bit position `pos` onward in the extension pool
+     * to the left by `shamt` bits. This operation shifts the `pos` bit itself,
+     * and is used when adding extension fragments. It also fills the newly
+     * emptied space with 0s. We have separated and optimized the common cases
+     * where the extension pool fits in 1-2 words. This allows us to avoid the
+     * branch mispredictions of a loop.
+     *
+     * @param extensions A copy of the extension pool.
+     * @param pos The bit position the extensions must be shifted from.
+     * @param shamt The number of bits to shift by.
+     */
+    inline void shift_extensions_left_from_pos(uint64_t extensions[],
+                                               const uint32_t pos,
+                                               const uint32_t shamt) const;
+
+
+    /**
+     * Shift all bits from the bit position `pos` onward in the extension pool
+     * to the right by `shamt` bits. This operation shifts the `pos` bit
+     * itself, and is used to remove extension fragments. That is, it
+     * overfwrites the bits in the range [pos-1,pos-shamt] with the shifted
+     * bits, and writes 0s to the end of the array where there are no longer
+     * bits. We have separated and optimized the common cases where the
+     * extension pool fits in 1-2 words. This allows us to avoid the branch
+     * mispredictions of a loop.
+     *
+     * @param extensions A copy of the extension pool.
+     * @param pos The bit position the extensions must be shifted from.
+     * @param shamt The number of bits to shift by.
+     */
+    inline void shift_extensions_right_from_pos(uint64_t extensions[],
+                                                const uint32_t pos,
+                                                const uint32_t shamt) const;
+
+
+    inline uint32_t *get_tails_ptr_from_extension_bitmap(const uint64_t *extension_bitmap) const {
         if constexpr (num_extension_words == 1) {
-            const uint64_t a = extensions[0] & BITMASK(pos);
-            const uint64_t b = extensions[0] & (BITMASK(64) << pos);
-            extensions[0] = (b << shamt) | a;
-        }
-        else if constexpr (num_extension_words == 2) {
-            if (pos < 64) {
-                const uint64_t a = extensions[0] & BITMASK(pos);
-                const uint64_t b = extensions[0] >> pos;
-                extensions[1] <<= shamt;
-                extensions[1] |= (64 < pos + shamt ? b << (pos + shamt - 64) : b >> (64 - pos - shamt));
-                extensions[0] &= BITMASK(pos);
-                extensions[0] |= (pos + shamt >= 64 ? 0ULL : (b << (pos + shamt)));
-            }
-            else {
-                const uint32_t new_pos = pos - 64;
-                const uint64_t b = extensions[1] & (~BITMASK(new_pos));
-                extensions[1] &= BITMASK(new_pos);
-                extensions[1] |= b << shamt;
-            }
-        }
-        else {
-            const int32_t pos_word = pos / 64;
-            for (int32_t i = num_extension_words - 1; i > pos_word; i--) {
-                const uint64_t prev_extension = i > pos_word ? extensions[i - 1] & (~BITMASK(std::max(0, static_cast<int32_t>(pos) - (i - 1) * 64)))
-                                                             : 0ULL;
-                extensions[i] = (extensions[i] << shamt) | (prev_extension >> (64 - shamt));
-            }
-            const uint64_t a = extensions[pos_word] & BITMASK(pos % 64);
-            const uint64_t b = extensions[pos_word] & (BITMASK(64) << (pos % 64));
-            extensions[pos_word] = (b << shamt) | a;
-        }
-    }
-
-
-    //__attribute__((always_inline))
-    inline void shift_extensions_right_from_pos(uint64_t extensions[], const uint32_t pos, const uint32_t shamt) const {
-        if constexpr (num_extension_words == 1) {
-            const uint64_t a = extensions[0] & BITMASK(pos);
-            const uint64_t b = extensions[0] & (~BITMASK(pos));
-            extensions[0] = ((b >> shamt) & (~BITMASK(pos))) | a;
-        }
-        else if constexpr (num_extension_words == 2) {
-            if (pos < 64) {
-                const bool end_in_second_word = pos + shamt >= 64;
-                const uint32_t dead_a = end_in_second_word ? pos + shamt - 64 : 0U;
-                const uint32_t shift_a = 64 - shamt + dead_a;
-                const uint64_t a = (extensions[1] >> dead_a) & BITMASK(shamt);
-                const uint64_t b = (end_in_second_word ? 0ULL : extensions[0] >> (pos + shamt));
-                extensions[1] >>= shamt;
-                extensions[0] &= BITMASK(pos);
-                extensions[0] |= ((a << shift_a) | (b << pos));
-            }
-            else {
-                const uint32_t new_pos = pos - 64;
-                const uint64_t a = extensions[1] & (~BITMASK(new_pos + shamt));
-                extensions[1] &= BITMASK(new_pos);
-                extensions[1] |= a >> shamt;
-            }
-        }
-        else {
-            uint32_t running_prefix = pos % 64;
-            for (uint32_t i = pos / 64; i < num_extension_words; i++) {
-                const uint64_t a = extensions[i] & BITMASK(running_prefix);
-                const uint64_t b = extensions[i] & (~BITMASK(running_prefix));
-                const uint64_t c = (i < num_extension_words ? extensions[i + 1] & BITMASK(shamt) : 0UL);
-                extensions[i] = (c << (64 - shamt)) | ((b >> shamt) & ~BITMASK(running_prefix)) | a;
-                running_prefix = 0;
-            }
-        }
-    }
-
-
-    inline uint32_t *get_ptr_from_extension_bitmap(const uint64_t *extension_bitmap) const {
-        if constexpr (num_extension_words == 1)
+            // Fetch the lower-order bits of the pointer. Zero-extending this
+            // value yields a pointer to the tails array's location on the heap.
             return reinterpret_cast<uint32_t *>(extension_bitmap[0] & BITMASK(last_extension_word_bit_count - 1));
+        }
         return reinterpret_cast<uint32_t *>(extension_bitmap[0]);
     }
 
 
-    //__attribute__((always_inline))
-    inline uint64_t get_counter(const uint8_t *sketch, const uint32_t pos) const {
-        const uint32_t cache_line_ind = get_cache_line_ind(pos);
-        const uint32_t inter_cache_line_ind = pos - cache_line_ind * counter_per_cache_line;
-        const uint8_t *cache_line_ptr = sketch + cache_line_ind * cache_line_size_bytes;
+    /**
+     * Get the value of a counter at the offset `pos` within the entire sketch.
+     * This function recovers the counter's value by fetching its stub from its
+     * chunk, computing the value of the counter's extension (or tail) if it is
+     * overflowing, and concatenating them.
+     *
+     * @param sketch The state of the sketch that must be read.
+     * @param pos The offset of the counter within the entire sketch.
+     * @return The recovered value of the counter.
+     */
+    inline uint64_t get_counter(const uint8_t *sketch, const uint32_t pos) const;
 
-        // Calculate the stub
-        const uint64_t *read_word = reinterpret_cast<const uint64_t *>(cache_line_ptr + word_update_byte_offset[inter_cache_line_ind]);
-        uint64_t res = (read_word[0] >> word_update_shamt[inter_cache_line_ind]) & BITMASK(stub_size);
+    /**
+     * Set the counter at the offset `pos` within the entire sketch to `value`.
+     * This function sets the counter's stub and creates an extension for it or
+     * modifies it as necessary.
+     *
+     * @param sketch The state of the sketch to set the counter within.
+     * @param pos The offset of the counter within the entire sketch.
+     * @param value The value to set the counter to.
+     */
+    inline void set_counter(uint8_t *sketch, const uint32_t pos, const uint64_t value);
 
-        // Take into account the extensions, if any
-        const uint64_t *words = reinterpret_cast<const uint64_t *>(cache_line_ptr);
-        const bool has_extension = is_overflowing(words, inter_cache_line_ind);
-        if (has_extension) {
-            const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
-            uint64_t extension_bitmap[num_extension_words];
-            for (uint32_t i = 0; i < num_extension_words - 1; i++)
-                extension_bitmap[i] = words[cache_line_size_words - i - 1];
-            extension_bitmap[num_extension_words - 1] = words[cache_line_size_words - num_extension_words] >> (64 - last_extension_word_bit_count);
-            // Check for pointers
-            if ((extension_bitmap[num_extension_words - 1] >> (last_extension_word_bit_count - 1)) & 1) {
-                const uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
-                res |= ptr[inter_cache_line_ind] << stub_size;
-            }
-            else {
-                uint64_t add_res = 0, add_pw = 1;
-                for (int i = get_extension_pos(extension_bitmap, extension_rank); true; i += extension_size) {
-                    const uint32_t new_bits = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
-                    if (new_bits == MAX_VALUE(extension_size))
-                        break;
-                    add_res += new_bits * add_pw;
-                    add_pw *= MAX_VALUE(extension_size);
-                }
-                res += add_res << stub_size;
-            }
-        }
-
-        return res;
-    }
-
-
-    //__attribute__((always_inline))
-    inline uint32_t *setup_separate_array(const uint64_t *overflows_bitmap, uint64_t *extension_bitmap,
-                                          const uint32_t total_extension_len) {
-        uint32_t *ptr = new uint32_t[counter_per_cache_line];
-        memset(ptr, 0, counter_per_cache_line * sizeof(uint32_t));
-        uint32_t running_val = 0, running_pw = 1, cnt = 0;
-        uint32_t overflows_pos = 0, running_overflows_count = 0;
-        for (int i = 0; i < total_extension_len; i += extension_size) {
-            const uint32_t fragment = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
-            if (fragment == MAX_VALUE(extension_size)) {
-                uint32_t ptr_pos = bit_select(overflows_bitmap[overflows_pos], cnt - running_overflows_count);
-                while (ptr_pos == 64) {
-                    running_overflows_count += __builtin_popcountll(overflows_bitmap[overflows_pos]);
-                    overflows_pos++;
-                    ptr_pos = bit_select(overflows_bitmap[overflows_pos], cnt - running_overflows_count);
-                }
-                ptr_pos += 64 * overflows_pos;
-                ptr[ptr_pos] = running_val;
-                running_val = 0;
-                running_pw = 1;
-                cnt++;
-                continue;
-            }
-            running_val = running_val + running_pw * fragment;
-            running_pw *= 3;
-        }
-        memset(extension_bitmap, 0, sizeof(extension_bitmap[0]) * num_extension_words);
-        if constexpr (num_extension_words == 1)
-            extension_bitmap[0] = reinterpret_cast<uint64_t>(ptr) & BITMASK(last_extension_word_bit_count - 1);
-        else 
-            extension_bitmap[0] = reinterpret_cast<uint64_t>(ptr);
-        extension_bitmap[num_extension_words - 1] |= 1ULL << (last_extension_word_bit_count - 1);
-        return ptr;
-    }
-
-
-    __attribute__((always_inline))
-    inline bool has_separate_array(const uint64_t *cache_line_words) const {
-        return cache_line_words[cache_line_size_words - num_extension_words] >> 63;
-    }
-
-
-    //__attribute__((always_inline))
-    inline void write_extensions_to_cache_line(uint64_t *words, uint64_t *extension_bitmap) {
-        extension_bitmap[num_extension_words - 1] = (extension_bitmap[num_extension_words - 1] << (64 - last_extension_word_bit_count))
-                                                  | (words[cache_line_size_words - num_extension_words] & BITMASK(64 - last_extension_word_bit_count));
-        for (uint32_t i = 0; i < num_extension_words - 1; i++)
-            words[cache_line_size_words - i - 1] = extension_bitmap[i];
-        words[cache_line_size_words - num_extension_words] = extension_bitmap[num_extension_words - 1];
-    }
-
-
-    //__attribute__((always_inline))
-    inline void set_counter(uint8_t *sketch, const uint32_t pos, const uint64_t value) {
-        const uint32_t cache_line_ind = get_cache_line_ind(pos);
-        const uint32_t inter_cache_line_ind = pos - cache_line_ind * counter_per_cache_line;
-        uint8_t *cache_line_ptr = sketch + cache_line_ind * cache_line_size_bytes;
-
-        // Set the stub
-        uint64_t *write_word = reinterpret_cast<uint64_t *>(cache_line_ptr + word_update_byte_offset[inter_cache_line_ind]);
-        write_word[0] &= ~(BITMASK(stub_size) << word_update_shamt[inter_cache_line_ind]);
-        write_word[0] |= (value & BITMASK(stub_size)) << word_update_shamt[inter_cache_line_ind];
-
-        // Handle the extensions
-        uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
-        const bool new_has_extension = value > MAX_VALUE(stub_size);
-        const bool old_has_extension = is_overflowing(words, inter_cache_line_ind);
-        const int update_state = static_cast<int>(old_has_extension) * 2 + static_cast<int>(new_has_extension);
-        if (update_state) {
-            const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
-            uint64_t extension_bitmap[num_extension_words];
-            for (uint32_t i = 0; i < num_extension_words - 1; i++)
-                extension_bitmap[i] = words[cache_line_size_words - i - 1];
-            extension_bitmap[num_extension_words - 1] = words[cache_line_size_words - num_extension_words] >> (64 - last_extension_word_bit_count);
-            const bool already_has_array_ptr = has_separate_array(words);
-            const uint32_t total_extension_len = (already_has_array_ptr ? extension_size * num_extension + 1
-                                                                        : get_extension_length(extension_bitmap));
-            uint32_t new_extension_len = extension_size, extension_value = value >> stub_size;
-            for (uint64_t val = extension_value; val; val /= MAX_VALUE(extension_size))
-                new_extension_len += extension_size;
-
-            switch (update_state) {
-                case 1: {   // !old_has_extension && new_has_extension
-                    if (already_has_array_ptr) {
-                        // Update separate array
-                        uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
-                        ptr[inter_cache_line_ind] = extension_value;
-                    }
-                    else if (new_extension_len + total_extension_len > extension_size * num_extension) {
-                        uint32_t *ptr = setup_separate_array(words, extension_bitmap, total_extension_len);
-                        ptr[inter_cache_line_ind] = extension_value;
-                    }
-                    else {
-                        // Handle Locally
-                        const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
-                        shift_extensions_left_from_pos(extension_bitmap, pos, new_extension_len);
-                        uint64_t tmp_val = extension_value, i;
-                        for (i = pos; tmp_val; tmp_val /= MAX_VALUE(extension_size), i += extension_size)
-                            extension_bitmap[i / 64] |= ((tmp_val % MAX_VALUE(extension_size)) << (i % 64));
-                        extension_bitmap[i / 64] |= (MAX_VALUE(extension_size) << (i % 64));
-                    }
-                    break;
-                }
-                case 2: {   // old_has_extension && !new_has_extension
-                    if (already_has_array_ptr) {
-                        // Update separate array
-                        uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
-                        ptr[inter_cache_line_ind] = 0;
-                    }
-                    else {
-                        // Handle Locally
-                        const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
-                        const uint32_t old_extension_len = get_extension_pos(extension_bitmap, extension_rank + 1) - pos;
-                        shift_extensions_right_from_pos(extension_bitmap, pos, old_extension_len);
-                    }
-                    break;
-                }
-                case 3: {   // old_has_extension && new_has_extension
-                    const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
-                    const uint32_t old_extension_len = get_extension_pos(extension_bitmap, extension_rank + 1) - pos;
-                    if (already_has_array_ptr) {
-                        // Update separate array
-                        uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
-                        ptr[inter_cache_line_ind] = extension_value;
-                    }
-                    else if (new_extension_len + total_extension_len - old_extension_len > extension_size * num_extension) {
-                        uint32_t *ptr = setup_separate_array(words, extension_bitmap, total_extension_len);
-                        ptr[inter_cache_line_ind] = extension_value;
-                    }
-                    else {
-                        // Handle Locally
-                        shift_extensions_right_from_pos(extension_bitmap, pos, old_extension_len);
-                        shift_extensions_left_from_pos(extension_bitmap, pos, new_extension_len);
-                        uint64_t tmp_val = extension_value, i;
-                        for (i = pos; tmp_val; tmp_val /= MAX_VALUE(extension_size), i += extension_size)
-                            extension_bitmap[i / 64] |= ((tmp_val % MAX_VALUE(extension_size)) << (i % 64));
-                        extension_bitmap[i / 64] |= (MAX_VALUE(extension_size) << (i % 64));
-                    }
-                    break;
-                }
-            }
-
-            write_extensions_to_cache_line(words, extension_bitmap);
-        }
-        set_overflowing(words, inter_cache_line_ind, new_has_extension);
-    }
-
-
-    //__attribute__((always_inline))
+    /**
+     * Increment the counter at the offset `pos` within the entire sketch.
+     * Increments the counter's stub and propagates a carry to its extension as
+     * necessary.
+     *
+     * @param sketch The state of the sketch that must be modified.
+     * @param pos The offset of the counter within the entire sketch.
+     */
     inline void increment_counter(uint8_t *sketch, const uint32_t pos) {
         const uint32_t cache_line_ind = get_cache_line_ind(pos);
         const uint32_t inter_cache_line_ind = pos - cache_line_ind * counter_per_cache_line;
@@ -722,90 +500,27 @@ private:
     }
 
 
-    //__attribute__((always_inline))
-    inline void increment_counter(uint8_t *sketch, const uint32_t cache_line_ind, const uint32_t inter_cache_line_ind) {
-        uint8_t *cache_line_ptr = sketch + cache_line_ind * cache_line_size_bytes;
+    /**
+     * Within the chunk at the offset `cache_line_ind` in the sketch,
+     * increments the counter at the offset `inter_cache_line_ind`. Increments
+     * the counter's stub and propagates a carry to its extension as necessary.
+     *
+     * @param sketch The state of the sketch that must be modified.
+     * @param cache_line_ind The offset of the chunk within the sketch.
+     * @param inter_cache_line_ind The offset of the counter within the chunk.
+     */
+    inline void increment_counter(uint8_t *sketch,
+                                  const uint32_t cache_line_ind,
+                                  const uint32_t inter_cache_line_ind);
 
-        // Set the stub
-        uint64_t *update_word = reinterpret_cast<uint64_t *>(cache_line_ptr + word_update_byte_offset[inter_cache_line_ind]);
-        const uint64_t stub_mask = BITMASK(stub_size) << word_update_shamt[inter_cache_line_ind];
-        const uint64_t tmp_val = (update_word[0] & stub_mask);
-        if (tmp_val != stub_mask) {
-            update_word[0] += 1ULL << word_update_shamt[inter_cache_line_ind];
-            return;
-        }
-
-        update_word[0] &= ~stub_mask;
-        
-        // Handle the carry and extensions
-        uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
-        const bool has_extension = is_overflowing(words, inter_cache_line_ind);
-        const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
-        uint64_t extension_bitmap[num_extension_words];
-        for (uint32_t i = 0; i < num_extension_words - 1; i++)
-            extension_bitmap[i] = words[cache_line_size_words - i - 1];
-        extension_bitmap[num_extension_words - 1] = words[cache_line_size_words - num_extension_words] >> (64 - last_extension_word_bit_count);
-        const bool already_has_array_ptr = has_separate_array(words);
-        const uint32_t total_extension_len = (already_has_array_ptr ? extension_size * num_extension + 1
-                                                                    : get_extension_length(extension_bitmap));
-
-        if (has_extension) {
-            if (already_has_array_ptr) {
-                // Update separate array
-                uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
-                ptr[inter_cache_line_ind]++;
-            }
-            else {
-                const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
-                uint32_t i = pos;
-                uint64_t chunk = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
-                bool absorbed = false, should_add_extension = true;
-                do {
-                    absorbed = (chunk != MAX_VALUE(extension_size) - 1);
-                    should_add_extension &= !absorbed;
-                    extension_bitmap[i / 64] += (1ULL + (absorbed ? 0 : -MAX_VALUE(extension_size))) << (i % 64);
-                    i += 2;
-                    chunk = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
-                } while ((!absorbed) & (chunk != MAX_VALUE(extension_size)));
-
-                if (should_add_extension) {
-                    if (total_extension_len + extension_size > extension_size * num_extension) {
-                        uint32_t *ptr = setup_separate_array(words, extension_bitmap, total_extension_len);
-                        ptr[inter_cache_line_ind] = 1;
-                        for (int j = pos; j < i; j += 2)
-                            ptr[inter_cache_line_ind] *= 3;
-                    }
-                    else {
-                        shift_extensions_left_from_pos(extension_bitmap, i, extension_size);
-                        extension_bitmap[i / 64] += 1ULL << (i % 64);
-                    }
-                }
-            }
-        }
-        else {
-            if (already_has_array_ptr) {
-                // Update separate array
-                uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
-                ptr[inter_cache_line_ind]++;
-            }
-            else if (total_extension_len + 2 * extension_size > extension_size * num_extension) {
-                uint32_t *ptr = setup_separate_array(words, extension_bitmap, total_extension_len);
-                ptr[inter_cache_line_ind] = 1;
-            }
-            else {
-                const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
-                shift_extensions_left_from_pos(extension_bitmap, pos, 2 * extension_size);
-                extension_bitmap[pos / 64] += 1ULL << (pos % 64);
-                extension_bitmap[(pos + 2) / 64] |= MAX_VALUE(extension_size) << ((pos + 2) % 64);
-            }
-        }
-
-        write_extensions_to_cache_line(words, extension_bitmap);
-        set_overflowing_to_1(words, inter_cache_line_ind);
-    }
-
-
-    //__attribute__((always_inline))
+    /**
+     * Decrement the counter at the offset `pos` within the entire sketch.
+     * Decrements the counter's stub and borrows from its extension as
+     * necessary.
+     *
+     * @param sketch The state of the sketch that must be modified.
+     * @param pos The offset of the counter within the entire sketch.
+     */
     inline void decrement_counter(uint8_t *sketch, const uint32_t pos) {
         const uint32_t cache_line_ind = get_cache_line_ind(pos);
         const uint32_t inter_cache_line_ind = pos - cache_line_ind * counter_per_cache_line;
@@ -813,74 +528,67 @@ private:
     }
 
 
-    //__attribute__((always_inline))
-    inline void decrement_counter(uint8_t *sketch, const uint32_t cache_line_ind, const uint32_t inter_cache_line_ind) {
-        uint8_t *cache_line_ptr = sketch + cache_line_ind * cache_line_size_bytes;
+    /**
+     * Decrement the counter at the offset `pos` within the entire sketch.
+     * Decrements the counter's stub and borrows from its extension as
+     * necessary.
+     *
+     * @param sketch The state of the sketch that must be modified.
+     * @param cache_line_ind The offset of the chunk within the sketch.
+     * @param inter_cache_line_ind The offset of the counter within the chunk.
+     */
+    inline void decrement_counter(uint8_t *sketch,
+                                  const uint32_t cache_line_ind,
+                                  const uint32_t inter_cache_line_ind);
 
-        // Set the stub
-        uint64_t *update_word = reinterpret_cast<uint64_t *>(cache_line_ptr + word_update_byte_offset[inter_cache_line_ind]);
-        const uint64_t stub_mask = BITMASK(stub_size) << word_update_shamt[inter_cache_line_ind];
-        const uint64_t tmp_val = (update_word[0] & stub_mask);
-        if (tmp_val != 0) {
-            update_word[0] -= 1ULL << word_update_shamt[inter_cache_line_ind];
-            return;
-        }
+    /**
+     * Setup a tails array for a chunk and migrate the extension values stored
+     * in the extension pool.
+     *
+     * @param overflows_bitmap The overflows bitmap. Used to determine the
+     * counter offset each extension corresponds to, enabling the migration of
+     * its value to the correct tail.
+     * @param extension_bitmap A copy of the extension pool.
+     * @param total_extension_len The total length of the extensions, in bits.
+     * @return A pointer to the newly created tails array.
+     */
+    inline uint32_t *setup_tails_array(const uint64_t *overflows_bitmap,
+                                       uint64_t *extension_bitmap,
+                                       const uint32_t total_extension_len);
 
-        update_word[0] |= stub_mask;
-        
-        // Handle the carry and extensions
-        uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
-        const bool has_extension = is_overflowing(words, inter_cache_line_ind);
-        const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
-        uint64_t extension_bitmap[num_extension_words];
-        for (uint32_t i = 0; i < num_extension_words - 1; i++)
-            extension_bitmap[i] = words[cache_line_size_words - i - 1];
-        extension_bitmap[num_extension_words - 1] = words[cache_line_size_words - num_extension_words] >> (64 - last_extension_word_bit_count);
-        const bool already_has_array_ptr = has_separate_array(words);
-        const uint32_t total_extension_len = (already_has_array_ptr ? extension_size * num_extension + 1
-                                                                    : get_extension_length(extension_bitmap));
 
-        if (already_has_array_ptr) {
-            // Update separate array
-            uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
-            ptr[inter_cache_line_ind]--;
-            const uint64_t extensions_depleted = ptr[inter_cache_line_ind] == 0;
-            set_overflowing_to_0(words, inter_cache_line_ind, extensions_depleted);
-        }
-        else {
-            const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
-            uint32_t i = pos;
-            uint64_t chunk = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
-            bool absorbed = false, should_remove_extension = true;
-            do {
-                absorbed = (chunk != 0);
-                should_remove_extension &= (!absorbed | (chunk == 1));
-                extension_bitmap[i / 64] -= (1ULL + (absorbed ? 0 : -MAX_VALUE(extension_size))) << (i % 64);
-                i += 2;
-                chunk = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
-            } while ((!absorbed) & (chunk != MAX_VALUE(extension_size)));
-
-            should_remove_extension &= (chunk == MAX_VALUE(extension_size));
-            if (should_remove_extension) {
-                const uint64_t extensions_depleted = (i == pos + 2);
-                const uint32_t shamt = (extensions_depleted ? extension_size * 2 : extension_size);
-                const uint32_t shift_pos = i - 2;
-                shift_extensions_right_from_pos(extension_bitmap, shift_pos, shamt);
-                set_overflowing_to_0(words, inter_cache_line_ind, extensions_depleted);
-            }
-        }
-
-        write_extensions_to_cache_line(words, extension_bitmap);
+    /**
+     * Determine if a chunk has a tails array.
+     *
+     * @param chunk_words A pointer to the chunk's contents.
+     * @return True if the chunk has a tails array and false otherwise.
+     */
+    __attribute__((always_inline))
+    inline bool has_tails_array(const uint64_t *chunk_words) const {
+        return chunk_words[cache_line_size_words - num_extension_words] >> 63;
     }
 
 
-    inline uint8_t *allocate_sketch(const size_t rows, const size_t cols) {
-        const uint32_t cache_line_cnt = (rows * cols + counter_per_cache_line - 1) / counter_per_cache_line;
-        const uint32_t size = cache_line_cnt * cache_line_size_bytes;
-        uint8_t *res = new uint8_t[size];
-        memset(res, 0, size);
-        return res;
-    }
+    /**
+     * Writes back the modified version of the extension pool to the chunk.
+     *
+     * @param words A pointer to the chunk.
+     * @param extension_bitmap The extension pool to be written back.
+     */
+    inline void write_extensions_to_cache_line(uint64_t *words,
+                                               uint64_t *extension_bitmap);
+
+
+    /**
+     * Allocates and initializes a sketch of the given dimensions with the
+     * fixed VALE tuning.
+     *
+     * @param rows The number of rows, i.e., arrays, in the sketch.
+     * @param cols The number of columns, i.e., the counter within each array,
+     * in the sketch.
+     * @return A pointer to the newly allocated sketch.
+     */
+    inline uint8_t *allocate_sketch(const size_t rows, const size_t cols);
 
 
     inline void gen_seeds() {
@@ -891,109 +599,855 @@ private:
     }
 
 
-    inline uint32_t hash_key(const char *key, const uint32_t length, const int seed_ind) const {
-        const uint64_t original_hash = MurmurHash64B(key, length, seeds[seed_ind]);
-        uint32_t hash = original_hash & BITMASK(init_col_count_lg);
-        hash = fast_reduce(hash << (8 * sizeof(uint32_t) - init_col_count_lg),
-                            init_col_count);
-        hash += ((original_hash >> init_col_count_lg) & BITMASK(col_count_lg - init_col_count_lg))
-                * init_col_count;
-        return hash;
-    }
+    inline uint32_t hash_key(const char *key, const uint32_t length, const int seed_ind) const;
+
+    /**
+     * Applies hash splicing to the original long hash of the key to reduce the
+     * CPU cost of hashing.
+     *
+     * @param original_hash The long hash of the key.
+     * @return The higher-order bits of the offset the key maps to within the
+     * whole sketch. If the sketch has expanded, these higher-order bits are
+     * increased by the value resulting from taking more bits from the original
+     * hash and multiplying them with the sketch's initial size. The remaining
+     * lower order bits are retrieved by splicing the other bits in the
+     * original hash, which are finally concatenates with the higher-order bits
+     * to determine a counter offset for the key to hash to. 
+     */
+    inline uint32_t hash_tof(const uint64_t original_hash) const;
 
 
-    inline uint32_t hash_tof(const uint64_t original_hash) const {
-        const uint32_t hash_shamt = counter_count_lg - init_counter_count_lg;
-        uint32_t hash = (original_hash & index_mask) << bias_range;
-		int32_t tmp = hash - init_counter_count;
-		hash = (tmp < 0 ? hash : tmp);
-        hash += ((original_hash >> (init_counter_count_lg + bias_range * row_count)) & BITMASK(hash_shamt))
-                * init_counter_count;
-        return hash;
-    }
+    /**
+     * Free the allocated tails arrays for a sketch.
+     *
+     * @param sketch The sketch to free the tails arrays from.
+     */
+    inline void free_tails(uint8_t *sketch, uint32_t cache_line_count);
 
 
-    inline void free_spills(uint8_t *sketch, uint32_t cache_line_count) {
-        for (uint32_t chunk = 0; chunk < cache_line_count; chunk++) {
-            uint64_t *words = reinterpret_cast<uint64_t *>(sketch + cache_line_size_bytes * chunk);
-            uint64_t extension_bitmap[num_extension_words];
-            for (uint32_t i = 0; i < num_extension_words - 1; i++)
-                extension_bitmap[i] = words[cache_line_size_words - i - 1];
-            extension_bitmap[num_extension_words - 1] = words[cache_line_size_words - num_extension_words] 
-                                                            >> (64 - last_extension_word_bit_count);
-            if (has_separate_array(words)) {
-                uint32_t *ptr = get_ptr_from_extension_bitmap(extension_bitmap);
-                delete[] ptr;
-            }
-        }
-    }
+    /**
+     * Expand by doubling the size of each array and copying the counter values
+     * to the locations consistent with the employed hashing scheme. Flushes
+     * the prefetch queue and applies all of its updates before expanding. Also
+     * computes the new expansion and contraction thresholds.
+     */
+    inline void expand();
 
 
-    inline void expand() {
-        FlushPrefetchQueue();
-        contraction_lim = expansion_lim;
-        expansion_lim = expansion_f(2 * col_count);
-
-        uint8_t *new_sketch = allocate_sketch(row_count, 2 * col_count);
-        uint8_t *old_sketch = sketches.back();
-        if constexpr (using_tof_hashing) {
-            for (int i = 0; i < counter_count; i++) {
-                const uint32_t old_value = get_counter(old_sketch, i);
-                set_counter(new_sketch, i, old_value);
-                set_counter(new_sketch, counter_count + i, old_value);
-            }
-        }
-        else {
-            for (int i = 0; i < row_count; i++) {
-                for (int j = 0; j < col_count; j++) {
-                    const uint32_t old_value = get_counter(old_sketch, col_count * i + j);
-                    set_counter(new_sketch, 2 * col_count * i + j, old_value);
-                    set_counter(new_sketch, 2 * col_count * i + col_count + j, old_value);
-                }
-            }
-        }
-        sketches.push_back(new_sketch);
-        col_count *= 2;
-        col_count_lg++;
-        counter_count *= 2;
-        counter_count_lg++;
-    }
-
-
-    inline void contract() {
-        FlushPrefetchQueue();
-        expansion_lim = contraction_lim;
-        contraction_lim = (n < expansion_f(2 * init_col_count) ? 0 : expansion_f(col_count / 2));
-
-        uint8_t *new_sketch = sketches.back();
-        sketches.pop_back();
-        uint8_t *old_sketch = sketches.back();
-        col_count /= 2;
-        col_count_lg--;
-        counter_count /= 2;
-        counter_count_lg--;
-        if constexpr (using_tof_hashing) {
-            for (int i = 0; i < counter_count; i++) {
-                const uint32_t a = get_counter(new_sketch, i);
-                const uint32_t b = get_counter(new_sketch, counter_count + i);
-                const uint32_t c = get_counter(old_sketch, i);
-                set_counter(old_sketch, i, a + b - c);
-            }
-        }
-        else {
-            for (int i = 0; i < row_count; i++) {
-                for (int j = 0; j < col_count; j++) {
-                    const uint32_t a = get_counter(new_sketch, 2 * col_count * i + j);
-                    const uint32_t b = get_counter(new_sketch, 2 * col_count * i + col_count + j);
-                    const uint32_t c = get_counter(old_sketch, col_count * i + j);
-                    set_counter(old_sketch, col_count * i + j, a + b - c);
-                }
-            }
-        }
-        delete new_sketch;
-    }
+    /**
+     * Contract by halving the size of each array, adding up the corresponding
+     * counter values, and subtracting away the counter values from the
+     * previous sketch in the record of sketches. If the sketch's initial size
+     * was a power of two, it allows for contracting below the initial size of
+     * the sketch. This is done by a similar procedure as before, but not
+     * subtracting away any values from the counters, as there is no previous
+     * sketch in the record to use to this end. Flushes the prefetch queue and
+     * applies all of its updates before expanding. Also computes the new
+     * expansion and contraction thresholds.
+     */
+    inline void contract();
 };
 
 #undef COUNTER_PER_CACHE_LINE
 #undef STUB_SIZE
 
+
+inline SublimeCMS::SublimeCMS(size_t init_col_count, size_t init_row_count,
+                              std::function<uint64_t(double)> expansion_f,
+                              uint32_t seed_gen_seed):
+            row_count(init_row_count), 
+            init_col_count(init_col_count),
+            expansion_f(expansion_f), 
+            seed_gen_seed(seed_gen_seed) {
+    n = 0;
+    col_count = init_col_count;
+    init_col_count_lg = highbit_pos(init_col_count) + 1;
+    col_count_lg = init_col_count_lg;
+
+    init_counter_count = row_count * col_count;
+    counter_count = init_counter_count;
+    init_counter_count_lg = highbit_pos(counter_count) + 1;
+    counter_count_lg = init_counter_count_lg;
+
+    expansion_lim = expansion_f(col_count);
+    contraction_lim = 0;
+
+    // Setup Prefetching
+    std::fill(prefetch_queue_op, prefetch_queue_op + prefetch_queue_len, OpType::None);
+
+    // Setup Tof Hashing
+    bias_range = std::min(static_cast<uint32_t>(((64 - counter_count_lg)) / (row_count - 1)), 8U);
+    bias_mask = BITMASK(bias_range);
+    index_range	= std::min(static_cast<uint32_t>(64 - bias_range * row_count),
+                           static_cast<uint32_t>(counter_count_lg - bias_range));
+    index_mask = BITMASK(index_range);
+
+    sketches.push_back(allocate_sketch(row_count, col_count));
+    gen_seeds();
+}
+
+
+inline SublimeCMS::~SublimeCMS() {
+    for (uint32_t i = 0; i < sketches.size(); i++) {
+        const uint32_t cols = col_count >> (sketches.size() - i - 1);
+        const uint32_t cache_line_count = (row_count * cols + counter_per_cache_line - 1) / counter_per_cache_line;
+        free_tails(sketches[i], cache_line_count);
+        delete[] sketches[i];
+    }
+    sketches.clear();
+    delete seeds;
+}
+
+
+inline void SublimeCMS::Insert(const char *elem, const uint32_t length) {
+    if (n == expansion_lim)
+        expand();
+    uint8_t *sketch = sketches.back();
+    if constexpr (using_tof_hashing) {
+        uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
+        const uint32_t index = hash_tof(hash_value);
+        hash_value >>= index_range;
+        for (int i = 0; i < row_count; i++) {
+            uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+            pos = pos < counter_count ? pos : pos - counter_count;
+            push_prefetch_request(sketch, pos, OpType::Insert);
+            handle_last_prefetch_request(sketch);
+            hash_value >>= bias_range;
+        }
+    }
+    else {
+        for (int i = 0; i < row_count; i++) {
+            const uint32_t pos = col_count * i + hash_key(elem, length, i);
+            push_prefetch_request(sketch, pos, OpType::Insert);
+            handle_last_prefetch_request(sketch);
+        }
+    }
+    n++;
+}
+
+
+inline void SublimeCMS::Delete(const char *elem, const uint32_t length) {
+    uint8_t *sketch = sketches.back();
+    if constexpr (using_tof_hashing) {
+        uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
+        uint32_t index = hash_tof(hash_value);
+        hash_value >>= index_range;
+        const uint32_t old_prefetch_clock = prefetch_clock;
+        prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
+        for (int i = 0; i < row_count; i++) {
+            uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+            pos = pos < counter_count ? pos : pos - counter_count;
+            push_prefetch_request(sketch, pos, OpType::Delete);
+            handle_last_prefetch_request(sketch);
+            hash_value >>= bias_range;
+        }
+    }
+    else {
+        for (int i = 0; i < row_count; i++) {
+            const uint32_t pos = col_count * i + hash_key(elem, length, i);
+            push_prefetch_request(sketch, pos, OpType::Delete);
+            handle_last_prefetch_request(sketch);
+        }
+    }
+    n--;
+    if (n < contraction_lim)
+        contract();
+}
+
+
+inline uint64_t SublimeCMS::Query(const char *elem, const uint32_t length) const {
+    uint64_t res = MAX_VALUE(8 * sizeof(uint32_t));
+    const uint8_t *sketch = sketches.back();
+    if constexpr (using_tof_hashing) {
+        uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
+        uint32_t index = hash_tof(hash_value);
+        hash_value >>= index_range;
+        for (int i = 0; i < row_count; i++) {
+            uint32_t pos = index + (i << bias_range) + (hash_value & bias_mask);
+            pos = pos < counter_count ? pos : pos - counter_count;
+            res = std::min(res, get_counter(sketch, pos));
+            hash_value >>= bias_range;
+        }
+    }
+    else {
+        for (int i = 0; i < row_count; i++)
+            res = std::min(res, get_counter(sketch, col_count * i + hash_key(elem, length, i)));
+    }
+    return res;
+}
+
+
+inline void SublimeCMS::FlushPrefetchQueue() {
+    uint8_t *sketch = sketches.back();
+    const uint32_t loop_clock = prefetch_clock;
+    for (prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
+            prefetch_clock != loop_clock;
+            prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len) {
+        if constexpr (using_tof_hashing) {
+            switch (prefetch_queue_op[prefetch_clock]) {
+                case OpType::Insert:
+                    increment_counter(sketch, prefetch_queue_cache_line[prefetch_clock],
+                                              prefetch_queue_cache_line_offset[prefetch_clock]);
+                case OpType::Delete:
+                    decrement_counter(sketch, prefetch_queue_cache_line[prefetch_clock],
+                                              prefetch_queue_cache_line_offset[prefetch_clock]);
+                default:
+                    ;
+            }
+        }
+        else {
+            switch (prefetch_queue_op[prefetch_clock]) {
+                case OpType::Insert:
+                    increment_counter(sketch, prefetch_queue[prefetch_clock]);
+                case OpType::Delete:
+                    decrement_counter(sketch, prefetch_queue[prefetch_clock]);
+                default:
+                    ;
+            }
+        }
+        prefetch_queue_op[prefetch_clock] = OpType::None;
+    }
+}
+
+
+inline size_t SublimeCMS::Size(bool include_all_sketches) const {
+    size_t res = 0;
+    for (int32_t sketch_ind = sketches.size() - 1; sketch_ind >= 0; sketch_ind--) {
+        const uint8_t *sketch = sketches[sketch_ind];
+        const uint32_t cache_line_count = (row_count * col_count + counter_per_cache_line - 1) / counter_per_cache_line;
+        const size_t base_size = cache_line_count * cache_line_size_bytes;
+        const uint32_t sep_1 = counter_per_cache_line;
+        const uint32_t sep_2 = sep_1 + counter_per_cache_line * stub_size;
+        const uint32_t sep_3 = sep_2 + last_extension_word_bit_count;
+        uint32_t extra_arrays = 0;
+        for (int i = 0; i < cache_line_count; i++) {
+            const uint8_t *ptr = sketch + i * cache_line_size_bytes;
+            const uint64_t *words = reinterpret_cast<const uint64_t *>(ptr);
+            if (has_tails_array(words))
+                extra_arrays++;
+        }
+        res += base_size + extra_arrays * sizeof(uint32_t) * counter_per_cache_line;
+        if (!include_all_sketches)
+            break;
+    }
+    return res;
+}
+
+
+__attribute__((always_inline))
+inline void SublimeCMS::push_prefetch_request(uint8_t *sketch,
+                                              const uint32_t pos, const OpType op) {
+    if constexpr (using_tof_hashing) {
+        prefetch_queue_cache_line[prefetch_clock] = get_cache_line_ind(pos);
+        prefetch_queue_cache_line_offset[prefetch_clock] = pos - counter_per_cache_line * prefetch_queue_cache_line[prefetch_clock];
+        prefetch_queue_op[prefetch_clock] = op;
+        __builtin_prefetch(sketch + prefetch_queue_cache_line[prefetch_clock] * cache_line_size_bytes);
+    }
+    else {
+        prefetch_queue[prefetch_clock] = pos;
+        prefetch_queue_op[prefetch_clock] = op;
+        __builtin_prefetch(sketch + get_cache_line_ind(pos) * cache_line_size_bytes);
+    }
+    prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
+}
+
+
+__attribute__((always_inline))
+inline void SublimeCMS::handle_last_prefetch_request(uint8_t *sketch) {
+    if constexpr (using_tof_hashing) {
+        switch (prefetch_queue_op[prefetch_clock]) {
+            case OpType::Insert:
+                increment_counter(sketch, prefetch_queue_cache_line[prefetch_clock],
+                                          prefetch_queue_cache_line_offset[prefetch_clock]);
+                break;
+            case OpType::Delete:
+                decrement_counter(sketch, prefetch_queue_cache_line[prefetch_clock],
+                                          prefetch_queue_cache_line_offset[prefetch_clock]);
+                break;
+            default:
+                break;
+        }
+    }
+    else {
+        switch (prefetch_queue_op[prefetch_clock]) {
+            case OpType::Insert:
+                increment_counter(sketch, prefetch_queue[prefetch_clock]);
+                break;
+            case OpType::Delete:
+                decrement_counter(sketch, prefetch_queue[prefetch_clock]);
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+
+__attribute__((always_inline))
+inline uint32_t SublimeCMS::get_extension_rank(const uint64_t words[],
+                                               const uint32_t pos) const {
+    uint32_t res = 0;
+    for (uint32_t i = 0; i < pos / 64; i++)
+        res += __builtin_popcountll(words[i]);
+    res += bit_rank(words[pos / 64], pos % 64);
+    return res;
+}
+
+
+__attribute__((always_inline))
+inline uint32_t SublimeCMS::get_extension_pos(const uint64_t extensions[],
+                                              const uint32_t rank) const {
+    uint64_t masks[num_extension_words];
+    for (uint32_t i = 0; i < num_extension_words; i++)
+        masks[i] = get_delimiters_bitmap_word(extensions[i]);
+    int extension_pos = (rank == 0 ? -2 : bit_select(masks[0], rank - 1));
+    if constexpr (num_extension_words == 2) {
+        const int32_t other_attempt = bit_select(masks[1], rank - 1 - __builtin_popcountll(masks[0]));
+        extension_pos = (extension_pos >= 64 ? other_attempt + 64 : extension_pos);
+    }
+    else if constexpr (num_extension_words > 2) {
+        extension_pos = (extension_pos < 64 ? extension_pos : -3);
+        uint32_t running_rank = rank - __builtin_popcountll(masks[0]);
+        for (uint32_t i = 1; i < num_extension_words; i++) {
+            const uint32_t select_result = running_rank > 64 ? 64 : bit_select(masks[i], running_rank - 1);
+            extension_pos = ((extension_pos == -3 && select_result < 64) ? select_result + i * 64 : extension_pos);
+            running_rank -= __builtin_popcountll(masks[i]);
+        }
+    }
+    return extension_pos + 2;
+}
+
+
+__attribute__((always_inline))
+inline uint32_t SublimeCMS::get_extension_length(uint64_t extensions[]) const {
+    if constexpr (num_extension_words == 1)
+        return highbit_pos(extensions[0]) + 1;
+    else if constexpr (num_extension_words == 2) {
+        const uint32_t a = highbit_pos(extensions[1]);
+        const uint32_t b = highbit_pos(extensions[0]);
+        return (a ? a + 64 : b) + 1;
+    }
+    else {
+        uint32_t res = 0;
+        for (int32_t i = num_extension_words - 1; i >= 0; i--)
+            res = std::max(res, (extensions[i] ? highbit_pos(extensions[i]) + 64 * i + 1 : 0));
+        return res;
+    }
+}
+
+
+inline void SublimeCMS::shift_extensions_left_from_pos(uint64_t extensions[],
+                                                       const uint32_t pos,
+                                                       const uint32_t shamt) const {
+    if constexpr (num_extension_words == 1) {
+        const uint64_t a = extensions[0] & BITMASK(pos);
+        const uint64_t b = extensions[0] & (BITMASK(64) << pos);
+        extensions[0] = (b << shamt) | a;
+    }
+    else if constexpr (num_extension_words == 2) {
+        if (pos < 64) {
+            const uint64_t a = extensions[0] & BITMASK(pos);
+            const uint64_t b = extensions[0] >> pos;
+            extensions[1] <<= shamt;
+            extensions[1] |= (64 < pos + shamt ? b << (pos + shamt - 64) : b >> (64 - pos - shamt));
+            extensions[0] &= BITMASK(pos);
+            extensions[0] |= (pos + shamt >= 64 ? 0ULL : (b << (pos + shamt)));
+        }
+        else {
+            const uint32_t new_pos = pos - 64;
+            const uint64_t b = extensions[1] & (~BITMASK(new_pos));
+            extensions[1] &= BITMASK(new_pos);
+            extensions[1] |= b << shamt;
+        }
+    }
+    else {
+        const int32_t pos_word = pos / 64;
+        for (int32_t i = num_extension_words - 1; i > pos_word; i--) {
+            const uint64_t prev_extension = i > pos_word ? extensions[i - 1] & (~BITMASK(std::max(0, static_cast<int32_t>(pos) - (i - 1) * 64)))
+                                                         : 0ULL;
+            extensions[i] = (extensions[i] << shamt) | (prev_extension >> (64 - shamt));
+        }
+        const uint64_t a = extensions[pos_word] & BITMASK(pos % 64);
+        const uint64_t b = extensions[pos_word] & (BITMASK(64) << (pos % 64));
+        extensions[pos_word] = (b << shamt) | a;
+    }
+}
+
+
+inline void SublimeCMS::shift_extensions_right_from_pos(uint64_t extensions[],
+                                                        const uint32_t pos,
+                                                        const uint32_t shamt) const {
+    if constexpr (num_extension_words == 1) {
+        const uint64_t a = extensions[0] & BITMASK(pos);
+        const uint64_t b = extensions[0] & (~BITMASK(pos));
+        extensions[0] = ((b >> shamt) & (~BITMASK(pos))) | a;
+    }
+    else if constexpr (num_extension_words == 2) {
+        if (pos < 64) {
+            const bool end_in_second_word = pos + shamt >= 64;
+            const uint32_t dead_a = end_in_second_word ? pos + shamt - 64 : 0U;
+            const uint32_t shift_a = 64 - shamt + dead_a;
+            const uint64_t a = (extensions[1] >> dead_a) & BITMASK(shamt);
+            const uint64_t b = (end_in_second_word ? 0ULL : extensions[0] >> (pos + shamt));
+            extensions[1] >>= shamt;
+            extensions[0] &= BITMASK(pos);
+            extensions[0] |= ((a << shift_a) | (b << pos));
+        }
+        else {
+            const uint32_t new_pos = pos - 64;
+            const uint64_t a = extensions[1] & (~BITMASK(new_pos + shamt));
+            extensions[1] &= BITMASK(new_pos);
+            extensions[1] |= a >> shamt;
+        }
+    }
+    else {
+        uint32_t running_prefix = pos % 64;
+        for (uint32_t i = pos / 64; i < num_extension_words; i++) {
+            const uint64_t a = extensions[i] & BITMASK(running_prefix);
+            const uint64_t b = extensions[i] & (~BITMASK(running_prefix));
+            const uint64_t c = (i < num_extension_words ? extensions[i + 1] & BITMASK(shamt) : 0UL);
+            extensions[i] = (c << (64 - shamt)) | ((b >> shamt) & ~BITMASK(running_prefix)) | a;
+            running_prefix = 0;
+        }
+    }
+}
+
+
+inline uint64_t SublimeCMS::get_counter(const uint8_t *sketch, const uint32_t pos) const {
+    const uint32_t cache_line_ind = get_cache_line_ind(pos);
+    const uint32_t inter_cache_line_ind = pos - cache_line_ind * counter_per_cache_line;
+    const uint8_t *cache_line_ptr = sketch + cache_line_ind * cache_line_size_bytes;
+
+    // Calculate the stub
+    const uint64_t *read_word = reinterpret_cast<const uint64_t *>(cache_line_ptr + word_update_byte_offset[inter_cache_line_ind]);
+    uint64_t res = (read_word[0] >> word_update_shamt[inter_cache_line_ind]) & BITMASK(stub_size);
+
+    // Take into account the extensions, if any
+    const uint64_t *words = reinterpret_cast<const uint64_t *>(cache_line_ptr);
+    const bool has_extension = is_overflowing(words, inter_cache_line_ind);
+    if (has_extension) {
+        const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
+        uint64_t extension_bitmap[num_extension_words];
+        for (uint32_t i = 0; i < num_extension_words - 1; i++)
+            extension_bitmap[i] = words[cache_line_size_words - i - 1];
+        extension_bitmap[num_extension_words - 1] = words[cache_line_size_words - num_extension_words] >> (64 - last_extension_word_bit_count);
+        // Check for pointers
+        if ((extension_bitmap[num_extension_words - 1] >> (last_extension_word_bit_count - 1)) & 1) {
+            const uint32_t *ptr = get_tails_ptr_from_extension_bitmap(extension_bitmap);
+            res |= ptr[inter_cache_line_ind] << stub_size;
+        }
+        else {
+            uint64_t add_res = 0, add_pw = 1;
+            for (int i = get_extension_pos(extension_bitmap, extension_rank); true; i += extension_size) {
+                const uint32_t new_bits = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
+                if (new_bits == MAX_VALUE(extension_size))
+                    break;
+                add_res += new_bits * add_pw;
+                add_pw *= MAX_VALUE(extension_size);
+            }
+            res += add_res << stub_size;
+        }
+    }
+
+    return res;
+}
+
+
+inline void SublimeCMS::set_counter(uint8_t *sketch, const uint32_t pos, const uint64_t value) {
+    const uint32_t cache_line_ind = get_cache_line_ind(pos);
+    const uint32_t inter_cache_line_ind = pos - cache_line_ind * counter_per_cache_line;
+    uint8_t *cache_line_ptr = sketch + cache_line_ind * cache_line_size_bytes;
+
+    // Set the stub
+    uint64_t *write_word = reinterpret_cast<uint64_t *>(cache_line_ptr + word_update_byte_offset[inter_cache_line_ind]);
+    write_word[0] &= ~(BITMASK(stub_size) << word_update_shamt[inter_cache_line_ind]);
+    write_word[0] |= (value & BITMASK(stub_size)) << word_update_shamt[inter_cache_line_ind];
+
+    // Handle the extensions
+    uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
+    const bool new_has_extension = value > MAX_VALUE(stub_size);
+    const bool old_has_extension = is_overflowing(words, inter_cache_line_ind);
+    const int update_state = static_cast<int>(old_has_extension) * 2 + static_cast<int>(new_has_extension);
+    if (update_state) {
+        const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
+        uint64_t extension_bitmap[num_extension_words];
+        for (uint32_t i = 0; i < num_extension_words - 1; i++)
+            extension_bitmap[i] = words[cache_line_size_words - i - 1];
+        extension_bitmap[num_extension_words - 1] = words[cache_line_size_words - num_extension_words] >> (64 - last_extension_word_bit_count);
+        const bool already_has_tails_ptr = has_tails_array(words);
+        const uint32_t total_extension_len = (already_has_tails_ptr ? extension_size * num_extension + 1
+                                                                    : get_extension_length(extension_bitmap));
+        uint32_t new_extension_len = extension_size, extension_value = value >> stub_size;
+        for (uint64_t val = extension_value; val; val /= MAX_VALUE(extension_size))
+            new_extension_len += extension_size;
+
+        switch (update_state) {
+            case 1: {   // !old_has_extension && new_has_extension
+                if (already_has_tails_ptr) {
+                    // Update separate array
+                    uint32_t *ptr = get_tails_ptr_from_extension_bitmap(extension_bitmap);
+                    ptr[inter_cache_line_ind] = extension_value;
+                }
+                else if (new_extension_len + total_extension_len > extension_size * num_extension) {
+                    uint32_t *ptr = setup_tails_array(words, extension_bitmap, total_extension_len);
+                    ptr[inter_cache_line_ind] = extension_value;
+                }
+                else {
+                    // Handle Locally
+                    const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
+                    shift_extensions_left_from_pos(extension_bitmap, pos, new_extension_len);
+                    uint64_t tmp_val = extension_value, i;
+                    for (i = pos; tmp_val; tmp_val /= MAX_VALUE(extension_size), i += extension_size)
+                        extension_bitmap[i / 64] |= ((tmp_val % MAX_VALUE(extension_size)) << (i % 64));
+                    extension_bitmap[i / 64] |= (MAX_VALUE(extension_size) << (i % 64));
+                }
+                break;
+            }
+            case 2: {   // old_has_extension && !new_has_extension
+                if (already_has_tails_ptr) {
+                    // Update separate array
+                    uint32_t *ptr = get_tails_ptr_from_extension_bitmap(extension_bitmap);
+                    ptr[inter_cache_line_ind] = 0;
+                }
+                else {
+                    // Handle Locally
+                    const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
+                    const uint32_t old_extension_len = get_extension_pos(extension_bitmap, extension_rank + 1) - pos;
+                    shift_extensions_right_from_pos(extension_bitmap, pos, old_extension_len);
+                }
+                break;
+            }
+            case 3: {   // old_has_extension && new_has_extension
+                const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
+                const uint32_t old_extension_len = get_extension_pos(extension_bitmap, extension_rank + 1) - pos;
+                if (already_has_tails_ptr) {
+                    // Update separate array
+                    uint32_t *ptr = get_tails_ptr_from_extension_bitmap(extension_bitmap);
+                    ptr[inter_cache_line_ind] = extension_value;
+                }
+                else if (new_extension_len + total_extension_len - old_extension_len > extension_size * num_extension) {
+                    uint32_t *ptr = setup_tails_array(words, extension_bitmap, total_extension_len);
+                    ptr[inter_cache_line_ind] = extension_value;
+                }
+                else {
+                    // Handle Locally
+                    shift_extensions_right_from_pos(extension_bitmap, pos, old_extension_len);
+                    shift_extensions_left_from_pos(extension_bitmap, pos, new_extension_len);
+                    uint64_t tmp_val = extension_value, i;
+                    for (i = pos; tmp_val; tmp_val /= MAX_VALUE(extension_size), i += extension_size)
+                        extension_bitmap[i / 64] |= ((tmp_val % MAX_VALUE(extension_size)) << (i % 64));
+                    extension_bitmap[i / 64] |= (MAX_VALUE(extension_size) << (i % 64));
+                }
+                break;
+            }
+        }
+
+        write_extensions_to_cache_line(words, extension_bitmap);
+    }
+    set_overflowing(words, inter_cache_line_ind, new_has_extension);
+}
+
+
+inline void SublimeCMS::increment_counter(uint8_t *sketch,
+                                          const uint32_t cache_line_ind,
+                                          const uint32_t inter_cache_line_ind) {
+    uint8_t *cache_line_ptr = sketch + cache_line_ind * cache_line_size_bytes;
+
+    // Set the stub
+    uint64_t *update_word = reinterpret_cast<uint64_t *>(cache_line_ptr + word_update_byte_offset[inter_cache_line_ind]);
+    const uint64_t stub_mask = BITMASK(stub_size) << word_update_shamt[inter_cache_line_ind];
+    const uint64_t tmp_val = (update_word[0] & stub_mask);
+    if (tmp_val != stub_mask) {
+        update_word[0] += 1ULL << word_update_shamt[inter_cache_line_ind];
+        return;
+    }
+
+    update_word[0] &= ~stub_mask;
+    
+    // Handle the carry and extensions
+    uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
+    const bool has_extension = is_overflowing(words, inter_cache_line_ind);
+    const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
+    uint64_t extension_bitmap[num_extension_words];
+    for (uint32_t i = 0; i < num_extension_words - 1; i++)
+        extension_bitmap[i] = words[cache_line_size_words - i - 1];
+    extension_bitmap[num_extension_words - 1] = words[cache_line_size_words - num_extension_words] >> (64 - last_extension_word_bit_count);
+    const bool already_has_tails_ptr = has_tails_array(words);
+    const uint32_t total_extension_len = (already_has_tails_ptr ? extension_size * num_extension + 1
+                                                                : get_extension_length(extension_bitmap));
+
+    if (has_extension) {
+        if (already_has_tails_ptr) {
+            // Update separate array
+            uint32_t *ptr = get_tails_ptr_from_extension_bitmap(extension_bitmap);
+            ptr[inter_cache_line_ind]++;
+        }
+        else {
+            const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
+            uint32_t i = pos;
+            uint64_t chunk = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
+            bool absorbed = false, should_add_extension = true;
+            do {
+                absorbed = (chunk != MAX_VALUE(extension_size) - 1);
+                should_add_extension &= !absorbed;
+                extension_bitmap[i / 64] += (1ULL + (absorbed ? 0 : -MAX_VALUE(extension_size))) << (i % 64);
+                i += 2;
+                chunk = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
+            } while ((!absorbed) & (chunk != MAX_VALUE(extension_size)));
+
+            if (should_add_extension) {
+                if (total_extension_len + extension_size > extension_size * num_extension) {
+                    uint32_t *ptr = setup_tails_array(words, extension_bitmap, total_extension_len);
+                    ptr[inter_cache_line_ind] = 1;
+                    for (int j = pos; j < i; j += 2)
+                        ptr[inter_cache_line_ind] *= 3;
+                }
+                else {
+                    shift_extensions_left_from_pos(extension_bitmap, i, extension_size);
+                    extension_bitmap[i / 64] += 1ULL << (i % 64);
+                }
+            }
+        }
+    }
+    else {
+        if (already_has_tails_ptr) {
+            // Update separate array
+            uint32_t *ptr = get_tails_ptr_from_extension_bitmap(extension_bitmap);
+            ptr[inter_cache_line_ind]++;
+        }
+        else if (total_extension_len + 2 * extension_size > extension_size * num_extension) {
+            uint32_t *ptr = setup_tails_array(words, extension_bitmap, total_extension_len);
+            ptr[inter_cache_line_ind] = 1;
+        }
+        else {
+            const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
+            shift_extensions_left_from_pos(extension_bitmap, pos, 2 * extension_size);
+            extension_bitmap[pos / 64] += 1ULL << (pos % 64);
+            extension_bitmap[(pos + 2) / 64] |= MAX_VALUE(extension_size) << ((pos + 2) % 64);
+        }
+    }
+
+    write_extensions_to_cache_line(words, extension_bitmap);
+    set_overflowing_to_1(words, inter_cache_line_ind);
+}
+
+
+inline void SublimeCMS::decrement_counter(uint8_t *sketch,
+                                          const uint32_t cache_line_ind,
+                                          const uint32_t inter_cache_line_ind) {
+    uint8_t *cache_line_ptr = sketch + cache_line_ind * cache_line_size_bytes;
+
+    // Set the stub
+    uint64_t *update_word = reinterpret_cast<uint64_t *>(cache_line_ptr + word_update_byte_offset[inter_cache_line_ind]);
+    const uint64_t stub_mask = BITMASK(stub_size) << word_update_shamt[inter_cache_line_ind];
+    const uint64_t tmp_val = (update_word[0] & stub_mask);
+    if (tmp_val != 0) {
+        update_word[0] -= 1ULL << word_update_shamt[inter_cache_line_ind];
+        return;
+    }
+
+    update_word[0] |= stub_mask;
+    
+    // Handle the carry and extensions
+    uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
+    const bool has_extension = is_overflowing(words, inter_cache_line_ind);
+    const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
+    uint64_t extension_bitmap[num_extension_words];
+    for (uint32_t i = 0; i < num_extension_words - 1; i++)
+        extension_bitmap[i] = words[cache_line_size_words - i - 1];
+    extension_bitmap[num_extension_words - 1] = words[cache_line_size_words - num_extension_words] >> (64 - last_extension_word_bit_count);
+    const bool already_has_tails_ptr = has_tails_array(words);
+    const uint32_t total_extension_len = (already_has_tails_ptr ? extension_size * num_extension + 1
+                                                                : get_extension_length(extension_bitmap));
+
+    if (already_has_tails_ptr) {
+        // Update separate array
+        uint32_t *ptr = get_tails_ptr_from_extension_bitmap(extension_bitmap);
+        ptr[inter_cache_line_ind]--;
+        const uint64_t extensions_depleted = ptr[inter_cache_line_ind] == 0;
+        set_overflowing_to_0(words, inter_cache_line_ind, extensions_depleted);
+    }
+    else {
+        const uint32_t pos = get_extension_pos(extension_bitmap, extension_rank);
+        uint32_t i = pos;
+        uint64_t chunk = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
+        bool absorbed = false, should_remove_extension = true;
+        do {
+            absorbed = (chunk != 0);
+            should_remove_extension &= (!absorbed | (chunk == 1));
+            extension_bitmap[i / 64] -= (1ULL + (absorbed ? 0 : -MAX_VALUE(extension_size))) << (i % 64);
+            i += 2;
+            chunk = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
+        } while ((!absorbed) & (chunk != MAX_VALUE(extension_size)));
+
+        should_remove_extension &= (chunk == MAX_VALUE(extension_size));
+        if (should_remove_extension) {
+            const uint64_t extensions_depleted = (i == pos + 2);
+            const uint32_t shamt = (extensions_depleted ? extension_size * 2 : extension_size);
+            const uint32_t shift_pos = i - 2;
+            shift_extensions_right_from_pos(extension_bitmap, shift_pos, shamt);
+            set_overflowing_to_0(words, inter_cache_line_ind, extensions_depleted);
+        }
+    }
+
+    write_extensions_to_cache_line(words, extension_bitmap);
+}
+
+
+inline uint32_t *SublimeCMS::setup_tails_array(const uint64_t *overflows_bitmap,
+                                                  uint64_t *extension_bitmap,
+                                                  const uint32_t total_extension_len) {
+    uint32_t *ptr = new uint32_t[counter_per_cache_line];
+    memset(ptr, 0, counter_per_cache_line * sizeof(uint32_t));
+    uint32_t running_val = 0, running_pw = 1, cnt = 0;
+    uint32_t overflows_pos = 0, running_overflows_count = 0;
+    for (int i = 0; i < total_extension_len; i += extension_size) {
+        const uint32_t fragment = (extension_bitmap[i / 64] >> (i % 64)) & BITMASK(extension_size);
+        if (fragment == MAX_VALUE(extension_size)) {
+            uint32_t ptr_pos = bit_select(overflows_bitmap[overflows_pos], cnt - running_overflows_count);
+            while (ptr_pos == 64) {
+                running_overflows_count += __builtin_popcountll(overflows_bitmap[overflows_pos]);
+                overflows_pos++;
+                ptr_pos = bit_select(overflows_bitmap[overflows_pos], cnt - running_overflows_count);
+            }
+            ptr_pos += 64 * overflows_pos;
+            ptr[ptr_pos] = running_val;
+            running_val = 0;
+            running_pw = 1;
+            cnt++;
+            continue;
+        }
+        running_val = running_val + running_pw * fragment;
+        running_pw *= 3;
+    }
+    memset(extension_bitmap, 0, sizeof(extension_bitmap[0]) * num_extension_words);
+    if constexpr (num_extension_words == 1)
+        extension_bitmap[0] = reinterpret_cast<uint64_t>(ptr) & BITMASK(last_extension_word_bit_count - 1);
+    else 
+        extension_bitmap[0] = reinterpret_cast<uint64_t>(ptr);
+    extension_bitmap[num_extension_words - 1] |= 1ULL << (last_extension_word_bit_count - 1);
+    return ptr;
+}
+
+
+inline void SublimeCMS::write_extensions_to_cache_line(uint64_t *words,
+                                                       uint64_t *extension_bitmap) {
+    extension_bitmap[num_extension_words - 1] = (extension_bitmap[num_extension_words - 1] << (64 - last_extension_word_bit_count))
+                                              | (words[cache_line_size_words - num_extension_words] & BITMASK(64 - last_extension_word_bit_count));
+    for (uint32_t i = 0; i < num_extension_words - 1; i++)
+        words[cache_line_size_words - i - 1] = extension_bitmap[i];
+    words[cache_line_size_words - num_extension_words] = extension_bitmap[num_extension_words - 1];
+}
+
+
+inline uint8_t *SublimeCMS::allocate_sketch(const size_t rows, const size_t cols) {
+    const uint32_t cache_line_cnt = (rows * cols + counter_per_cache_line - 1) / counter_per_cache_line;
+    const uint32_t size = cache_line_cnt * cache_line_size_bytes;
+    uint8_t *res = new uint8_t[size];
+    memset(res, 0, size);
+    return res;
+}
+
+
+inline uint32_t SublimeCMS::hash_key(const char *key, const uint32_t length, const int seed_ind) const {
+    const uint64_t original_hash = MurmurHash64B(key, length, seeds[seed_ind]);
+    uint32_t hash = original_hash & BITMASK(init_col_count_lg);
+    hash = fast_reduce(hash << (8 * sizeof(uint32_t) - init_col_count_lg),
+                        init_col_count);
+    hash += ((original_hash >> init_col_count_lg) & BITMASK(col_count_lg - init_col_count_lg))
+            * init_col_count;
+    return hash;
+}
+
+
+inline uint32_t SublimeCMS::hash_tof(const uint64_t original_hash) const {
+    const uint32_t hash_shamt = counter_count_lg - init_counter_count_lg;
+    uint32_t hash = (original_hash & index_mask) << bias_range;
+    int32_t tmp = hash - init_counter_count;
+    hash = (tmp < 0 ? hash : tmp);
+    hash += ((original_hash >> (init_counter_count_lg + bias_range * row_count)) & BITMASK(hash_shamt))
+            * init_counter_count;
+    return hash;
+}
+
+inline void SublimeCMS::free_tails(uint8_t *sketch, uint32_t cache_line_count) {
+    for (uint32_t chunk = 0; chunk < cache_line_count; chunk++) {
+        uint64_t *words = reinterpret_cast<uint64_t *>(sketch + cache_line_size_bytes * chunk);
+        uint64_t extension_bitmap[num_extension_words];
+        for (uint32_t i = 0; i < num_extension_words - 1; i++)
+            extension_bitmap[i] = words[cache_line_size_words - i - 1];
+        extension_bitmap[num_extension_words - 1] = words[cache_line_size_words - num_extension_words] 
+                                                        >> (64 - last_extension_word_bit_count);
+        if (has_tails_array(words)) {
+            uint32_t *ptr = get_tails_ptr_from_extension_bitmap(extension_bitmap);
+            delete[] ptr;
+        }
+    }
+}
+
+
+inline void SublimeCMS::expand() {
+    FlushPrefetchQueue();
+    contraction_lim = expansion_lim;
+    expansion_lim = expansion_f(2 * col_count);
+
+    uint8_t *new_sketch = allocate_sketch(row_count, 2 * col_count);
+    uint8_t *old_sketch = sketches.back();
+    if constexpr (using_tof_hashing) {
+        for (int i = 0; i < counter_count; i++) {
+            const uint32_t old_value = get_counter(old_sketch, i);
+            set_counter(new_sketch, i, old_value);
+            set_counter(new_sketch, counter_count + i, old_value);
+        }
+    }
+    else {
+        for (int i = 0; i < row_count; i++) {
+            for (int j = 0; j < col_count; j++) {
+                const uint32_t old_value = get_counter(old_sketch, col_count * i + j);
+                set_counter(new_sketch, 2 * col_count * i + j, old_value);
+                set_counter(new_sketch, 2 * col_count * i + col_count + j, old_value);
+            }
+        }
+    }
+    sketches.push_back(new_sketch);
+    col_count *= 2;
+    col_count_lg++;
+    counter_count *= 2;
+    counter_count_lg++;
+}
+
+
+inline void SublimeCMS::contract() {
+    FlushPrefetchQueue();
+    expansion_lim = contraction_lim;
+    contraction_lim = (n < expansion_f(2 * init_col_count) ? 0 : expansion_f(col_count / 2));
+
+    uint8_t *new_sketch = sketches.back();
+    const uint32_t new_sketch_cache_line_count = (counter_count + counter_per_cache_line - 1) / counter_per_cache_line;
+    sketches.pop_back();
+    uint8_t *old_sketch = sketches.back();
+    col_count /= 2;
+    col_count_lg--;
+    counter_count /= 2;
+    counter_count_lg--;
+    if constexpr (using_tof_hashing) {
+        for (int i = 0; i < counter_count; i++) {
+            const uint32_t a = get_counter(new_sketch, i);
+            const uint32_t b = get_counter(new_sketch, counter_count + i);
+            const uint32_t c = get_counter(old_sketch, i);
+            set_counter(old_sketch, i, a + b - c);
+        }
+    }
+    else {
+        for (int i = 0; i < row_count; i++) {
+            for (int j = 0; j < col_count; j++) {
+                const uint32_t a = get_counter(new_sketch, 2 * col_count * i + j);
+                const uint32_t b = get_counter(new_sketch, 2 * col_count * i + col_count + j);
+                const uint32_t c = get_counter(old_sketch, col_count * i + j);
+                set_counter(old_sketch, col_count * i + j, a + b - c);
+            }
+        }
+    }
+    free_tails(new_sketch, new_sketch_cache_line_count);
+    delete new_sketch;
+}

@@ -19,7 +19,31 @@ space for their accuracy guarantee.
 # Getting Started
 To use Sublime in developing your own project, simply add the files in the
 `include` directory and include the header file corresponding to the desired
-version of Sublime.
+version of Sublime. 
+
+The file `SublimeCMS.hpp` implements Sublime when applied to the Count-Min
+Sketch, complete with VALE's auto-tuning features. The file
+`SublimeCMSNoTuning.hpp.in` fixes VALE's tuning and allows the compiler to
+apply intrusive optimizations to significantly improve insertion, deletion, and
+query performance. Moreover, `SublimeCMSNoTuningMorris.hpp.in`
+probabilistically increments each counter during insertions to enable a fair
+comparison with Tailored Sketch.
+
+Similarly, the file `SublimeCS.hpp` implements Sublime applied to the Count
+Sketch, and the file `SublimeCSNoTuning.hpp.in` fixes VALE's tuning in this
+case to enable higher performance.
+
+All versions of Sublime provide the following APIs:
+- `Insert`: Inserts the provided key into the sketch.
+- `Delete`: Deletes the provided key from the sketch.
+- `Query`: Returns an estimate of the provided key's frequency.
+- `Size`: Returns the size of the sketch.
+- `FlushPrefetchQueue`: Flushes all updates whose requests for chunks are
+  in-flight. This ensures queries take into account all updates previously made
+  to the filter.
+The file `example.cpp` in the `examples` directory illustrates the usage of
+these APIs. All other operations such as auto-tuning VALE are transparently
+handled by Sublime and therefore do not have APIs.
 
 # Quick Reprodicibility 
 This repository contains an `evaluate.sh` script. This script downloads the
@@ -111,6 +135,14 @@ VALE's) parameters by specifying the following CMake options before compiling
 the code:
 - `FIXED_TUNING_C={c}`: Fixes the number of counters per chunk to `c`.
 - `FIXED_TUNING_S={s}`: Fixes the stub length to `s`.
+These parameters impact the files `SublimeCMSNoTuning.hpp.in`,
+`SublimeCMSNoTuningMorris.hpp.in`, and `SublimeCSNoTuning.hpp.in`. They do not
+change the tuning of the core versions of Sublime, i.e., those in
+`SublimeCMS.hpp` and `SublimeCS.hpp`.
+
+For `SublimeCMSNoTuningMorris.hpp.in`, you can also set the increment
+probability of the counters in Sublime by supplying the following CMake option:
+- `LOG_REC_INC_PROB={p}`: Set the increment probability to $2^{-p}$.
 
 # Running Unit Tests
 After building Sublime, run the following command from the project's root

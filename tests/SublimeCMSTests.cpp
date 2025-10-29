@@ -317,7 +317,7 @@ private:
                     cnt++;
                 }
             const uint64_t *words = reinterpret_cast<const uint64_t *>(ptr);
-            if (s.has_separate_array(sketch, words)) {
+            if (s.has_tails_array(sketch, words)) {
                 std::cerr << " ==== ";
                 uint32_t *inner_ptr = reinterpret_cast<uint32_t *>(words[SublimeCMS::cache_line_size_words - 1]);
                 for (int j = 0; j < sketch->counter_per_cache_line; j++)
