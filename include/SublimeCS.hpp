@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bits/floatn-common.h>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -13,6 +14,8 @@
 
 #include "MurmurHash.hpp"
 #include "util.hpp"
+
+inline uint64_t total_adaptation_time = 0, total_expansion_time = 0, total_contraction_time = 0;
 
 class SublimeCS {
     friend class SublimeCSTest;
@@ -147,7 +150,10 @@ public:
 
     // VALE's default counter per chunk size and the constraints enforced on it
     // during retuning.
-    static constexpr uint32_t min_counter_per_cache_line = 16, max_counter_per_cache_line = 92, default_counter_per_cache_line = 68;
+    static constexpr uint32_t min_counter_per_cache_line = (cache_line_size / 512.0) * 16;
+    static constexpr uint32_t max_counter_per_cache_line = (cache_line_size / 512.0) * 92;
+    static constexpr uint32_t default_counter_per_cache_line = std::min<uint32_t>((cache_line_size / 512.0) * 68,
+                                                                                  (cache_line_size - 48) / 6);
     static_assert(min_counter_per_cache_line <= default_counter_per_cache_line 
                && default_counter_per_cache_line <= max_counter_per_cache_line);
     // VALE's default stub size and the constraints enforced on it during
@@ -155,6 +161,7 @@ public:
     static constexpr uint32_t min_stub_size = 4, max_stub_size = 32, default_stub_size = 5;
     static_assert(min_stub_size <= default_stub_size 
                && default_stub_size <= max_stub_size);
+    static_assert(default_counter_per_cache_line * (default_stub_size + 1) <= cache_line_size - 48);
 
 private:
     // VALE's extension fragment length

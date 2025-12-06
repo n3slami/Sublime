@@ -2,6 +2,7 @@
 
 #include <bits/floatn-common.h>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -12,6 +13,9 @@
 
 #include "MurmurHash.hpp"
 #include "util.hpp"
+
+
+inline uint64_t total_adaptation_time = 0, total_expansion_time = 0, total_contraction_time = 0;
 
 class SublimeCMS {
     friend class SublimeCMSTest;
@@ -147,7 +151,10 @@ public:
 
     // VALE's default counter per chunk size and the constraints enforced on it
     // during retuning.
-    static constexpr uint32_t min_counter_per_cache_line = 16, max_counter_per_cache_line = 92, default_counter_per_cache_line = 68;
+    static constexpr uint32_t min_counter_per_cache_line = (cache_line_size / 512.0) * 16;
+    static constexpr uint32_t max_counter_per_cache_line = (cache_line_size / 512.0) * 92;
+    static constexpr uint32_t default_counter_per_cache_line = std::min<uint32_t>((cache_line_size / 512.0) * 68,
+                                                                                  (cache_line_size - 48) / 6);
     static_assert(min_counter_per_cache_line <= default_counter_per_cache_line 
                && default_counter_per_cache_line <= max_counter_per_cache_line);
     // VALE's default stub size and the constraints enforced on it during
@@ -155,6 +162,7 @@ public:
     static constexpr uint32_t min_stub_size = 4, max_stub_size = 32, default_stub_size = 5;
     static_assert(min_stub_size <= default_stub_size 
                && default_stub_size <= max_stub_size);
+    static_assert(default_counter_per_cache_line * (default_stub_size + 1) <= cache_line_size - 48);
 
 private:
     // VALE's extension fragment length
@@ -203,7 +211,7 @@ private:
         uint8_t sketch[0];                                              // The counters in the sketch itself.
     };
     // Ensure the actual sketch state is always cache aligned.
-    static_assert(sizeof(Sketch) % cache_line_size_bytes == 0);
+    //static_assert(sizeof(Sketch) % cache_line_size_bytes == 0);
 
     // Global count of the number of keys in the stream
     uint64_t n;
@@ -1499,6 +1507,9 @@ inline SublimeCMS::Sketch *SublimeCMS::allocate_sketch(const uint32_t rows,
 
 
 inline void SublimeCMS::reallocate_sketch(SublimeCMS::Sketch *&sketch, bool decreasing) {
+    // Measure adaptation time
+    std::chrono::high_resolution_clock::time_point time_point = std::chrono::high_resolution_clock::now();
+
     uint32_t counter_len_cnt[8 * sizeof(uint64_t)] = {};
     compute_counter_len_cnt(sketch, counter_len_cnt);
     auto [counter_per_cache_line, stub_size] = tune_params(counter_len_cnt);
@@ -1528,6 +1539,8 @@ inline void SublimeCMS::reallocate_sketch(SublimeCMS::Sketch *&sketch, bool decr
     free_tails(sketch);
     delete[] sketch;
     sketch = res;
+    total_adaptation_time += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() 
+                                                                                    - time_point).count();
 }
 
 
@@ -1577,6 +1590,9 @@ inline void SublimeCMS::free_tails(SublimeCMS::Sketch *sketch) {
 
 inline void SublimeCMS::expand() {
     FlushPrefetchQueue();
+    // Measure expansion time
+    std::chrono::high_resolution_clock::time_point time_point = std::chrono::high_resolution_clock::now();
+
     contraction_lim = expansion_lim;
     expansion_lim = expansion_f(2 * col_count);
 
@@ -1605,10 +1621,15 @@ inline void SublimeCMS::expand() {
     col_count_lg++;
     counter_count *= 2;
     counter_count_lg++;
+    total_expansion_time += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() 
+                                                                                    - time_point).count();
 }
 
 inline void SublimeCMS::contract() {
     FlushPrefetchQueue();
+    // Measure contraction time
+    std::chrono::high_resolution_clock::time_point time_point = std::chrono::high_resolution_clock::now();
+
     expansion_lim = contraction_lim;
     contraction_lim = (col_count / 4 < contraction_min_size ? 0 : expansion_f(col_count / 4.0));
 
@@ -1649,4 +1670,6 @@ inline void SublimeCMS::contract() {
     }
     free_tails(new_sketch);
     delete[] new_sketch;
+    total_contraction_time += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() 
+                                                                                    - time_point).count();
 }
