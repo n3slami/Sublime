@@ -15,7 +15,7 @@
 #include "MurmurHash.hpp"
 #include "util.hpp"
 
-inline uint64_t total_adaptation_time = 0, total_expansion_time = 0, total_contraction_time = 0;
+inline uint64_t total_adaptation_time_cs = 0, total_expansion_time_cs = 0, total_contraction_time_cs = 0;
 
 class SublimeCS {
     friend class SublimeCSTest;
@@ -1503,6 +1503,9 @@ inline SublimeCS::Sketch *SublimeCS::allocate_sketch(const uint32_t rows,
 
 
 inline void SublimeCS::reallocate_sketch(SublimeCS::Sketch *&sketch, bool decreasing) {
+    // Measure adaptation time
+    std::chrono::high_resolution_clock::time_point time_point = std::chrono::high_resolution_clock::now();
+
     uint32_t counter_len_cnt[8 * sizeof(uint64_t)] = {};
     compute_counter_len_cnt(sketch, counter_len_cnt);
     auto [counter_per_cache_line, stub_size] = tune_params(counter_len_cnt);
@@ -1532,6 +1535,9 @@ inline void SublimeCS::reallocate_sketch(SublimeCS::Sketch *&sketch, bool decrea
     free_tails(sketch);
     delete[] sketch;
     sketch = res;
+
+    total_adaptation_time_cs += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() 
+                                                                                    - time_point).count();
 }
 
 
@@ -1575,6 +1581,9 @@ inline void SublimeCS::free_tails(SublimeCS::Sketch *sketch) {
 
 inline void SublimeCS::expand() {
     FlushPrefetchQueue();
+    // Measure expansion time
+    std::chrono::high_resolution_clock::time_point time_point = std::chrono::high_resolution_clock::now();
+
     contraction_lim = expansion_lim;
     expansion_lim = expansion_f(2 * col_count);
 
@@ -1603,11 +1612,16 @@ inline void SublimeCS::expand() {
     col_count_lg++;
     counter_count *= 2;
     counter_count_lg++;
+    total_expansion_time_cs += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() 
+                                                                                    - time_point).count();
 }
 
 
 inline void SublimeCS::contract() {
     FlushPrefetchQueue();
+    // Measure contraction time
+    std::chrono::high_resolution_clock::time_point time_point = std::chrono::high_resolution_clock::now();
+
     expansion_lim = contraction_lim;
     contraction_lim = (n <= expansion_f(init_col_count) ? 0 : expansion_f(col_count / 4.0));
 
@@ -1638,4 +1652,6 @@ inline void SublimeCS::contract() {
     }
     free_tails(new_sketch);
     delete[] new_sketch;
+    total_contraction_time_cs += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() 
+                                                                                    - time_point).count();
 }

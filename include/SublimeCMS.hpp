@@ -15,7 +15,7 @@
 #include "util.hpp"
 
 
-inline uint64_t total_adaptation_time = 0, total_expansion_time = 0, total_contraction_time = 0;
+inline uint64_t total_adaptation_time_cms = 0, total_expansion_time_cms = 0, total_contraction_time_cms = 0;
 
 class SublimeCMS {
     friend class SublimeCMSTest;
@@ -1539,7 +1539,7 @@ inline void SublimeCMS::reallocate_sketch(SublimeCMS::Sketch *&sketch, bool decr
     free_tails(sketch);
     delete[] sketch;
     sketch = res;
-    total_adaptation_time += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() 
+    total_adaptation_time_cms += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() 
                                                                                     - time_point).count();
 }
 
@@ -1621,7 +1621,7 @@ inline void SublimeCMS::expand() {
     col_count_lg++;
     counter_count *= 2;
     counter_count_lg++;
-    total_expansion_time += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() 
+    total_expansion_time_cms += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() 
                                                                                     - time_point).count();
 }
 
@@ -1670,6 +1670,6 @@ inline void SublimeCMS::contract() {
     }
     free_tails(new_sketch);
     delete[] new_sketch;
-    total_contraction_time += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() 
+    total_contraction_time_cms += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() 
                                                                                     - time_point).count();
 }
