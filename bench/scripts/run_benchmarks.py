@@ -204,7 +204,6 @@ def join_size_bench():
         if workload.name != "join_size":
             continue
 
-        '''
         sketch = "SublimeCMSNoTuning"
         for memory_footprint, (c, s) in zip(memory_footprints, cms_vale_params):
             rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir, workload, sketch, memory_footprint)
@@ -212,7 +211,6 @@ def join_size_bench():
         sketch = "SublimeCSNoTuning"
         for memory_footprint, (c, s) in zip(memory_footprints, cs_vale_params):
             rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir, workload, sketch, memory_footprint)
-            '''
 
         for sketch, memory_footprint in itertools.product(sketches, memory_footprints):
             execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint)
