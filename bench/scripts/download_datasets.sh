@@ -28,7 +28,7 @@ download() {
     echo "Downloading '${DATASET}'..."
     if [[ "$DATASET" == *"_ext"* ]]; then
         curl -c ./cookie.txt -s -L "https://drive.google.com/uc?export=download&id=${google_drive_file_ids[$DATASET]}" > /dev/null
-        curl -Lb ./cookie.txt "https://drive.usercontent.google.com/download?id=${google_drive_file_ids[$DATASET]}&confirm=$(awk '/download/ {print $NF}' ./cookie.txt)" -o $DATASET.tbl
+        curl -Lb ./cookie.txt "https://drive.usercontent.google.com/download?id=${google_drive_file_ids[$DATASET]}&confirm=$(awk '/download/ {print $NF}' ./cookie.txt)" -o ./${DIR_DATA}/${DATASET}.tbl
         rm ./cookie.txt
     else
         wget -q --progress=bar ${URL} -P ./${DIR_DATA}
