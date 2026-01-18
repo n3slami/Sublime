@@ -1751,7 +1751,7 @@ inline void SublimeCS<l2_size_function>::update_l2_estimate(const char *elem,
     __m512i twos = _mm512_set1_epi32(2);
     __m512i ones = _mm512_set1_epi32(1);
     __m512i ams_update = _mm512_maskz_sub_epi32(add_mask, ones, twos);
-    __m512_add_epi32(ams, ams_update);
+    _mm512_add_epi32(ams, ams_update);
 #else
     // Scalar Fallback (No SIMD)
     for (int32_t i = 0; i < num_ams_sketches; i++)
@@ -1767,15 +1767,15 @@ inline uint64_t SublimeCS<l2_size_function>::get_l2_estimate() {
     uint64_t ams_squared[num_ams_squared] = {};
 #if defined(__AVX512F__)
     static_assert(__builtin_popcount(num_to_average) == 1);
-    __m512 mul_1 = _mm512_mul_epi32(ams, ams);
+    __m512i mul_1 = _mm512_mul_epi32(ams, ams);
     __m512i ams_shifted = _mm512_shuffle_epi32(ams, _MM_SHUFFLE(1, 0, 3, 2));
-    __m512 mul_2 = _mm512_mul_epi32(ams_shifted, ams_shifted);
-    __m512 result = _m512_add_epi64(mul_1, mul_2);
-    __m512 final_add_terms = _mm512_permutexvar_epi64(_m512_set_epi64(7, 6, 5, 4, 7, 5, 3, 1), result);
-    result = _mm512_permutexvar_epi64(_m512_set_epi64(7, 6, 5, 4, 6, 4, 2, 0), result);
-    result = _m512_add_epi64(result, final_add_terms);
-    result = _m512_srl_(res, lowbit_pos(num_to_average));
-    __mm512_storeu_epi64(ams_squared, result);
+    __m512i mul_2 = _mm512_mul_epi32(ams_shifted, ams_shifted);
+    __m512i result = _mm512_add_epi64(mul_1, mul_2);
+    __m512i final_add_terms = _mm512_permutexvar_epi64(_mm512_set_epi64(7, 6, 5, 4, 7, 5, 3, 1), result);
+    result = _mm512_permutexvar_epi64(_mm512_set_epi64(7, 6, 5, 4, 6, 4, 2, 0), result);
+    result = _mm512_add_epi64(result, final_add_terms);
+    result = _mm512_srl_epi64(result, _mm_cvtsi32_si128(lowbit_pos(num_to_average)));
+    _mm512_storeu_epi64(reinterpret_cast<uint64_t *>(&(ams_squared[0])), result);
 #else
     // Scalar Fallback (No SIMD)
     for (int32_t i = 0; i < num_ams_sketches; i += num_to_average) {
