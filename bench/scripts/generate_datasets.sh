@@ -18,9 +18,9 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-FIGURE_OPTIONS=("accuracy" "skew" "vale_tuning" "expansion" "contraction" "accuracy_unbiased")
+FIGURE_OPTIONS=("accuracy" "skew" "vale_tuning" "expansion" "contraction" "accuracy_unbiased" "l2_size_function" "join_size")
 
-FIGURES="accuracy,skew,vale_tuning,expansion,contraction,accuracy_unbiased"
+FIGURES="accuracy,skew,vale_tuning,expansion,contraction,accuracy_unbiased,l2_size_function,join_size"
 
 function print_help_message_exit() {
     echo "Usage: generate_datasets.sh <build_path> <real_datasets_path> [-f|--figures ${FIGURES}]"
@@ -31,6 +31,8 @@ function print_help_message_exit() {
     echo "      - expansion:         measures average absolute error and memory on a growing stream                          (Fig.  8 in the paper)"
     echo "      - contraction:       measures average absolute error and memory as all keys in a stream are deleted          (Fig. 12 in the paper)"
     echo "      - accuracy_unbiased: measures unbiased average absolute error and insertion and query speed on real datasets (Fig. 13 in the paper)"
+    echo "      - l2_size_function:  measures the effects of expanding based on the l2-norm of the stream for Sublime_CS     (Fig. - in the paper)"
+    echo "      - join_size:         measures the accuracy of the sketches in estimating the size of a join of TPC-H tables  (Fig. - in the paper)"
     echo "By default, all datasets are generated"
     exit $1
 }
@@ -306,7 +308,21 @@ generate_delete() {
 }
 
 
-if [[ "$FIGURES" == *"skew"* || "$FIGURES" == *"vale_tuning"* ]]; then
+generate_join_size() {
+    if ! test -f join_size; then
+        echo "    [++] generating join_size"
+        $WORKLOAD_GEN_PATH -t join_size --fdist real $REAL_DATASETS_PATH/lineitem_ext.tbl \
+                                                real $REAL_DATASETS_PATH/orders_ext.tbl \
+                                        --max-repeat 1 4 \
+                                                -o join_size
+    else 
+        echo "    [--] join_size already generated"
+    fi
+}
+
+
+: '
+if [[ "$FIGURES" == *"skew"* || "$FIGURES" == *"vale_tuning"* || "$FIGURES" == *"l2_size_function"* ]]; then
     echo "[!!] generate_synthetic start"
     mkdir -p $OUT_PATH/synthetic && cd $OUT_PATH/synthetic || exit 1
     if ! generate_synthetic ; then
@@ -344,6 +360,17 @@ if [[ "$FIGURES" == *"contraction"* ]]; then
         exit 1
     fi
     echo "[!!] generate_delete done"
+fi
+'
+
+if [[ "$FIGURES" == *"join_size"* ]]; then
+    echo "[!!] generate_join_size start"
+    mkdir -p $OUT_PATH/real && cd $OUT_PATH/real || exit 1
+    if ! generate_join_size ; then
+        echo "[!!] generate_join_size failed"
+        exit 1
+    fi
+    echo "[!!] generate_join_size done"
 fi
 
 echo "[!!] success, all workloads generated"

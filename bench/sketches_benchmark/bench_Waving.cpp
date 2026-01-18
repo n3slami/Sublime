@@ -1,5 +1,4 @@
 #include <cstdint>
-#include <functional>
 
 #include "../bench_template.hpp"
 #include "Waving.h"
@@ -77,13 +76,34 @@ int main(int argc, char const *argv[]) {
         std::exit(1);
     }
 
-    memory_budget = parser.get<uint64_t>("arg");
+    auto memory_budgets = parser.get<std::vector<uint64_t>>("arg");
     read_workload(parser.get<std::string>("--workload"));
 
-    auto sketch = init_sketch(memory_budget);
-    if (wio.StringKeys())
-        experiment_string(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch));
-    else 
-        experiment(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch));
+
+    if (memory_budgets.size() == 1) {
+        auto sketch = init_sketch(memory_budgets[0]);
+        if (wio.StringKeys()) {
+            experiment_string(sketch, pass_fun(insert_sketch),
+                    pass_fun(delete_sketch),
+                    pass_fun(query_sketch),
+                    pass_fun(size_of_sketch));
+        }
+        else {
+            experiment(sketch, pass_fun(insert_sketch),
+                    pass_fun(delete_sketch),
+                    pass_fun(query_sketch),
+                    pass_fun(size_of_sketch));
+        }
+    }
+    else {
+        std::vector sketches { init_sketch(memory_budgets[0]) };
+        for (int32_t i = 1; i < memory_budgets.size(); i++)
+            sketches.push_back(init_sketch(memory_budgets[i]));
+        experiment_join_string(sketches,
+                pass_fun(insert_sketch),
+                pass_fun(delete_sketch),
+                pass_fun(query_sketch),
+                pass_fun(size_of_sketch));
+    }
 }
 

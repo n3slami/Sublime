@@ -48,7 +48,7 @@ inline uint32_t size_of_sketch(SublimeCMS *sketch) {
     return sketch->Size();
 }
 
-inline std::unordered_map<std::string, uint32_t> get_vale_parameters(SublimeCMS *sketch) {
+inline std::unordered_map<std::string, uint32_t> get_extra_parameters(SublimeCMS *sketch) {
     std::unordered_map<std::string, uint32_t> res;
     res["counters_per_chunk"] = sketch->GetCountersPerChunk();
     res["stub_length"] = sketch->GetStubLength();
@@ -67,7 +67,7 @@ int main(int argc, char const *argv[]) {
         std::exit(1);
     }
 
-    memory_budget = parser.get<uint64_t>("arg");
+    auto memory_budgets = parser.get<std::vector<uint64_t>>("arg");
     read_workload(parser.get<std::string>("--workload"));
 
     const uint32_t n_rows = parser.get<uint32_t>("--rows");
@@ -75,12 +75,33 @@ int main(int argc, char const *argv[]) {
     const double size_function_mult = parser.get<double>("--size-function-mult");
     auto f = [&](size_t x) { return size_function_power == 0.0 ? std::numeric_limits<uint64_t>::max()
                                     : static_cast<uint64_t>(pow(x, 1.0 / size_function_power) * size_function_mult); };
-    auto sketch = init_sketch(memory_budget, n_rows, f);
-    if (wio.StringKeys())
-        experiment_string(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch),
-                          reinterpret_cast<void *>(get_vale_parameters));
-    else 
-        experiment(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch),
-                          reinterpret_cast<void *>(get_vale_parameters));
+
+    if (memory_budgets.size() == 1) {
+        auto sketch = init_sketch(memory_budgets[0], n_rows, f);
+        if (wio.StringKeys()) {
+            experiment_string(sketch, pass_fun(insert_sketch),
+                    pass_fun(delete_sketch),
+                    pass_fun(query_sketch),
+                    pass_fun(size_of_sketch),
+                    reinterpret_cast<void *>(get_extra_parameters));
+        }
+        else {
+            experiment(sketch, pass_fun(insert_sketch),
+                    pass_fun(delete_sketch),
+                    pass_fun(query_sketch),
+                    pass_fun(size_of_sketch),
+                    reinterpret_cast<void *>(get_extra_parameters));
+        }
+    }
+    else {
+        std::vector sketches { init_sketch(memory_budgets[0], n_rows, f) };
+        for (int32_t i = 1; i < memory_budgets.size(); i++)
+            sketches.push_back(init_sketch(memory_budgets[i], n_rows, f));
+        experiment_join_string(sketches,
+                pass_fun(insert_sketch),
+                pass_fun(delete_sketch),
+                pass_fun(query_sketch),
+                pass_fun(size_of_sketch));
+    }
 }
 

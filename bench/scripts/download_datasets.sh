@@ -16,12 +16,23 @@ declare -A urls
 urls["kosarak"]="http://fimi.uantwerpen.be/data/kosarak.dat"
 urls["webdocs"]="http://fimi.uantwerpen.be/data/webdocs.dat.gz"
 urls["caida"]="https://github.com/StingySketch/Stingy-Sketch/raw/refs/heads/main/src/Frequency%20Estimation/0.dat"
+declare -A google_drive_file_ids
+google_drive_file_ids["lineitem_ext"]="1wxyFeLXhBV_hMFfrXqX296ZaEGNz169r"
+google_drive_file_ids["orders_ext"]="1TSbpDMZ7RR5mCdLEgD9P-6VGa2RPyGqr"
+urls["lineitem_ext"]="https://drive.usercontent.google.com"
+urls["orders_ext"]="https://drive.usercontent.google.com"
 
 download() {
     DATASET=$1
     URL=${urls[${DATASET}]}
     echo "Downloading '${DATASET}'..."
-    wget -q --progress=bar ${URL} -P ./${DIR_DATA}
+    if [[ "$DATASET" == *"_ext"* ]]; then
+        curl -c ./cookie.txt -s -L "https://drive.google.com/uc?export=download&id=${google_drive_file_ids[$DATASET]}" > /dev/null
+        curl -Lb ./cookie.txt "https://drive.usercontent.google.com/download?id=${google_drive_file_ids[$DATASET]}&confirm=$(awk '/download/ {print $NF}' ./cookie.txt)" -o $DATASET.tbl
+        rm ./cookie.txt
+    else
+        wget -q --progress=bar ${URL} -P ./${DIR_DATA}
+    fi
     return $?
 }
 

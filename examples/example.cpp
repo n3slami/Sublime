@@ -44,7 +44,7 @@ int main(int argc, char const *argv[]) {
         const uint32_t init_row_count = 3;
         auto f = [](double x) { return static_cast<uint64_t>(x * x); }; // This is the reciprocal of the size function W(F) defined in the paper.
         const uint32_t seed = 1;
-        SublimeCS sketch(init_col_count, init_row_count, f, seed);
+        SublimeCS<> sketch(init_col_count, init_row_count, f, seed);
 
         const std::string string_key = "abc";
         const uint64_t integer_key = 1;

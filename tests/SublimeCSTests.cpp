@@ -13,7 +13,7 @@ class SublimeCSTest {
 public:
     static void CounterRW1() {
         auto f = [](double x) { return static_cast<uint64_t>(x * x); };
-        SublimeCS sketch(10, 10, f, 1);
+        SublimeCS<> sketch(10, 10, f, 1);
 
         sketch.set_counter(sketch.sketches.back(), 2, 5);
         sketch.set_counter(sketch.sketches.back(), 2, 129);
@@ -61,7 +61,7 @@ public:
 
     static void CounterRW2() {
         auto f = [](double x) { return static_cast<uint64_t>(x * x); };
-        SublimeCS sketch(10, 10, f, 1);
+        SublimeCS<> sketch(10, 10, f, 1);
 
         for (int i = 0; i < 25; i++)
             sketch.set_counter(sketch.sketches.back(), i, 65);
@@ -75,7 +75,7 @@ public:
 
     static void CounterIncrement1() {
         auto f = [](double x) { return static_cast<uint64_t>(x * x); };
-        SublimeCS sketch(10, 10, f, 1);
+        SublimeCS<> sketch(10, 10, f, 1);
 
         for (int i = 0; i < 63; i++) {
             REQUIRE_EQ(sketch.get_counter(sketch.sketches.back(), 1), i);
@@ -107,7 +107,7 @@ public:
 
     static void CounterIncrement2() {
         auto f = [](double x) { return static_cast<uint64_t>(x * x); };
-        SublimeCS sketch(10, 10, f, 1);
+        SublimeCS<> sketch(10, 10, f, 1);
 
         for (int i = 0; i < 27; i++)
             sketch.set_counter(sketch.sketches.back(), i, 64 * 3 - 1);
@@ -127,7 +127,7 @@ public:
 
     static void CounterDecrement() {
         auto f = [](double x) { return static_cast<uint64_t>(x * x); };
-        SublimeCS sketch(10, 10, f, 1);
+        SublimeCS<> sketch(10, 10, f, 1);
 
         for (int i = 0; i < 25; i++)
             sketch.set_counter(sketch.sketches.back(), i, 65);
@@ -165,7 +165,7 @@ public:
 
     static void CounterNegative() {
         auto f = [](double x) { return static_cast<uint64_t>(x * x); };
-        SublimeCS sketch(10, 10, f, 1);
+        SublimeCS<> sketch(10, 10, f, 1);
 
         for (int i = 0; i < 25; i++)
             sketch.set_counter(sketch.sketches.back(), i, (i & 1) ? 65 : -65);
@@ -225,7 +225,7 @@ public:
         const uint32_t init_col_count = 10000;
         const uint32_t init_row_count = 10;
         auto f = [](double x) { return static_cast<uint64_t>(x * x); };
-        SublimeCS sketch(init_col_count, init_row_count, f, 1);
+        SublimeCS<> sketch(init_col_count, init_row_count, f, 1);
 
         const uint32_t key = 1;
         const uint32_t one_count = f(init_col_count);
@@ -268,7 +268,7 @@ public:
         const uint32_t init_row_count = 3;
         const uint32_t seed_gen_seed = 1;
         auto f = [](double x) { return std::numeric_limits<uint64_t>::max(); };
-        SublimeCS sketch(init_col_count, init_row_count, f, seed_gen_seed);
+        SublimeCS<> sketch(init_col_count, init_row_count, f, seed_gen_seed);
 
         std::mt19937_64 rng(rng_seed);
 
@@ -289,7 +289,7 @@ public:
         const uint32_t init_row_count = 3;
         const uint32_t seed_gen_seed = 1;
         auto f = [](double x) { return static_cast<uint64_t>(x); };
-        SublimeCS sketch(init_col_count, init_row_count, f, seed_gen_seed);
+        SublimeCS<> sketch(init_col_count, init_row_count, f, seed_gen_seed);
         CS<int32_t> expected_sketch(init_col_count, init_row_count, f, seed_gen_seed, true);
 
         std::mt19937_64 rng(rng_seed);
@@ -338,8 +338,8 @@ public:
     }
 
 private:
-    static void PrintSketch(SublimeCS &s) {
-        SublimeCS::Sketch *sketch = s.sketches.back();
+    static void PrintSketch(SublimeCS<> &s) {
+        SublimeCS<>::Sketch *sketch = s.sketches.back();
         const uint32_t cache_line_count = (sketch->row_count * sketch->col_count + sketch->counter_per_cache_line - 1)
                                           / sketch->counter_per_cache_line;
         const uint32_t sep_1 = sketch->counter_per_cache_line;
@@ -348,8 +348,8 @@ private:
         std::cerr << "cache_line_count=" << cache_line_count << std::endl;
         for (int i = 0; i < cache_line_count; i++) {
             uint32_t cnt = 0;
-            const uint8_t *ptr = sketch->sketch + i * SublimeCS::cache_line_size_bytes;
-            for (int j = 0; j < SublimeCS::cache_line_size_bytes; j++)
+            const uint8_t *ptr = sketch->sketch + i * SublimeCS<>::cache_line_size_bytes;
+            for (int j = 0; j < SublimeCS<>::cache_line_size_bytes; j++)
                 for (int k = 0; k < 8; k++) {
                     if (cnt == sep_1)
                         std::cerr << " --- ";
@@ -368,7 +368,7 @@ private:
             const uint64_t *words = reinterpret_cast<const uint64_t *>(ptr);
             if (s.has_tails_array(sketch, words)) {
                 std::cerr << " ==== ";
-                const uint32_t *inner_ptr = reinterpret_cast<uint32_t *>(words[SublimeCS::cache_line_size_words - 1]);
+                const uint32_t *inner_ptr = reinterpret_cast<uint32_t *>(words[SublimeCS<>::cache_line_size_words - 1]);
                 for (int j = 0; j < sketch->counter_per_cache_line; j++)
                     std::cerr << inner_ptr[j] << ' ';
             }

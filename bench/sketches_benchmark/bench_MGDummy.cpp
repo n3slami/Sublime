@@ -49,13 +49,19 @@ int main(int argc, char const *argv[]) {
         std::exit(1);
     }
 
-    memory_budget = parser.get<uint64_t>("arg");
+    auto memory_budgets = parser.get<std::vector<uint64_t>>("arg");
     read_workload(parser.get<std::string>("--workload"));
 
     const double expansion_power = parser.get<double>("--expansion-power");
     auto f = [&](size_t x) { return expansion_power == 0.0 ? std::numeric_limits<uint64_t>::max()
                                     : static_cast<uint64_t>(pow(x, 1.0 / expansion_power)); };
-    auto sketch = init_sketch<uint64_t, uint64_t>(memory_budget, f);
-    experiment(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch), pass_fun(query_sketch), pass_fun(size_of_sketch));
+
+    if (wio.StringKeys())
+        throw std::runtime_error("MG implementation does not support string keys yet");
+    auto sketch = init_sketch<uint64_t, uint64_t>(memory_budgets[0], f);
+    experiment(sketch, pass_fun(insert_sketch),
+            pass_fun(delete_sketch),
+            pass_fun(query_sketch),
+            pass_fun(size_of_sketch));
 }
 

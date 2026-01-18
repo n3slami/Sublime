@@ -208,6 +208,16 @@ inline std::vector<uint64_t> read_data_text(const std::string &filename) {
     return data;
 }
 
+inline std::vector<std::string> read_data_text_string(const std::string &filename) {
+    std::vector<std::string> data;
+    std::fstream in(filename, std::ios::in);
+    std::string key;
+    while (in >> key)
+        data.emplace_back(key);
+    in.close();
+    return data;
+}
+
 
 class WorkloadIO {
 public:
@@ -215,7 +225,8 @@ public:
         Insert,
         Delete,
         Timer,
-        Flush
+        Flush,
+        SwitchTable
     };
 
     enum class iomode {
@@ -270,7 +281,7 @@ public:
         io_.write(reinterpret_cast<const char *>(&value_byte), 1);
     }
 
-    void WriteByteString(ByteString& s) {
+    void WriteByteString(const ByteString& s) {
         WriteValue(s.length);
         io_.write(reinterpret_cast<const char *>(s.str), s.length);
     }
@@ -284,7 +295,7 @@ public:
     }
 
 
-    void Insert(ByteString& key) {
+    void Insert(const ByteString& key) {
         WriteOpcode(opcode::Insert);
         WriteByteString(key);
     }
@@ -314,6 +325,12 @@ public:
 
     void Flush() {
         WriteOpcode(opcode::Flush);
+    }
+
+
+    void SwitchTable(int32_t table_ind) {
+        WriteOpcode(opcode::SwitchTable);
+        WriteValue(table_ind);
     }
 
 
@@ -360,6 +377,19 @@ public:
         std::string str = std::to_string(value);
         if (key == "fpr" && str == "0.000000")
             str = "0.000001";
+        test_values[key] = str;
+    }
+
+    template<typename TestValueType>
+    void AddMeasure(const std::string& key, std::vector<TestValueType>& value) {
+        std::string str = "[";
+        for (int32_t i = 0; i < value.size(); i++) {
+            std::string entry_str = std::to_string(value[i]);
+            if (key == "fpr" && str == "0.000000")
+                entry_str = "0.000001";
+            str += entry_str + ", ";
+        }
+        str += "]";
         test_values[key] = str;
     }
 

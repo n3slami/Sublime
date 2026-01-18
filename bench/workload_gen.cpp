@@ -18,7 +18,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -287,11 +286,46 @@ void delete_bench(argparse::ArgumentParser& parser) {
 }
 
 
+void join_size_bench(argparse::ArgumentParser& parser) {
+    WorkloadIO wio(parser.get<std::string>("--output-file"), WorkloadIO::iomode::Write, true);
+    const uint64_t seed = parser.get<uint64_t>("--seed");
+    std::mt19937_64 rng(seed);
+
+    uint32_t fdist_ind = 0;
+    int32_t table_ind = 0;
+    std::vector<ByteString> keys;
+    std::vector<uint32_t> max_repeats = parser.get<std::vector<uint32_t>>("--max-repeat");
+    while (fdist_ind != std::numeric_limits<uint32_t>::max()) {
+        wio.SwitchTable(table_ind);
+        if (table_ind > max_repeats.size())
+            throw std::runtime_error("Must have exactly one max repeat value for each distribution.");
+        auto [freq_dist, freq_dist_std, freq_dist_char_exp, key_file] = get_fdist(parser, fdist_ind);
+
+        const std::string tpc_h_table_check = ".tbl";
+        if (freq_dist != "real" 
+                || key_file.compare(key_file.length() - tpc_h_table_check.length(),
+                    tpc_h_table_check.length(),
+                    tpc_h_table_check) != 0)
+            throw std::runtime_error("Join size estimation experiment must use the TPC-H dataset.");
+
+        for (std::string& key : read_data_text_string(key_file)) {
+            const ByteString key_byte_str {reinterpret_cast<const uint8_t *>(key.data()), 
+                static_cast<uint32_t>(key.size())};
+            for (uint32_t i = 0; i <= rng() % max_repeats[table_ind]; i++)
+                wio.Insert(key_byte_str);
+        }
+        table_ind++;
+    }
+    wio.Flush();
+}
+
+
 std::unordered_map<std::string, std::function<void(argparse::ArgumentParser&)>> benches = {
     {"standard", standard_int_bench},
     {"standard_string", standard_string_bench},
     {"expand", expand_bench},
     {"delete", delete_bench},
+    {"join_size", join_size_bench},
 };
 
 int main(int argc, char const *argv[]) {
@@ -367,6 +401,12 @@ int main(int argc, char const *argv[]) {
             .default_value(1380UL)
             .scan<'u', uint64_t>()
             .nargs(1);
+
+    parser.add_argument("--max-repeat")
+            .help("The number of times each key in the corresponding distribution should be repeated in join size estimation")
+            .nargs(argparse::nargs_pattern::at_least_one)
+            .scan<'u', uint32_t>()
+            .default_value(1);
 
     try {
         parser.parse_args(argc, argv);
