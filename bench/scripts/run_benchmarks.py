@@ -190,6 +190,22 @@ def accuracy_unbiased_bench():
             execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint)
 
 
+def l2_size_function_bench():
+    sketches = ["SublimeCS", "SublimeCSl2"]
+    UNDERESTIMATE_MEMORY = 2 ** 15
+    SIZE_FUNCTION_POWER = 1.0
+    SIZE_FUNCTION_MULT = 100.0
+    workload_subdir = inspect.stack()[0][3]
+    output_base = Path(f"./{output_prefix}/{workload_subdir}/")
+    output_base.mkdir(parents=True, exist_ok=True)
+
+    workload_path = Path(f"{workload_dir}/synthetic")
+    for workload in workload_path.iterdir():
+        for sketch in sketches:
+            execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch,
+                              UNDERESTIMATE_MEMORY, SIZE_FUNCTION_POWER , SIZE_FUNCTION_MULT, 
+                              override_size=f"{UNDERESTIMATE_MEMORY}_{SIZE_FUNCTION_POWER:.2f}")
+
 def join_size_bench():
     sketches = ["CMS", "StingyCM", "Tailored", "SALSACM", "CS", "StingyC", "Waving"]
     memory_footprints = [(3 * 2 ** i // 4, 2 ** i // 4) for i in range(19, 25)]     # Distribute the memory budget 3:1 among the tables
@@ -222,6 +238,7 @@ RUNNERS = {accuracy_bench.__name__[:-6]: accuracy_bench,
            expansion_bench.__name__[:-6]: expansion_bench,
            contraction_bench.__name__[:-6]: contraction_bench,
            accuracy_unbiased_bench.__name__[:-6]: accuracy_unbiased_bench,
+           l2_size_function_bench.__name__[:-6]: l2_size_function_bench,
            join_size_bench.__name__[:-6]: join_size_bench}
 
 

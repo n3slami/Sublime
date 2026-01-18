@@ -187,7 +187,7 @@ private:
 
     // Number of AMS sketches to use to estimate the stream's l_2-norm
     static constexpr uint32_t num_ams_sketches = 16;
-    static constexpr uint32_t ams_sketch_query_period = 16;
+    static constexpr uint32_t ams_sketch_query_period = 32;
 
     // Representation of the sketch's state before each expansion. Used to keep
     // a record of the sketch's state to enable contractions.
@@ -1666,6 +1666,11 @@ inline void SublimeCS<l2_size_function>::expand() {
     // Measure expansion time
     std::chrono::high_resolution_clock::time_point time_point = std::chrono::high_resolution_clock::now();
 
+    std::cerr << "welp, we're expanding now: l2_estimate=" << get_l2_estimate() << " vs. n=" << n << std::endl;
+    for (int32_t i = 0; i < num_ams_sketches; i++)
+        std::cerr << ams[i] << ' ';
+    std::cerr << std::endl;
+
     contraction_lim = expansion_lim;
     expansion_lim = expansion_f(2 * col_count);
 
@@ -1746,7 +1751,7 @@ inline void SublimeCS<l2_size_function>::update_l2_estimate(const char *elem,
                                                             bool del) {
     const uint64_t ams_hashes = MurmurHash64B(elem, length,
             seed_gen_seed + row_count + 1);
-#if defined(__AVX512F__)
+#ifdef __AVX512F__
     __mmask16 add_mask = (del ? ~ams_hashes : ams_hashes) & BITMASK(16);
     __m512i twos = _mm512_set1_epi32(2);
     __m512i ones = _mm512_set1_epi32(1);
@@ -1765,7 +1770,7 @@ inline uint64_t SublimeCS<l2_size_function>::get_l2_estimate() {
     constexpr uint32_t num_to_average = 4;
     constexpr uint32_t num_ams_squared = num_ams_sketches / num_to_average;
     uint64_t ams_squared[num_ams_squared] = {};
-#if defined(__AVX512F__)
+#ifdef __AVX512F__
     static_assert(__builtin_popcount(num_to_average) == 1);
     __m512i mul_1 = _mm512_mul_epi32(ams, ams);
     __m512i ams_shifted = _mm512_shuffle_epi32(ams, _MM_SHUFFLE(1, 0, 3, 2));
@@ -1781,13 +1786,15 @@ inline uint64_t SublimeCS<l2_size_function>::get_l2_estimate() {
     for (int32_t i = 0; i < num_ams_sketches; i += num_to_average) {
         ams_squared[i / num_to_average] = 0;
         for (int32_t j = 0; j < num_to_average; j++)
-            ams_squared[i / num_to_average] += ams[i + j] * ams[i + j];
+            ams_squared[i / num_to_average] += static_cast<int64_t>(ams[i + j]) * ams[i + j];
         ams_squared[i / num_to_average] /= num_to_average;
     }
 #endif
     std::sort(ams_squared, ams_squared + num_ams_squared);
+    uint64_t res = ams_squared[0];
     if constexpr (num_ams_squared % 2 == 1)
-        return ams_squared[num_ams_squared / 2 + 1];
-    else 
-        return (ams_squared[num_ams_squared / 2] + ams_squared[num_ams_squared / 2 + 1]) / 2;
+        res = ams_squared[num_ams_squared / 2];
+    else if (num_ams_squared > 1)
+        res = ((ams_squared[num_ams_squared / 2 - 1] + ams_squared[num_ams_squared / 2]) / 2);
+    return std::pow(1.45, std::log2(res)) * 180;   // Ad-hoc adjustments to compensate for MurmurHash being bad in terms of independence
 }

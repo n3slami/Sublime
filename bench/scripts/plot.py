@@ -610,105 +610,13 @@ def plot_accuracy_unbiased(result_dir, output_dir):
 
 
 # TODO: Fill this in
+def plot_l2_size_function(result_dir, output_dir):
+    pass
+
+
+# TODO: Fill this in
 def plot_join_size(result_dir, output_dir):
-    TITLE_FONT_SIZE = 10
-    LEGEND_FONT_SIZE = 9
-    YLABEL_FONT_SIZE = 10
-    XLABEL_FONT_SIZE = 10
-    HEIGHT = 1.55
-    WH_RATIO = 2.75 / 1.6
-    WIDTH = 3 * HEIGHT * WH_RATIO
-    YLIM_LOW = 0
-    YLIM_HIGH = 1e3
-    YLIM_LOW_INSERT = 0
-    YLIM_HIGH_INSERT = 150
-    YLIM_LOW_QUERY = 9e0
-    YLIM_HIGH_QUERY = 1e7
-    YTICKS_MINOR = 10
-
-    WORKLOAD = "caida"
-    workload_subdir = Path("accuracy_unbiased_bench")
-    sketches = ["SublimeCSNoTuning",
-                "CS",
-                "StingyC",
-                "CodingC",
-                "Waving"]
-    memory_powers = range(17, 23)
-    memory_footprints = [2 ** i for i in memory_powers]
-    memory_footprint_labels = [f"{2 ** (i - 20)}" if i >= 20 else f"1/{2 ** (20 - i)}" for i in memory_powers]
-
-    fig, axes = plt.subplots(nrows=1, ncols=3, sharex="col", figsize=(WIDTH, HEIGHT))
-
-    tuning_params = []
-    aae_data = {sketch: [] for sketch in sketches}
-    insert_data = {sketch: [] for sketch in sketches}
-    query_data = {sketch: [] for sketch in sketches}
-    for sketch, memory_footprint in itertools.product(sketches, memory_footprints):
-        file_path = result_dir / workload_subdir / Path(f"{sketch}_{memory_footprint}_{WORKLOAD}.json")
-        if not file_path.is_file():
-            continue
-        with open(file_path, 'r') as result_file:
-            contents = result_file.read()
-            if len(contents) == 0 or "underflow" in contents:
-                aae_data[sketch].append((0, 0))
-                insert_data[sketch].append((0, 0))
-                query_data[sketch].append((0, 0))
-                continue
-            json_string = "[" + fix_file_contents(contents[:-2]) + "]"
-            result = json.loads(json_string)
-            if sketch == "SublimeCSNoTuning":
-                tuning_params.append((result[-1]["counters_per_chunk"], result[-1]["stub_length"]))
-            aae_data[sketch].append((result[-1]["size"], result[-1]["aae"]))
-            insert_data[sketch].append((result[-1]["size"], result[-1]["time_i"] / result[-1]["n_keys"] * 1000.0))
-            query_data[sketch].append((result[-1]["size"], result[-1]["time_q"] / result[-1]["n_unique_keys"] * 1000.0))
-    if len(aae_data) == 0:
-        logging.info(inspect.stack()[0][3][5:] + ": Figure not generated due to no benchmark results being found to include")
-        return
-    for sketch in sketches:
-        sketch_style_kwargs = SKETCHES_STYLE_KWARGS[sketch] if sketch != "SublimeCSNoTuning" else SKETCHES_STYLE_KWARGS["SublimeCS"]
-        axes[0].plot(*zip(*aae_data[sketch]), **sketch_style_kwargs, **LINES_STYLE)
-        axes[1].plot(*zip(*insert_data[sketch]), **sketch_style_kwargs, **LINES_STYLE)
-        axes[2].plot(*zip(*query_data[sketch]), **sketch_style_kwargs, **LINES_STYLE)
-
-    for i in range(3):
-        axes[i].set_xscale("log")
-        axes[i].autoscale_view()
-        axes[i].margins(0.04)
-    axes[0].set_yscale("symlog", linthresh=(1e01))
-    axes[0].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
-    axes[0].set_ylim(YLIM_LOW, YLIM_HIGH)
-    axes[1].set_ylim(YLIM_LOW_INSERT, YLIM_HIGH_INSERT)
-    axes[1].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR))
-    axes[2].set_ylim(YLIM_LOW_QUERY, YLIM_HIGH_QUERY)
-    axes[2].set_yscale("symlog", linthresh=1e1)
-    fig.subplots_adjust(hspace=0.15, wspace=0.35)
-
-    for i in range(3):
-        axes[i].set_xlabel("Memory [MB]", fontsize=XLABEL_FONT_SIZE)
-        axes[i].xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
-        axes[i].set_xticks(memory_footprints)
-        axes[i].set_xticklabels(memory_footprint_labels, fontsize=XLABEL_FONT_SIZE)
-        axes[i].set_xlim(memory_footprints[0] / 1.1, 1.1 * memory_footprints[-1])
-    axes[0].set_ylabel("AAE", fontsize=YLABEL_FONT_SIZE)
-    axes[1].set_ylabel("Insert Latency [ns]", fontsize=YLABEL_FONT_SIZE)
-    axes[2].set_ylabel("Query Latency [ns]", fontsize=YLABEL_FONT_SIZE)
-
-    legend_lines, legend_labels = axes[0].get_legend_handles_labels()
-    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.25, 1.38),
-                      fancybox=True, shadow=False, ncol=6, fontsize=LEGEND_FONT_SIZE)
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_14).pdf"), bbox_inches="tight", pad_inches=0.01)
-
-    with open(output_dir / f"{inspect.stack()[0][3][5:]}_table_(Fig_14).tex", 'w') as accuracy_table:
-        accuracy_table.writelines(["\\begin{tabular}[b]{ccc} \n",
-                                   "\\toprule \n",
-                                   " & ".join(["Memory [MB]", "$c$", "$s$"]) + " \\\\ \n",
-                                   "\\midrule \n"])
-        for memory_footprint, tuning_param in zip(memory_footprints, tuning_params):
-            memory_power = math.ceil(math.log(memory_footprint, 2))
-            memory_label = f"{2 ** (memory_power - 20)}" if memory_power >= 20 else f"1/{2 ** (20 - memory_power)}"
-            accuracy_table.write(f"{memory_label} & {tuning_param[0]} & {tuning_param[1]} \\\\ \n")
-        accuracy_table.writelines(["\\bottomrule \n",
-                                   "\\end{tabular} \n"])
+    pass
 
 
 PLOTTERS = {plot_accuracy.__name__[5:]: plot_accuracy,
@@ -718,6 +626,7 @@ PLOTTERS = {plot_accuracy.__name__[5:]: plot_accuracy,
             plot_expansion.__name__[5:]: plot_expansion,
             plot_contraction.__name__[5:]: plot_contraction,
             plot_accuracy_unbiased.__name__[5:]: plot_accuracy_unbiased,
+            plot_l2_size_function.__name__[5:]: plot_l2_size_function,
             plot_join_size.__name__[5:]: plot_join_size}
 
 

@@ -17,7 +17,7 @@ list(APPEND Targets "SublimeCMS" "SublimeCMSNoTuning" "SublimeCMSNoTuningMorris"
                     "StingyCM"
                     "CodingCM"
                     "SALSACM"
-                    "SublimeCS" "SublimeCSNoTuning"
+                    "SublimeCS" "SublimeCSl2" "SublimeCSNoTuning"
                     "CS"
                     "StingyC"
                     "CodingC"
@@ -70,6 +70,8 @@ function(compile_bench ds)
     elseif (ds STREQUAL "CS")
         target_link_libraries(bench_${ds} CSLib)
     elseif (ds STREQUAL "SublimeCS")
+        target_link_libraries(bench_${ds} SublimeCSLib)
+    elseif (ds STREQUAL "SublimeCSl2")
         target_link_libraries(bench_${ds} SublimeCSLib)
     elseif (ds STREQUAL "SublimeCSNoTuning")
         target_link_libraries(bench_${ds} SublimeCSNoTuningLib)
