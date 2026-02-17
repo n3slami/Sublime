@@ -293,10 +293,9 @@ void join_size_bench(argparse::ArgumentParser& parser) {
 
     uint32_t fdist_ind = 0;
     int32_t table_ind = 0;
-    std::vector<ByteString> keys;
     std::vector<uint32_t> max_repeats = parser.get<std::vector<uint32_t>>("--max-repeat");
+    std::vector<std::string> key_files;
     while (fdist_ind != std::numeric_limits<uint32_t>::max()) {
-        wio.SwitchTable(table_ind);
         if (table_ind > max_repeats.size())
             throw std::runtime_error("Must have exactly one max repeat value for each distribution.");
         auto [freq_dist, freq_dist_std, freq_dist_char_exp, key_file] = get_fdist(parser, fdist_ind);
@@ -307,16 +306,35 @@ void join_size_bench(argparse::ArgumentParser& parser) {
                     tpc_h_table_check.length(),
                     tpc_h_table_check) != 0)
             throw std::runtime_error("Join size estimation experiment must use the TPC-H dataset.");
-
-        for (std::string& key : read_data_text_string(key_file)) {
-            const ByteString key_byte_str {reinterpret_cast<const uint8_t *>(key.data()), 
-                static_cast<uint32_t>(key.size())};
-            for (uint32_t i = 0; i <= rng() % max_repeats[table_ind]; i++)
-                wio.Insert(key_byte_str);
-        }
+        key_files.push_back(key_file);
         table_ind++;
     }
-    wio.Flush();
+    
+    uint64_t n_keys = 0;
+    std::vector<std::vector<std::string>> keys;
+    for (auto& key_file : key_files) {
+        keys.push_back(read_data_text_string(key_file));
+        n_keys += keys.back().size();
+        std::shuffle(keys.back().begin(), keys.back().end(), rng);
+    }
+    uint64_t measurement_period = parser.get<uint64_t>("--measurement-period");
+    for (int64_t i = 0; i < n_keys; i += measurement_period) {
+        const double l_frac = static_cast<double>(i) / n_keys;
+        const double r_frac = static_cast<double>(std::min(n_keys, i + measurement_period)) / n_keys;
+        for (int32_t table_ind = 0; table_ind < keys.size(); table_ind++) {
+            wio.SwitchTable(table_ind);
+            const uint64_t l_ind = keys[table_ind].size() * l_frac;
+            const uint64_t r_ind = keys[table_ind].size() * r_frac;
+            for (uint64_t j = l_ind; j < r_ind; j++) {
+                const auto& key = keys[table_ind][j];
+                const ByteString key_byte_str {reinterpret_cast<const uint8_t *>(key.data()), 
+                    static_cast<uint32_t>(key.size())};
+                for (uint32_t i = 0; i <= rng() % max_repeats[table_ind]; i++)
+                    wio.Insert(key_byte_str);
+            }
+        }
+        wio.Flush();
+    }
 }
 
 

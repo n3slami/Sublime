@@ -207,12 +207,10 @@ def l2_size_function_bench():
                               override_size=f"{UNDERESTIMATE_MEMORY}_{SIZE_FUNCTION_POWER:.2f}")
 
 def join_size_bench():
-    sketches = ["CMS", "CS"]
-    memory_footprints = [(3 * i * 2 ** 18, i * 2 ** 18) for i in range(8, 17)]  # Distribute the memory budget 3:1 among the tables
-    #cms_vale_params = [(39, 12), (40, 11), (44, 10), (47, 9), (52, 8), (55, 7)]
-    #cs_vale_params = [(43, 10), (44, 9), (47, 9), (49, 8), (52, 8), (55, 7)]
-    cms_vale_params = [(52, 8), (53, 8), (54, 8), (54, 8), (54, 8), (55, 7), (55, 7), (55, 7), (55, 7)]
-    cs_vale_params = [(52, 8), (53, 8), (53, 8), (53, 8), (54, 7), (55, 7), (55, 7), (55, 7), (55, 7)]
+    sketches = ["SublimeCMS", "CMS", "SublimeCS", "CS"]
+    MEMORY_FOOTPRINTS = (3 * 2 ** 21, 2 ** 21)  # Distribute the memory budget 3:1 among the tables
+    #cms_vale_params = [(52, 8), (53, 8), (54, 8), (54, 8), (54, 8), (55, 7), (55, 7), (55, 7), (55, 7)]
+    #cs_vale_params = [(52, 8), (53, 8), (53, 8), (53, 8), (54, 7), (55, 7), (55, 7), (55, 7), (55, 7)]
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
@@ -226,13 +224,16 @@ def join_size_bench():
         #for memory_footprint, (c, s) in zip(memory_footprints, cms_vale_params):
         #    rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir, workload, sketch, memory_footprint)
 
-        sketch = "SublimeCSNoTuning"
-        for memory_footprint, (c, s) in zip(memory_footprints, cs_vale_params):
-            rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir, workload, sketch, memory_footprint)
+        #sketch = "SublimeCSNoTuning"
+        #for memory_footprint, (c, s) in zip(memory_footprints, cs_vale_params):
+        #    rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir, workload, sketch, memory_footprint)
 
-        #for sketch, memory_footprint in itertools.product(sketches, memory_footprints):
-        #    execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint)
-
+        for sketch in sketches:
+            execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, MEMORY_FOOTPRINTS)
+            if sketch in SKETCHES_WITH_EXPANSION_RATE_FUNCTION:
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, MEMORY_FOOTPRINTS,
+                                  size_function_power=0.75, size_function_mult=0.05, override_size="expand")
+            
 
 RUNNERS = {accuracy_bench.__name__[:-6]: accuracy_bench,
            skew_bench.__name__[:-6]: skew_bench,

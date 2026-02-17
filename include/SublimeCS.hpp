@@ -1668,8 +1668,6 @@ inline void SublimeCS<l2_size_function>::expand() {
     // Measure expansion time
     std::chrono::high_resolution_clock::time_point time_point = std::chrono::high_resolution_clock::now();
 
-    std::cerr << "welp, we're expanding now: l2_estimate=" << get_l2_estimate() << " vs. n=" << n << std::endl;
-
     contraction_lim = expansion_lim;
     expansion_lim = expansion_f(2 * col_count);
 
@@ -1769,17 +1767,7 @@ inline uint64_t SublimeCS<l2_size_function>::get_l2_estimate() {
     uint64_t ams_squared[num_ams_sketches] = {};
 #ifdef __AVX512F__
     static_assert(__builtin_popcount(num_to_average) == 1);
-    /*
-    for (int i = 0; i < 16; i++) 
-        std::cerr << ((int32_t*) &ams)[i] << ' ';
-    std::cerr << std::endl;
-    */
     __m512i mul_1 = _mm512_mul_epi32(ams, ams);
-    /*
-    for (int i = 0; i < 8; i++) 
-        std::cerr << ((int64_t*) &mul_1)[i] << ' ';
-    std::cerr << std::endl;
-    */
     __m512i ams_shifted = _mm512_shuffle_epi32(ams, (_MM_PERM_ENUM) _MM_SHUFFLE(1, 0, 3, 2));
     __m512i mul_2 = _mm512_mul_epi32(ams_shifted, ams_shifted);
     __m512i result = _mm512_add_epi64(mul_1, mul_2);
@@ -1803,6 +1791,5 @@ inline uint64_t SublimeCS<l2_size_function>::get_l2_estimate() {
         res = ams_squared[num_ams_squared / 2];
     else if (num_ams_squared > 1)
         res = ((ams_squared[num_ams_squared / 2 - 1] + ams_squared[num_ams_squared / 2]) / 2);
-    //std::cerr << "@get_l2_estimate n=" << n << " vs. " << std::pow(1.45, std::log2(res)) * 180 << std::endl;
     return std::pow(1.45, std::log2(res)) * 180;   // Ad-hoc adjustments to compensate for MurmurHash being bad in terms of independence
 }
