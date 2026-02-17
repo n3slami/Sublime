@@ -22,7 +22,7 @@ def execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch,
     counter_count_option = f"--counter-count {force_counter_count}" if force_counter_count != None else ""
     if type(bpk) is tuple:
         bpk = [str(i) for i in bpk]
-        command = f"{build_dir}/{file_to_execute} {' '.join(bpk)} -w {workload} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee {output_base}/{sketch}_{bpk if override_size == None else override_size}_{workload.name}.json"
+        command = f"{build_dir}/{file_to_execute} {' '.join(bpk)} -w {workload} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee {output_base}/{sketch}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
         cli_message_command = f"<build_dir>/{file_to_execute} {' '.join(bpk)} -w <workload_dir>/{workload_subdir}/{workload.name} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee <output_dir>/{workload_subdir}/{sketch}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
     else:
         command = f"{build_dir}/{file_to_execute} {bpk} -w {workload} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee {output_base}/{sketch}_{bpk if override_size == None else override_size}_{workload.name}.json"
@@ -46,7 +46,7 @@ def rebuild_execute_benchmark(build_dir, output_base, c, s, p, workload_subdir, 
     counter_count_option = f"--counter-count {force_counter_count}" if force_counter_count != None else ""
     if type(bpk) is tuple:
         bpk = [str(i) for i in bpk]
-        command = f"{build_dir}/{file_to_execute} {' '.join(bpk)} -w {workload} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee {output_base}/{sketch}_{bpk if override_size == None else override_size}_{workload.name}.json"
+        command = f"{build_dir}/{file_to_execute} {' '.join(bpk)} -w {workload} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee {output_base}/{sketch}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
         cli_message_command = f"<build_dir>/{file_to_execute} {' '.join(bpk)} -w <workload_dir>/{workload_subdir}/{workload.name} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee <output_dir>/{workload_subdir}/{sketch}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
     else:
         command = f"{build_dir}/{file_to_execute} {bpk} -w {workload} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee {output_base}/{sketch}_{bpk if override_size == None else override_size}_{workload.name}.json"
@@ -193,8 +193,8 @@ def accuracy_unbiased_bench():
 def l2_size_function_bench():
     sketches = ["SublimeCS", "SublimeCSl2"]
     UNDERESTIMATE_MEMORY = 2 ** 15
-    SIZE_FUNCTION_POWER = 1.0
-    SIZE_FUNCTION_MULT = 100.0
+    SIZE_FUNCTION_POWER = 0.5
+    SIZE_FUNCTION_MULT = 0.5
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
@@ -207,10 +207,10 @@ def l2_size_function_bench():
                               override_size=f"{UNDERESTIMATE_MEMORY}_{SIZE_FUNCTION_POWER:.2f}")
 
 def join_size_bench():
-    sketches = ["CMS", "StingyCM", "Tailored", "SALSACM", "CS", "StingyC", "Waving"]
-    memory_footprints = [(3 * 2 ** i // 4, 2 ** i // 4) for i in range(19, 25)]     # Distribute the memory budget 3:1 among the tables
-    cms_vale_params = [(39, 12), (40, 11), (44, 10), (47, 9), (52, 8), (75, 4)]
-    cs_vale_params = [(43, 10), (44, 9), (47, 9), (49, 8), (52, 8), (55, 7)]
+    sketches = ["SublimeCMS", "CMS", "SublimeCS", "CS"]
+    MEMORY_FOOTPRINTS = (3 * 2 ** 21, 2 ** 21)  # Distribute the memory budget 3:1 among the tables
+    #cms_vale_params = [(52, 8), (53, 8), (54, 8), (54, 8), (54, 8), (55, 7), (55, 7), (55, 7), (55, 7)]
+    #cs_vale_params = [(52, 8), (53, 8), (53, 8), (53, 8), (54, 7), (55, 7), (55, 7), (55, 7), (55, 7)]
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
     output_base.mkdir(parents=True, exist_ok=True)
@@ -220,17 +220,20 @@ def join_size_bench():
         if workload.name != "join_size":
             continue
 
-        sketch = "SublimeCMSNoTuning"
-        for memory_footprint, (c, s) in zip(memory_footprints, cms_vale_params):
-            rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir, workload, sketch, memory_footprint)
+        #sketch = "SublimeCMSNoTuning"
+        #for memory_footprint, (c, s) in zip(memory_footprints, cms_vale_params):
+        #    rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir, workload, sketch, memory_footprint)
 
-        sketch = "SublimeCSNoTuning"
-        for memory_footprint, (c, s) in zip(memory_footprints, cs_vale_params):
-            rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir, workload, sketch, memory_footprint)
+        #sketch = "SublimeCSNoTuning"
+        #for memory_footprint, (c, s) in zip(memory_footprints, cs_vale_params):
+        #    rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir, workload, sketch, memory_footprint)
 
-        for sketch, memory_footprint in itertools.product(sketches, memory_footprints):
-            execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint)
-
+        for sketch in sketches:
+            execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, MEMORY_FOOTPRINTS)
+            if sketch in SKETCHES_WITH_EXPANSION_RATE_FUNCTION:
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, MEMORY_FOOTPRINTS,
+                                  size_function_power=0.75, size_function_mult=0.05, override_size="expand")
+            
 
 RUNNERS = {accuracy_bench.__name__[:-6]: accuracy_bench,
            skew_bench.__name__[:-6]: skew_bench,

@@ -96,6 +96,7 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                 break;
             }
             case WorkloadIO::opcode::Flush: {
+                const uint32_t n_distinct_keys = freq_checkpoints[checkpoint_ind].size();
                 double aae = 0, are = 0, con = 0;
                 int64_t total_overestimation = 0, total_underestimation = 0;
                 decompression_time_point = timer::now();
@@ -114,17 +115,27 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                 }
                 auto current_time = timer::now();
                 timer_results['q'] = std::chrono::duration_cast<std::chrono::microseconds>(current_time - time_points['q']).count();
-                const uint32_t n_distinct_keys = freq_checkpoints[checkpoint_ind].size();
                 timer_results['q'] += n_distinct_keys * std::max(std::chrono::duration_cast<std::chrono::microseconds>(decompression_time_point - time_points['q']).count(), 0L);
+
                 aae /= n_distinct_keys;
                 are /= n_distinct_keys;
                 con /= n_distinct_keys;
-
                 if (n_distinct_keys == 0) {
                     aae = 0;
                     are = 0;
                     con = 0;
                 }
+
+                std::vector<double> relative_errors;
+                relative_errors.reserve(n_distinct_keys);
+                for (auto& it : freq_checkpoints[checkpoint_ind]) {
+                    const int64_t est_val = query_f(sketch, it.first);
+                    const int64_t real_val = it.second;
+                    const int64_t diff = est_val - real_val;
+                    const double dist = std::abs(static_cast<double>(diff));
+                    relative_errors.push_back(dist / real_val);
+                }
+                std::sort(relative_errors.begin(), relative_errors.end());
 
                 test_out.AddMeasure("n_keys", n_keys);
                 test_out.AddMeasure("n_unique_keys", n_distinct_keys);
@@ -132,6 +143,9 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                 test_out.AddMeasure("are", are);
                 test_out.AddMeasure("total_overestimation", total_overestimation);
                 test_out.AddMeasure("total_underestimation", total_underestimation);
+                test_out.AddMeasure("p90", relative_errors[n_distinct_keys * 90 / 100]);
+                test_out.AddMeasure("p95", relative_errors[n_distinct_keys * 95 / 100]);
+                test_out.AddMeasure("p99", relative_errors[n_distinct_keys * 99 / 100]);
                 test_out.AddMeasure("size", size_f(sketch));
 
                 if (top_aae_are_count != std::numeric_limits<uint32_t>::max()) {
@@ -519,7 +533,7 @@ void experiment_join_string(std::vector<Sketch *> sketches, InsertFun insert_f, 
                     }
                     auto current_time = timer::now();
                     timer_results['q'] = std::chrono::duration_cast<std::chrono::microseconds>(current_time - time_points['q']).count();
-                    const uint32_t n_distinct_keys = join_result.size();
+                    const uint32_t n_distinct_keys = freq_checkpoints[checkpoint_ind][i].size();
                     timer_results['q'] += n_distinct_keys * std::max(std::chrono::duration_cast<std::chrono::microseconds>(decompression_time_point - time_points['q']).count(), 0L);
                     aae /= n_distinct_keys;
                     are /= n_distinct_keys;

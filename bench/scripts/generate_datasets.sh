@@ -94,7 +94,7 @@ generate_synthetic() {
         echo "    [--] zipf_0.00 already generated"
     fi
 
-    exps=("0.20" "0.40" "0.80" "1.60" "3.20")
+    exps=("0.20" "0.40" "0.60" "0.80" "1.00" "1.60" "3.20")
     for x in "${exps[@]}"; do
         if ! test -f zipf_${x}; then
             echo "    [++] generating zipf_${x}"
@@ -314,6 +314,7 @@ generate_join_size() {
         $WORKLOAD_GEN_PATH -t join_size --fdist real $REAL_DATASETS_PATH/lineitem_ext.tbl \
                                                 real $REAL_DATASETS_PATH/orders_ext.tbl \
                                         --max-repeat 1 4 \
+                                        --measurement-period 5000000 \
                                                 -o join_size
     else 
         echo "    [--] join_size already generated"
@@ -321,7 +322,6 @@ generate_join_size() {
 }
 
 
-: '
 if [[ "$FIGURES" == *"skew"* || "$FIGURES" == *"vale_tuning"* || "$FIGURES" == *"l2_size_function"* ]]; then
     echo "[!!] generate_synthetic start"
     mkdir -p $OUT_PATH/synthetic && cd $OUT_PATH/synthetic || exit 1
@@ -361,7 +361,6 @@ if [[ "$FIGURES" == *"contraction"* ]]; then
     fi
     echo "[!!] generate_delete done"
 fi
-'
 
 if [[ "$FIGURES" == *"join_size"* ]]; then
     echo "[!!] generate_join_size start"

@@ -187,7 +187,7 @@ private:
 
     // Number of AMS sketches to use to estimate the stream's l_2-norm
     static constexpr uint32_t num_ams_sketches = 16;
-    static constexpr uint32_t ams_sketch_query_period = 32;
+    static constexpr uint32_t ams_sketch_query_period = 256;
 
     // Representation of the sketch's state before each expansion. Used to keep
     // a record of the sketch's state to enable contractions.
@@ -219,8 +219,10 @@ private:
     uint64_t n;
 
     // Vector of AMS sketches to estimate the stream's l_2-norm
-#if defined(__AVX512F__)
+#ifdef __AVX512F__
     __m512i ams = {};
+    const __m512i twos = _mm512_set1_epi32(2);
+    const __m512i ones = _mm512_set1_epi32(1);
 #else
     // Scalar Fallback (No SIMD)
     int32_t ams[num_ams_sketches] = {};
@@ -1666,11 +1668,6 @@ inline void SublimeCS<l2_size_function>::expand() {
     // Measure expansion time
     std::chrono::high_resolution_clock::time_point time_point = std::chrono::high_resolution_clock::now();
 
-    std::cerr << "welp, we're expanding now: l2_estimate=" << get_l2_estimate() << " vs. n=" << n << std::endl;
-    for (int32_t i = 0; i < num_ams_sketches; i++)
-        std::cerr << ams[i] << ' ';
-    std::cerr << std::endl;
-
     contraction_lim = expansion_lim;
     expansion_lim = expansion_f(2 * col_count);
 
@@ -1752,11 +1749,9 @@ inline void SublimeCS<l2_size_function>::update_l2_estimate(const char *elem,
     const uint64_t ams_hashes = MurmurHash64B(elem, length,
             seed_gen_seed + row_count + 1);
 #ifdef __AVX512F__
-    __mmask16 add_mask = (del ? ~ams_hashes : ams_hashes) & BITMASK(16);
-    __m512i twos = _mm512_set1_epi32(2);
-    __m512i ones = _mm512_set1_epi32(1);
-    __m512i ams_update = _mm512_maskz_sub_epi32(add_mask, ones, twos);
-    _mm512_add_epi32(ams, ams_update);
+    __mmask16 add_mask = (-static_cast<int64_t>(del) ^ ams_hashes) & BITMASK(16);
+    __m512i ams_update = _mm512_mask_sub_epi32(ones, add_mask, ones, twos);
+    ams = _mm512_add_epi32(ams, ams_update);
 #else
     // Scalar Fallback (No SIMD)
     for (int32_t i = 0; i < num_ams_sketches; i++)
@@ -1769,11 +1764,11 @@ template <bool l2_size_function>
 inline uint64_t SublimeCS<l2_size_function>::get_l2_estimate() {
     constexpr uint32_t num_to_average = 4;
     constexpr uint32_t num_ams_squared = num_ams_sketches / num_to_average;
-    uint64_t ams_squared[num_ams_squared] = {};
+    uint64_t ams_squared[num_ams_sketches] = {};
 #ifdef __AVX512F__
     static_assert(__builtin_popcount(num_to_average) == 1);
     __m512i mul_1 = _mm512_mul_epi32(ams, ams);
-    __m512i ams_shifted = _mm512_shuffle_epi32(ams, _MM_SHUFFLE(1, 0, 3, 2));
+    __m512i ams_shifted = _mm512_shuffle_epi32(ams, (_MM_PERM_ENUM) _MM_SHUFFLE(1, 0, 3, 2));
     __m512i mul_2 = _mm512_mul_epi32(ams_shifted, ams_shifted);
     __m512i result = _mm512_add_epi64(mul_1, mul_2);
     __m512i final_add_terms = _mm512_permutexvar_epi64(_mm512_set_epi64(7, 6, 5, 4, 7, 5, 3, 1), result);
