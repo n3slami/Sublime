@@ -30,14 +30,18 @@ matplotlib.rcParams.update(rc_fonts)
 
 logging.getLogger().setLevel(logging.INFO)
 
-SKETCHES_STYLE_KWARGS = {"SublimeCMS": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS}"},
-                         "SublimeCMS_0.50": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS}"},
-                         "SublimeCMS_0.75": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS} ($\\alpha=0.75$)", "linestyle": "--"},
-                         "SublimeCMS_1.00": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS} ($\\alpha=1.0$)", "linestyle": ":"},
-                         "SublimeCMSNoTuning": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS} (Fixed Tuning)", "linestyle": ":"},
-                         "SublimeCMSNoTuningMorris": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS} (Prob. Inc.)", "linestyle": ":"},
+SKETCHES_STYLE_KWARGS = {"SublimeCMS": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CMS}"},
+                         "SublimeCMS_0.50": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CMS}"},
+                         "SublimeCMS_0.75": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CMS} ($\\alpha=0.75$)", "linestyle": "--"},
+                         "SublimeCMS_1.00": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CMS} ($\\alpha=1.0$)", "linestyle": ":"},
+                         "SublimeCMS_fixed": {"marker": '^', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CMS} (Fixed Size)"},
+                         "SublimeCMS_expand": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CMS} (Expand)"},
+                         "SublimeCMSNoTuning": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CMS} (Fixed Tuning)", "linestyle": ":"},
+                         "SublimeCMSNoTuningMorris": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CMS} (Prob. Inc.)", "linestyle": ":"},
                          "VALE": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Adaptive"},
                          "NoTuning": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Fixed", "linestyle": ":"},
+                         "l1SizeFunction": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "No. of Keys"},
+                         "l2SizeFunction": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Variance", "linestyle": ":"},
                          "CMS": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CMS"},
                          "CMS_Over": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CMS (Overestimated)", "linestyle": ":"},
                          "StingyCM": {"marker": '^', "color": "black", "label": "Stingy\\textsubscript{CMS}"},
@@ -48,13 +52,18 @@ SKETCHES_STYLE_KWARGS = {"SublimeCMS": {"marker": 'v', "color": "fuchsia", "zord
                          "OTailored": {"marker": '>', "color": "C5", "label": "O-Tailored", "linestyle": ":"},
                          "Switch": {"marker": 'o', "color": "teal", "label": "Switch"},
                          "Waving": {"marker": 'd', "color": "C4", "label": "Waving"},
-                         "SublimeCS": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CS}"},
+                         "SublimeCS": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CS}"},
+                         "SublimeCS_fixed": {"marker": '^', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CS} (Fixed Size)", "linestyle": ":"},
+                         "SublimeCS_expand": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CS} (Expand)", "linestyle": ":"},
                          "CS": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CS"},
                          "StingyC": {"marker": '^', "color": "black", "label": "Stingy\\textsubscript{CS}"},
                          "CodingC": {"marker": '4', "color": "C1", "label": "Coding\\textsubscript{CS}"},
-                         "SEADC": {"marker": '+', "color": "darkkhaki", "label": "SEAD\\textsubscript{CS}"}}
-SKETCHES_STYLE_NO_MARKER_KWARGS = {"SublimeCMS": {"color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS}"},
-                                   "SublimeCMSNoTuning": {"color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CMS} (Fixed Tuning)", "linestyle": ":"},
+                         "SEADC": {"marker": '+', "color": "darkkhaki", "label": "SEAD\\textsubscript{CS}"},
+                         "SublimeCSDotted": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CS}", "linestyle": ":"},
+                         "CSDotted": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CS", "linestyle": ":"},
+                         "StingyCDotted": {"marker": '^', "color": "black", "label": "Stingy\\textsubscript{CS}", "linestyle": ":"}}
+SKETCHES_STYLE_NO_MARKER_KWARGS = {"SublimeCMS": {"color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CMS}"},
+                                   "SublimeCMSNoTuning": {"color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CMS} (Fixed Tuning)", "linestyle": ":"},
                                    "CMS": {"color": "dimgray", "zorder": 10, "label": "CMS"},
                                    "StingyCM": {"color": "black", "label": "Stingy\\textsubscript{CMS}"},
                                    "CodingCM": {"color": "C1", "label": "Coding\\textsubscript{CMS}"},
@@ -64,7 +73,7 @@ SKETCHES_STYLE_NO_MARKER_KWARGS = {"SublimeCMS": {"color": "fuchsia", "zorder": 
                                    "OTailored": {"color": "C5", "label": "O-Tailored", "linestyle": ":"},
                                    "Switch": {"color": "teal", "label": "Switch"},
                                    "Waving": {"color": "C4", "label": "Waving"},
-                                   "SublimeCS": {"color": "fuchsia", "zorder": 12, "label": "Sketchbook\\textsubscript{CS}"},
+                                   "SublimeCS": {"color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{CS}"},
                                    "CS": {"color": "dimgray", "zorder": 10, "label": "CS"},
                                    "StingyC": {"color": "black", "label": "Stingy\\textsubscript{CS}"},
                                    "CodingC": {"color": "C1", "label": "Coding\\textsubscript{CS}"},
@@ -161,7 +170,8 @@ def plot_accuracy(result_dir, output_dir):
                 json_string = "[" + fix_file_contents(contents[:-2]) + "]"
                 result = json.loads(json_string)
                 if sketch == "SublimeCMSNoTuning":
-                    tuning_params[workload][memory_footprint] = (result[-1]["counters_per_chunk"], result[-1]["stub_length"])
+                    tuning_params[workload][memory_footprint] = (0, 0)
+                    #tuning_params[workload][memory_footprint] = (result[-1]["counters_per_chunk"], result[-1]["stub_length"])
                 aae_data[sketch].append((result[-1]["size"], result[-1]["aae"]))
                 if workload != "caida" or sketch != "SublimeCMSNoTuningMorris":
                     insert_data[sketch].append((result[-1]["size"], result[-1]["time_i"] / result[-1]["n_keys"] * 1000.0))
@@ -216,9 +226,9 @@ def plot_accuracy(result_dir, output_dir):
     axes[3][0].set_ylabel("Query Latency [ns]", fontsize=YLABEL_FONT_SIZE)
     axes[3][0].yaxis.set_label_coords(-0.20, 0.13 * HEIGHT)
 
-    legend_lines, legend_labels = axes[0][0].get_legend_handles_labels()
-    axes[0][0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.35, 1.62),
-                      fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE)
+    legend_lines, legend_labels = axes[0][2].get_legend_handles_labels()
+    axes[0][2].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-2.4, 1.58),
+                      fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE, frameon=False)
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_10).pdf"), bbox_inches="tight", pad_inches=0.01)
 
     with open(output_dir / f"{inspect.stack()[0][3][5:]}_table_(Fig_10).tex", 'w') as accuracy_table:
@@ -320,7 +330,7 @@ def plot_skew_vale_tuning(result_dir, output_dir):
     axes[0].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
     axes[0].set_yticks(YTICKS)
     axes[0].set_ylabel("AAE", fontsize=YLABEL_FONT_SIZE)
-    axes[0].set_title(f"Memory={str(MEMORY_FOOTPRINT // 2 ** 20) + 'MB' if MEMORY_FOOTPRINT >= 2 ** 20 else str(MEMORY_FOOTPRINT // 2 ** 10) + 'KB'}", fontsize=TITLE_FONT_SIZE)
+    axes[0].text(0.05, 1.5e-2, f"Memory={str(MEMORY_FOOTPRINT // 2 ** 20) + 'MB' if MEMORY_FOOTPRINT >= 2 ** 20 else str(MEMORY_FOOTPRINT // 2 ** 10) + 'KB'}", fontsize=TITLE_FONT_SIZE)
     axes[1].set_ylabel("Memory [MB]", fontsize=YLABEL_FONT_SIZE)
     axes[1].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR))
     axes[1].set_yticks(MEMORY_YTICKS)
@@ -329,10 +339,10 @@ def plot_skew_vale_tuning(result_dir, output_dir):
     legend_lines_vale_tuning, legend_labels_vale_tuning = axes[1].get_legend_handles_labels()
     legend_lines = legend_lines_skew + legend_lines_vale_tuning
     legend_labels = legend_labels_skew + legend_labels_vale_tuning
-    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.15, 1.8),
-                   fancybox=True, shadow=False, ncol=3, fontsize=LEGEND_FONT_SIZE)
+    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.5, 1.50),
+                   fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE, frameon=False)
 
-    legend_sep = matplotlib.lines.Line2D([4.95, 4.95], [4e6, 2.25e10], linestyle=':', color="grey")
+    legend_sep = matplotlib.lines.Line2D([5.90, 5.90], [7.0e5, 3.0e8], linestyle=':', color="grey")
     legend_sep.set_clip_on(False)
     axes[0].add_line(legend_sep)
 
@@ -364,12 +374,12 @@ def plot_expansion(result_dir, output_dir):
     OVERESTIMATING_SKETCH = "CMS_Over"
     memory_footprints = [2 ** 15, 2 ** 24]
     size_function_powers = [0.5, 0.75, 1.0]
-    sketchbook_power_names = [f"{sketches[0]}_{power:.2f}" for power in size_function_powers]
+    sublime_power_names = [f"{sketches[0]}_{power:.2f}" for power in size_function_powers]
 
     fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(WIDTH, HEIGHT))
 
-    aae_data = {sketch: [] for sketch in sketches[1:] + [OVERESTIMATING_SKETCH, ] + sketchbook_power_names}
-    mem_data = {sketch: [] for sketch in sketches[1:] + [OVERESTIMATING_SKETCH, ] + sketchbook_power_names}
+    aae_data = {sketch: [] for sketch in sketches[1:] + [OVERESTIMATING_SKETCH, ] + sublime_power_names}
+    mem_data = {sketch: [] for sketch in sketches[1:] + [OVERESTIMATING_SKETCH, ] + sublime_power_names}
     for sketch in sketches:
         memory_footprint = memory_footprints[-1] if sketch == OVERESTIMATING_SKETCH else memory_footprints[0]
         if sketch == "SublimeCMS":
@@ -405,17 +415,17 @@ def plot_expansion(result_dir, output_dir):
     if len(aae_data) == 0:
         logging.info(inspect.stack()[0][3][5:] + ": Figure not generated due to no benchmark results being found to include")
         return
-    for sketch in sketchbook_power_names + [sketches[1]] + sketches[2:]:
+    for sketch in sublime_power_names + [sketches[1]] + sketches[2:]:
         axes[0].plot(*zip(*aae_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
         axes[1].plot(*zip(*mem_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
 
-    annotation_off_x = [1 / 1.77 for i in range(len(sketchbook_power_names))]
+    annotation_off_x = [1 / 1.77 for i in range(len(sublime_power_names))]
     annotation_off_y = [1 / 4.5, 1 / 3.4, 1 / 3]
-    for i, (power, sketch) in enumerate(zip(size_function_powers, sketchbook_power_names)):
+    for i, (power, sketch) in enumerate(zip(size_function_powers, sublime_power_names)):
         axes[0].annotate(power, (aae_data[sketch][-1][0] * annotation_off_x[i], aae_data[sketch][-1][1] * annotation_off_y[i]), fontsize=0.8*XLABEL_FONT_SIZE)
-    annotation_off_x = [1 / 2 for i in range(len(sketchbook_power_names))]
+    annotation_off_x = [1 / 2 for i in range(len(sublime_power_names))]
     annotation_off_y = [2, 1.1, 1.5]
-    for i, (power, sketch) in enumerate(zip(size_function_powers, sketchbook_power_names)):
+    for i, (power, sketch) in enumerate(zip(size_function_powers, sublime_power_names)):
         axes[1].annotate(power, (mem_data[sketch][-1][0] * annotation_off_x[i], mem_data[sketch][-1][1] * annotation_off_y[i]), fontsize=0.8*XLABEL_FONT_SIZE)
 
     for ax in axes.flatten():
@@ -437,8 +447,8 @@ def plot_expansion(result_dir, output_dir):
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
     legend_lines = [legend_lines[0], ] + legend_lines[3:]
     legend_labels = [legend_labels[0], ] + legend_labels[3:]
-    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.1, 1.55),
-                   fancybox=True, shadow=False, ncol=3, fontsize=LEGEND_FONT_SIZE)
+    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.05, 1.5),
+                   fancybox=True, shadow=False, ncol=3, fontsize=LEGEND_FONT_SIZE, frameon=False)
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_12).pdf"), bbox_inches="tight", pad_inches=0.01)
 
 
@@ -503,8 +513,8 @@ def plot_contraction(result_dir, output_dir):
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
     legend_lines = legend_lines[:len(sketches)]
     legend_labels = legend_labels[:len(sketches)]
-    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.35, 1.35),
-                   fancybox=True, shadow=False, ncol=2, fontsize=LEGEND_FONT_SIZE)
+    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.375, 1.3),
+                   fancybox=True, shadow=False, ncol=2, fontsize=LEGEND_FONT_SIZE, frameon=False)
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_13).pdf"), bbox_inches="tight", pad_inches=0.01)
 
 
@@ -592,8 +602,8 @@ def plot_accuracy_unbiased(result_dir, output_dir):
     axes[2].set_ylabel("Query Latency [ns]", fontsize=YLABEL_FONT_SIZE)
 
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
-    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.25, 1.38),
-                      fancybox=True, shadow=False, ncol=6, fontsize=LEGEND_FONT_SIZE)
+    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.2, 1.33),
+                      fancybox=True, shadow=False, ncol=6, fontsize=LEGEND_FONT_SIZE, frameon=False)
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_14).pdf"), bbox_inches="tight", pad_inches=0.01)
 
     with open(output_dir / f"{inspect.stack()[0][3][5:]}_table_(Fig_14).tex", 'w') as accuracy_table:
@@ -609,15 +619,145 @@ def plot_accuracy_unbiased(result_dir, output_dir):
                                    "\\end{tabular} \n"])
 
 
-# TODO: Fill this in
 def plot_l2_size_function(result_dir, output_dir):
-    pass
+    TITLE_FONT_SIZE = 10
+    LEGEND_FONT_SIZE = 9
+    YLABEL_FONT_SIZE = 10
+    XLABEL_FONT_SIZE = 10
+    HEIGHT = 1.45
+    WH_RATIO = 2.60 / 1.6
+    WIDTH = 2 * HEIGHT * WH_RATIO
+    YTICKS_MINOR_ERROR = 250
+    YTICKS_MINOR_MEM = 0.1
+    MEMORY_YTICKS = [0.2 * i for i in range(1, 6)]
+
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(WIDTH, HEIGHT))
+
+    char_exps = ["0.00", "0.20", "0.40", "0.60", "0.80", "1.00"]
+    workload_subdir = Path("l2_size_function_bench")
+    sketches = ["SublimeCS", "SublimeCSl2"]
+    label_conv = {"SublimeCS": "l1SizeFunction",
+                  "SublimeCSl2": "l2SizeFunction"}
+    INIT_MEMORY_FOOTPRINT = 2 ** 15
+    SIZE_FUNCTION_POWER = 0.5
+
+    are_data = {sketch: [] for sketch in sketches}
+    mem_data = {sketch: [] for sketch in sketches}
+    for char_exp in char_exps:
+        for sketch in sketches:
+            file_path = result_dir / workload_subdir / Path(f"{sketch}_{INIT_MEMORY_FOOTPRINT}_{SIZE_FUNCTION_POWER:.2f}_zipf_{char_exp}.json")
+            if not file_path.is_file():
+                continue
+            with open(file_path, 'r') as result_file:
+                contents = result_file.read()
+                if len(contents) == 0:
+                    continue
+                json_string = "[" + fix_file_contents(contents[:-2]) + "]"
+                result = json.loads(json_string)
+                x_pos = float(char_exp)
+                are_data[sketch].append((x_pos, max(0.01, result[-1]["are"])))
+                mem_data[sketch].append((x_pos, result[-1]["size"] / (2 ** 20)))
+
+    if len(are_data) == 0 and len(mem_data) == 0:
+        logging.info(inspect.stack()[0][3][5:] + ": Figure not generated due to no benchmark results being found to include")
+        return
+    for sketch in sketches:
+        axes[0].plot(*zip(*are_data[sketch]), **SKETCHES_STYLE_KWARGS[label_conv[sketch]], **LINES_STYLE)
+        axes[1].plot(*zip(*mem_data[sketch]), **SKETCHES_STYLE_KWARGS[label_conv[sketch]], **LINES_STYLE)
+
+    fig.subplots_adjust(wspace=0.375)
+    for ax in axes:
+        ax.autoscale_view()
+        ax.margins(0.04)
+        ax.set_xlabel(f"{DATASET_NAMES['zipf']} Exponent", fontsize=XLABEL_FONT_SIZE)
+        ax.set_xticks([i / (len(char_exps) - 1) for i in range(len(char_exps))], [float(char_exp) for char_exp in char_exps])
+
+    axes[0].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR_ERROR))
+    axes[0].set_ylabel("P-99 Absolute Error", fontsize=YLABEL_FONT_SIZE)
+    axes[1].set_ylabel("Memory [MB]", fontsize=YLABEL_FONT_SIZE)
+    axes[1].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR_MEM))
+    axes[1].set_yticks(MEMORY_YTICKS)
+
+    legend_lines, legend_labels = axes[0].get_legend_handles_labels()
+    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.025, 1.05),
+                   fancybox=True, shadow=False, ncol=1, fontsize=LEGEND_FONT_SIZE, frameon=False)
+
+    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_15).pdf"), bbox_inches="tight", pad_inches=0.01)
 
 
-# TODO: Fill this in
+
 def plot_join_size(result_dir, output_dir):
-    pass
+    TITLE_FONT_SIZE = 10
+    LEGEND_FONT_SIZE = 9
+    YLABEL_FONT_SIZE = 10
+    XLABEL_FONT_SIZE = 10
+    HEIGHT = 1.55
+    WH_RATIO = 2.75 / 1.6
+    WIDTH = 3 * HEIGHT * WH_RATIO
+    XTICKS = [5e7, 1e8, 1.5e8]
+    XTICK_LABELS = ["50M", "100M", "150M"]
 
+    WORKLOAD = "join_size"
+    workload_subdir = Path("join_size_bench")
+    sketches = ["CMS", "CS", 
+                "SublimeCMS_fixed", "SublimeCS_fixed",
+                "SublimeCMS_expand", "SublimeCS_expand"]
+    MEMORY_FOOTPRINT = 2 ** 23
+    MEMORY_RATIO_1 = 3
+    MEMORY_RATIO_2 = 1
+
+    fig, axes = plt.subplots(nrows=1, ncols=3, sharex="col", figsize=(WIDTH, HEIGHT))
+
+    aae_data = [{sketch: [] for sketch in sketches} for i in range(3)]
+    for sketch in sketches:
+        memory_1 = MEMORY_FOOTPRINT * MEMORY_RATIO_1 // (MEMORY_RATIO_1 + MEMORY_RATIO_2)
+        memory_2 = MEMORY_FOOTPRINT * MEMORY_RATIO_2 // (MEMORY_RATIO_1 + MEMORY_RATIO_2)
+        file_path = result_dir / workload_subdir / Path(f"{sketch if "fixed" not in sketch else sketch[:-6]}_{memory_1}_{memory_2}_{WORKLOAD}.json")
+        if "expand" in sketch:
+            file_path = result_dir / workload_subdir / Path(f"{sketch}_{WORKLOAD}.json")
+        if not file_path.is_file():
+            continue
+        with open(file_path, 'r') as result_file:
+            contents = result_file.read()
+            if len(contents) == 0 or "underflow" in contents:
+                for i in range(len(aae_data)):
+                    aae_data[i][sketch].append((0, 0))
+                continue
+            json_string = "[" + fix_file_contents(contents[:-2]) + "]"
+            json_string = json_string.replace(", ]", "]")
+            result = json.loads(json_string)
+            result = result[::2]
+            for i in range(len(aae_data)):
+                for measurement in result:
+                    aae_data[i][sketch].append((measurement["n_keys"], measurement["aae"][i]))
+    if len(aae_data) == 0:
+        logging.info(inspect.stack()[0][3][5:] + ": Figure not generated due to no benchmark results being found to include")
+        return
+    for sketch in sketches:
+        sketch_style_kwargs = SKETCHES_STYLE_KWARGS[sketch if sketch != "CS" else sketch + "Dotted"]
+        for i in range(len(aae_data)):
+            axes[i].plot(*zip(*aae_data[i][sketch]), **sketch_style_kwargs, **LINES_STYLE)
+
+    for i in range(3):
+        axes[i].set_xticks(XTICKS)
+        axes[i].set_xticklabels(XTICK_LABELS, fontsize=XLABEL_FONT_SIZE)
+        axes[i].xaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(1e7))
+        axes[i].set_yscale("symlog", linthresh=(1e01))
+        axes[i].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
+        axes[i].autoscale_view()
+        axes[i].margins(0.04)
+    fig.subplots_adjust(hspace=0.15, wspace=0.35)
+
+    for i in range(3):
+        axes[i].set_xlabel("No. of Rows", fontsize=XLABEL_FONT_SIZE)
+    axes[0].set_ylabel("\\texttt{lineitem} AAE", fontsize=YLABEL_FONT_SIZE)
+    axes[1].set_ylabel("\\texttt{orders} AAE", fontsize=YLABEL_FONT_SIZE)
+    axes[2].set_ylabel("Join AAE", fontsize=YLABEL_FONT_SIZE)
+
+    legend_lines, legend_labels = axes[0].get_legend_handles_labels()
+    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(3.75, 1.03),
+                      fancybox=True, shadow=False, ncol=1, fontsize=LEGEND_FONT_SIZE, frameon=False)
+    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_16).pdf"), bbox_inches="tight", pad_inches=0.01)
 
 PLOTTERS = {plot_accuracy.__name__[5:]: plot_accuracy,
             plot_skew_vale_tuning.__name__[5:]: plot_skew_vale_tuning,
