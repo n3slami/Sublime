@@ -461,8 +461,9 @@ def plot_contraction(result_dir, output_dir):
     HEIGHT = 1.45
     WH_RATIO = 2.66 / 1.6
     WIDTH = 2 * HEIGHT * WH_RATIO
-    XLIM_LOW = 1
+    XLIM_LOW = 0.5
     XLIM_HIGH = 4e7
+    XTICKS = [1e6, 1e3, 1e0]
     MEMORY_YTICKS = [0, 2, 4]
 
     WORKLOAD = "caida_delete"
@@ -502,6 +503,7 @@ def plot_contraction(result_dir, output_dir):
         ax.set_xlabel(f"No. of Keys", fontsize=XLABEL_FONT_SIZE)
         ax.set_xscale("log")
         ax.set_xlim(XLIM_HIGH, XLIM_LOW)
+        ax.set_xticks(XTICKS)
     axes[0].set_yscale("log")
     axes[0].set_ylabel("AAE", fontsize=YLABEL_FONT_SIZE)
     axes[1].yaxis.set_major_locator(matplotlib.ticker.MultipleLocator(2))
