@@ -359,7 +359,7 @@ def plot_expansion(result_dir, output_dir):
     WIDTH = 2 * HEIGHT * WH_RATIO
     XTICKS = [5e6, 1e7, 1e8]
     XTICK_LABELS = ["$5 \\cdot 10^6$", "$10^7$", "$10^8$"]
-    YTICKS = [10 ** i for i in range(6)]
+    YTICKS = [10 ** i for i in range(1, 6)]
     MEMORY_YTICKS = [10 ** i for i in range(-4, 1)]
 
     WORKLOAD = "webdocs_expand"
@@ -437,7 +437,7 @@ def plot_expansion(result_dir, output_dir):
         #ax.set_xticks(XTICKS, XTICK_LABELS)
         ax.set_yscale("log")
         ax.yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
-    axes[0].set_ylim(YTICKS[0] / 2, 2 * YTICKS[-1])
+    axes[0].set_ylim(0.8 * YTICKS[0], 2 * YTICKS[-1])
     axes[0].set_yticks(YTICKS)
     axes[0].set_ylabel("AAE", fontsize=YLABEL_FONT_SIZE)
     axes[1].set_yticks(MEMORY_YTICKS)
