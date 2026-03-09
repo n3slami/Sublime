@@ -694,8 +694,8 @@ def plot_join_size(result_dir, output_dir):
     HEIGHT = 1.55
     WH_RATIO = 2.75 / 1.6
     WIDTH = 3 * HEIGHT * WH_RATIO
-    XTICKS = [5e7, 1e8, 1.5e8]
-    XTICK_LABELS = ["50M", "100M", "150M"]
+    XTICKS = [1e6, 5e7, 1e8, 1.5e8]
+    XTICK_LABELS = ["0", "50M", "100M", "150M"]
 
     WORKLOAD = "join_size"
     workload_subdir = Path("join_size_bench")
