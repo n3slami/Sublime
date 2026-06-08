@@ -155,5 +155,22 @@ ctest -VV
 Please use the following BibTeX entry to cite our work in your own
 publications:
 ```{bibtex}
-@article{}
+@article{10.1145/3802116,
+author = {Eslami, Navid and Bercea, Ioana and Pagh, Rasmus and Dayan, Niv},
+title = {Sublime: Sublinear Error \& Space for Unbounded Skewed Streams},
+year = {2026},
+issue_date = {June 2026},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+volume = {4},
+number = {3},
+url = {https://doi.org/10.1145/3802116},
+doi = {10.1145/3802116},
+abstract = {Modern stream processing systems often need to track the frequency of distinct keys in a data stream in real-time. Since maintaining exact counts can require a prohibitive amount of memory, many applications rely on compact, probabilistic data structures known as frequency estimation sketches to approximate them. However, mainstream frequency estimation sketches fall short in two critical aspects. First, they are memory-inefficient under skewed workloads because they use uniformly-sized counters to count the keys, thus wasting memory on storing the leading zeros of many small counts. Second, their estimation error deteriorates at least linearly with the length of the stream --- which may grow indefinitely --- because they rely on a fixed number of counters. We present Sublime, a framework that generalizes frequency estimation sketches to address these challenges. To reduce memory footprint under skew, Sublime begins with short counters and dynamically elongates them as they overflow, storing their extensions within the same cache line. It employs efficient bit manipulation routines to quickly locate and access a counter's extensions. To maintain accuracy as the stream grows, Sublime also expands its number of counters at a configurable rate, exposing a new spectrum of accuracy-memory tradeoffs that applications can tune to their needs. We apply Sublime to both Count-Min Sketch and Count Sketch. Through theoretical analysis and empirical evaluation, we show that Sublime significantly improves accuracy and memory over the state of the art while maintaining competitive or superior performance.},
+journal = {Proc. ACM Manag. Data},
+month = may,
+articleno = {239},
+numpages = {29},
+keywords = {frequency estimation sketch, data growth, scalability}
+}
 ```
