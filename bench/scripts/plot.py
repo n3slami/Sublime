@@ -111,10 +111,10 @@ def fix_file_contents(contents):
 
 
 def plot_accuracy(result_dir, output_dir):
-    TITLE_FONT_SIZE = 10
-    LEGEND_FONT_SIZE = 9
-    YLABEL_FONT_SIZE = 10
+    TITLE_FONT_SIZE = 11
+    LEGEND_FONT_SIZE = 11
     XLABEL_FONT_SIZE = 10
+    YLABEL_FONT_SIZE = 11
     WIDTH = 7.75
     HEIGHT = 5.0
     YLIM_LOW = 0
@@ -227,7 +227,7 @@ def plot_accuracy(result_dir, output_dir):
     axes[3][0].yaxis.set_label_coords(-0.20, 0.13 * HEIGHT)
 
     legend_lines, legend_labels = axes[0][2].get_legend_handles_labels()
-    axes[0][2].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-2.4, 1.58),
+    axes[0][2].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-2.75, 1.75),
                       fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE, frameon=False)
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_10).pdf"), bbox_inches="tight", pad_inches=0.01)
 
@@ -251,11 +251,11 @@ def plot_accuracy(result_dir, output_dir):
 
 
 def plot_skew_vale_tuning(result_dir, output_dir):
-    TITLE_FONT_SIZE = 10
-    LEGEND_FONT_SIZE = 9
-    YLABEL_FONT_SIZE = 10
-    XLABEL_FONT_SIZE = 10
-    HEIGHT = 1.45
+    TITLE_FONT_SIZE = 13
+    LEGEND_FONT_SIZE = 13
+    YLABEL_FONT_SIZE = 13
+    XLABEL_FONT_SIZE = 13
+    HEIGHT = 1.6
     WH_RATIO = 2.50 / 1.6
     WIDTH = 2 * HEIGHT * WH_RATIO
     YTICKS_MINOR = 0.5
@@ -319,18 +319,20 @@ def plot_skew_vale_tuning(result_dir, output_dir):
         logging.info(inspect.stack()[0][3][5:] + ": Figure not generated due to no benchmark results being found to include")
         return
 
-    fig.subplots_adjust(wspace=0.30)
+    fig.subplots_adjust(wspace=0.35)
     for ax in axes:
         ax.autoscale_view()
         ax.margins(0.04)
         ax.set_xlabel(f"{DATASET_NAMES['zipf']} Exponent", fontsize=XLABEL_FONT_SIZE)
         ax.set_xticks([3.2 * i / (len(char_exps) - 1) for i in range(len(char_exps))], [float(char_exp) for char_exp in char_exps])
 
+    axes[0].text(0, 1e5, "_")
+
     axes[0].set_yscale("log")
     axes[0].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
     axes[0].set_yticks(YTICKS)
     axes[0].set_ylabel("AAE", fontsize=YLABEL_FONT_SIZE)
-    axes[0].text(0.05, 1.5e-2, f"Memory={str(MEMORY_FOOTPRINT // 2 ** 20) + 'MB' if MEMORY_FOOTPRINT >= 2 ** 20 else str(MEMORY_FOOTPRINT // 2 ** 10) + 'KB'}", fontsize=TITLE_FONT_SIZE)
+    axes[0].text(0.05, 1.5e-2, f"Memory={str(MEMORY_FOOTPRINT // 2 ** 20) + 'MB' if MEMORY_FOOTPRINT >= 2 ** 20 else str(MEMORY_FOOTPRINT // 2 ** 10) + 'KB'}", fontsize=TITLE_FONT_SIZE - 1)
     axes[1].set_ylabel("Memory [MB]", fontsize=YLABEL_FONT_SIZE)
     axes[1].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR))
     axes[1].set_yticks(MEMORY_YTICKS)
@@ -339,10 +341,10 @@ def plot_skew_vale_tuning(result_dir, output_dir):
     legend_lines_vale_tuning, legend_labels_vale_tuning = axes[1].get_legend_handles_labels()
     legend_lines = legend_lines_skew + legend_lines_vale_tuning
     legend_labels = legend_labels_skew + legend_labels_vale_tuning
-    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.5, 1.50),
-                   fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE, frameon=False)
+    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(2.35, 0.9),
+                   fancybox=True, shadow=False, ncol=3, fontsize=LEGEND_FONT_SIZE, frameon=False)
 
-    legend_sep = matplotlib.lines.Line2D([5.90, 5.90], [7.0e5, 3.0e8], linestyle=':', color="grey")
+    legend_sep = matplotlib.lines.Line2D([14.90, 14.90], [1.0e-1, 5.0e3], linestyle=':', color="grey")
     legend_sep.set_clip_on(False)
     axes[0].add_line(legend_sep)
 
@@ -459,7 +461,7 @@ def plot_contraction(result_dir, output_dir):
     XLABEL_FONT_SIZE = 10
     WIDTH = 5.2
     HEIGHT = 1.45
-    WH_RATIO = 2.66 / 1.6
+    WH_RATIO = 2.60 / 1.6
     WIDTH = 2 * HEIGHT * WH_RATIO
     XLIM_LOW = 0.5
     XLIM_HIGH = 4e7
@@ -510,7 +512,7 @@ def plot_contraction(result_dir, output_dir):
     axes[1].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(1))
     axes[1].set_yticks(MEMORY_YTICKS)
     axes[1].set_ylabel("Memory [MB]", fontsize=TITLE_FONT_SIZE)
-    fig.subplots_adjust(hspace=0.15, wspace=0.46)
+    fig.subplots_adjust(hspace=0.15, wspace=0.45)
 
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
     legend_lines = legend_lines[:len(sketches)]
@@ -622,11 +624,11 @@ def plot_accuracy_unbiased(result_dir, output_dir):
 
 
 def plot_l2_size_function(result_dir, output_dir):
-    TITLE_FONT_SIZE = 10
-    LEGEND_FONT_SIZE = 9
-    YLABEL_FONT_SIZE = 10
-    XLABEL_FONT_SIZE = 10
-    HEIGHT = 1.45
+    TITLE_FONT_SIZE = 12
+    LEGEND_FONT_SIZE = 12
+    YLABEL_FONT_SIZE = 12
+    XLABEL_FONT_SIZE = 12
+    HEIGHT = 1.6
     WH_RATIO = 2.60 / 1.6
     WIDTH = 2 * HEIGHT * WH_RATIO
     YTICKS_MINOR_ERROR = 250
@@ -667,12 +669,14 @@ def plot_l2_size_function(result_dir, output_dir):
         axes[0].plot(*zip(*are_data[sketch]), **SKETCHES_STYLE_KWARGS[label_conv[sketch]], **LINES_STYLE)
         axes[1].plot(*zip(*mem_data[sketch]), **SKETCHES_STYLE_KWARGS[label_conv[sketch]], **LINES_STYLE)
 
-    fig.subplots_adjust(wspace=0.375)
+    fig.subplots_adjust(wspace=0.4)
     for ax in axes:
         ax.autoscale_view()
         ax.margins(0.04)
         ax.set_xlabel(f"{DATASET_NAMES['zipf']} Exponent", fontsize=XLABEL_FONT_SIZE)
         ax.set_xticks([i / (len(char_exps) - 1) for i in range(len(char_exps))], [float(char_exp) for char_exp in char_exps])
+
+    axes[0].text(0, 6.38, "_")
 
     axes[0].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR_ERROR))
     axes[0].set_ylabel("P-99 Absolute Error", fontsize=YLABEL_FONT_SIZE)
@@ -681,7 +685,7 @@ def plot_l2_size_function(result_dir, output_dir):
     axes[1].set_yticks(MEMORY_YTICKS)
 
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
-    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.025, 1.05),
+    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.055, 1.08),
                    fancybox=True, shadow=False, ncol=1, fontsize=LEGEND_FONT_SIZE, frameon=False)
 
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_15).pdf"), bbox_inches="tight", pad_inches=0.01)
