@@ -27,7 +27,23 @@ target_link_libraries(SublimeCSTests SublimeCSLib CSLib doctest)
 add_test(NAME sublime_cs COMMAND SublimeCSTests)
 
 
+# Misra-Gries
+add_executable(FingerprintTableTests ./FingerprintTableTests.cpp)
+target_link_libraries(FingerprintTableTests FingerprintTableLib doctest)
+add_test(NAME fingerprint_table COMMAND FingerprintTableTests)
+
+add_executable(VALECountersTests ./VALECountersTests.cpp)
+target_link_libraries(VALECountersTests VALECountersLib doctest)
+add_test(NAME vale_counters COMMAND VALECountersTests)
+
+add_executable(SublimeMGTests ./SublimeMGTests.cpp)
+target_link_libraries(SublimeMGTests SublimeMGLib doctest)
+add_test(NAME sublime_mg COMMAND SublimeMGTests)
+
+
 # All
 add_test(NAME all COMMAND CMSTests SublimeCMSTests 
-                          CSTests  SublimeCSTests)
+                          CSTests  SublimeCSTests
+                          FingerprintTableTests
+                          VALECountersTests SublimeMGTests)
 

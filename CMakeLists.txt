@@ -66,6 +66,22 @@ target_compile_options(SublimeCSNoTuningLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
 
 
+add_library(FingerprintTableLib STATIC ./include/FingerprintTable.hpp)
+set_target_properties(FingerprintTableLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(FingerprintTableLib PUBLIC ./include)
+target_compile_options(FingerprintTableLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+
+add_library(VALECountersLib STATIC ./include/VALECounters.hpp)
+set_target_properties(VALECountersLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(VALECountersLib PUBLIC ./include)
+target_compile_options(VALECountersLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+
+add_library(SublimeMGLib STATIC ./include/SublimeMG.hpp)
+set_target_properties(SublimeMGLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(SublimeMGLib PUBLIC ./include)
+target_compile_options(SublimeMGLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+
+
 add_library(MGDummyLib STATIC ./include/MGDummy.hpp)
 set_target_properties(MGDummyLib PROPERTIES LINKER_LANGUAGE CXX)
 target_include_directories(MGDummyLib  PUBLIC ./include)
@@ -74,6 +90,7 @@ target_compile_options(MGDummyLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
 if (BUILD_TESTS)
     message(STATUS "Building tests")
+    enable_testing()
     add_subdirectory(tests)
 endif ()
 
