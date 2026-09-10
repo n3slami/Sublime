@@ -23,6 +23,11 @@ cmake .. -DCMAKE_BUILD_TYPE=Release   # -DBUILD_TESTS=0 / -DBUILD_EXAMPLES=0 / -
 make -j8
 ```
 
+**On CMake 4.x add `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`.** Tests fetch doctest 2.4.11, whose
+own `CMakeLists.txt` declares `cmake_minimum_required(VERSION 3.0)`; CMake 4 refuses that and
+the configure fails inside `_deps/doctest-src`, not in any file of this repo. Only bites when
+`BUILD_TESTS` is on.
+
 - Release adds `-march=native`; every sketch library is compiled with `-Ofast -march=native`
   (`BITHACKING_COMPILE_FLAGS`). The code relies on BMI2/AVX-512 intrinsics (`_pdep_u64`,
   `_mm512_*` in `SublimeCS`'s AMS estimator), so it will not run on machines lacking them.
@@ -187,11 +192,101 @@ the measure reached the threshold, which is also what `SublimeCMS` does.
 - The catch-up loop is **capped at one slot per unit of the measure** (`Capacity() <
   SizeMeasure()`), which is where Misra-Gries degenerates into exact counting and no size
   function can want more. Without that cap, termination would rest on the caller's
-  `expansion_f` eventually rising above the measure, and a stale threshold — a `retarget()` missing after a resize, say — will
-  double the table until the machine runs out of memory. It has, once.
+  `expansion_f` eventually rising above the measure, and a stale threshold — a `retarget()`
+  missing after a resize, say — will double the table until the machine runs out of memory.
+  It has, once.
 - Misra-Gries has no deletions, so `N` never falls and nothing contracts on its own. `Contract`
   stays a manual operation and recomputes the threshold like an expansion does. Passing no
   `expansion_f` fixes the summary at its initial size, which is plain Misra-Gries.
+
+### Public API and shape constraints
+
+`SublimeMG<>` does **not** share the other Sublime variants' interface. Keys are `uint64_t`,
+not `(const char *, length)`:
+
+| | Sublime_MG | other Sublime variants |
+|---|---|---|
+| update | `Insert(uint64_t key, uint8_t flags = 0)` | `Insert(const char *, uint32_t)` |
+| query | `Query(uint64_t key, uint8_t flags = 0)` | `Query(const char *, uint32_t)` |
+| make pending updates visible | `FlushBuffer()` | `FlushPrefetchQueue()` |
+| space | `SizeInBytes()` | `Size(bool include_all_sketches)` |
+| delete | *(none — Misra-Gries has no deletions)* | `Delete(...)` |
+
+Constructor: `SublimeMG<E>(nslots, key_bits, hash_mode, seed, growth_coefficient = 1,
+buffer_capacity = 64, expansion_f = {})`. `Capacity()` is `nslots * max_load_factor` (0.95).
+`flags` takes `flag_key_is_hash` when the caller has already hashed the key, so a string
+workload has to be hashed to a `uint64_t` first. `hashmode` is `Default` (Murmur),
+`Invertible` (hash as wide as the key), or `None` (key used as its own hash — skew in the
+input becomes skew in the load). `Insert` returns 0 or a negative status (`err_no_space`,
+`err_not_monitored`). Copy and move both work, unlike `MGDummy`, which deletes them. `Reset`
+empties the summary but **keeps the size it grew to**, and re-derives the threshold from it.
+
+Two shape constraints, both `assert`-only and therefore **silent in the Release/NDEBUG build**:
+
+- `key_bits - log2(nslots) + 1 <= 56` — a slot has to be readable by one 64-bit word — i.e.
+  `key_bits <= 55 + log2(nslots)`. Overshooting it passes `ctest` and trips in the
+  assert-enabled build; that is exactly how the one bad test configuration was caught.
+- A period-ending expansion needs one more hash bit, so growth stops once `key_bits` reaches
+  63. `CountSlotsAfterExpansion() == CountSlots()` is how the summary notices and retires its
+  threshold.
+
+### Benchmarking Sublime_MG
+
+**There is no `bench_SublimeMG.cpp` yet** — that is the next step. It is the usual thin glue
+plus an entry in `bench/CMakeLists.txt`'s `Targets` list and its `compile_bench` link branch.
+Four things that will bite:
+
+- **`query_sketch` must call `FlushBuffer()` first.** The harness calls `query_f` directly at
+  every `Flush` opcode and never flushes the sketch itself, so up to `B = 64` insertions would
+  be invisible and the measured error would be wrong. This is the one glue mistake that
+  produces plausible-looking but incorrect numbers.
+- **Set `top_aae_are_count`** to `Capacity()` in `init_sketch`, as `bench_MGDummy.cpp` does.
+  A Misra-Gries summary only claims to answer for the heavy keys; left at its default the
+  harness averages AAE/ARE over every key in the checkpoint.
+- **No `Delete`.** Follow `bench_MGDummy.cpp` and throw from `delete_sketch`.
+- **Memory budget → `nslots`** is not the one-liner it is for the counter-array sketches:
+  `SizeInBytes()` is fingerprints + counters + buffer, and the fingerprint width itself depends
+  on `key_bits` and `nslots`.
+
+`MGDummy` is the baseline, and it differs from Sublime_MG in **two** ways that each move the
+size curve. Control for both or the space plots will not be comparable:
+
+1. **What is counted.** `MGDummy` tests its threshold against every insertion; `SublimeMG<>`
+   tests against the error-inducing ones. Use `SublimeMG<false>` for a like-for-like run, or
+   give each a size function written for its own measure.
+2. **Which side of the step the threshold sits on.** `MGDummy` grows one slot at a time and
+   sets `expansion_lim = expansion_f(max_slot_count + 1)` — the size *after* the step — so its
+   size tracks `W(N)` almost exactly. Sublime_MG grows by a factor of `2^(1/r)` and uses
+   `expansion_f(Capacity())` — the size *before* — so it sits *above* `W(N)` by up to that
+   factor and never below, which is what keeps it from being under-sized for its error
+   guarantee. The two conventions coincide when the step is one slot, which is why `MGDummy`
+   can use either; they do not coincide at `r = 1`. **Raising `r` is what closes the gap** —
+   that is what the growth coefficient is for, and it is the knob to sweep before concluding
+   Sublime_MG is bigger than the baseline. Moving to the other side is one line in
+   `SublimeMG::retarget()`.
+
+Note also that the size function's *units* differ across the framework: `SublimeCMS`/
+`SublimeCS` pass a column count, `MGDummy` a slot count, Sublime_MG a monitored-key
+`Capacity()`. The harness's `--size-function-power`/`--size-function-mult` lambda is shared, so
+the same flags mean different things to different sketches.
+
+### State of play
+
+Everything above is implemented and tested: 41 `sublime_mg` cases, 24 `fingerprint_table`, 13
+`vale_counters`, all green under `ctest`, under an assert-enabled build, and under valgrind
+(no leaks, no errors). `CheckSummary` re-derives every chain sum independently of the
+table's own sweep, so the tests do not trust the code they check.
+
+The suites were built by injecting deliberate mutations and requiring each to fail something —
+worth continuing, because two real bugs (the eviction repair applied to every survivor rather
+than the newly rootless ones, and the candidate pass reading raw counters instead of chain
+sums) survived the first round of tests and were only caught that way. **Restore the file
+through a shell trap when doing this.** A mutation left live by a crashed run — `retarget()`
+deleted from `Expand`, so the threshold never advanced — made `grow_to_fit` double the table
+until the machine ran out of memory. That is what the `Capacity() < SizeMeasure()` cap now
+prevents, but the harness should not depend on it: run the mutant under `ulimit -v` too.
+
+Next step is the benchmark glue above. Nothing in the algorithm is left open.
 
 ## Compile-time tuning knobs
 
