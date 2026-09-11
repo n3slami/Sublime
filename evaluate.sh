@@ -1,8 +1,8 @@
 #!/bin/bash
 
-FIGURE_OPTIONS=("accuracy" "skew" "vale_tuning" "expansion" "contraction" "accuracy_unbiased" "l2_size_function" "join_size")
+FIGURE_OPTIONS=("accuracy" "skew" "vale_tuning" "expansion" "contraction" "accuracy_unbiased" "l2_size_function" "join_size" "mg_accuracy" "mg_expansion")
 
-FIGURES="accuracy,skew,vale_tuning,expansion,contraction,accuracy_unbiased,l2_size_function,join_size"
+FIGURES="accuracy,skew,vale_tuning,expansion,contraction,accuracy_unbiased,l2_size_function,join_size,mg_accuracy,mg_expansion"
 
 function print_help_message_exit() {
     echo "Usage: evaluate.sh [-f|--figures ${FIGURES}]"
@@ -15,6 +15,8 @@ function print_help_message_exit() {
     echo "      - accuracy_unbiased: measures unbiased average absolute error and insertion and query speed on real datasets (Fig. 13 in the paper)"
     echo "      - l2_size_function:  measures the effects of expanding based on the l2-norm of the stream for Sublime_CS     (Fig. - in the paper)"
     echo "      - join_size:         measures the accuracy of the sketches in estimating the size of a join of TPC-H tables  (Fig. - in the paper)"
+    echo "      - mg_accuracy:       compares Sublime_MG against Misra-Gries, Space-Saving, and Waving on real datasets      (Fig. 17)"
+    echo "      - mg_expansion:      shows Sublime_MG improving across expansions and the memory win of the error measure    (Fig. 18)"
     echo "By default, all figures are generated"
     exit $1
 }

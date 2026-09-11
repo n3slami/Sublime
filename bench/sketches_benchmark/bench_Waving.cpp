@@ -13,7 +13,10 @@ inline WavingSketch<num_slots, num_counters, data_len> *init_sketch(const uint32
     const uint32_t memory_per_bucket = num_slots * data_len + num_slots * sizeof(int) + num_counters * sizeof(int16_t);
     key_hash_seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()) \
                                 .time_since_epoch().count();
-    return new WavingSketch<num_slots, num_counters, data_len>(memory_budget / memory_per_bucket);
+    const uint32_t bucket_count = memory_budget / memory_per_bucket;
+    // Waving answers for its heavy slots; report error over that many top keys.
+    top_aae_are_count = bucket_count * num_slots;
+    return new WavingSketch<num_slots, num_counters, data_len>(bucket_count);
 }
 
 inline void insert_sketch(WavingSketch<num_slots, num_counters, data_len> *sketch, const std::string& key) {

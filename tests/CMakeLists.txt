@@ -40,10 +40,19 @@ add_executable(SublimeMGTests ./SublimeMGTests.cpp)
 target_link_libraries(SublimeMGTests SublimeMGLib doctest)
 add_test(NAME sublime_mg COMMAND SublimeMGTests)
 
+add_executable(MGHeapTests ./MGHeapTests.cpp)
+target_link_libraries(MGHeapTests MGHeapLib doctest)
+add_test(NAME mg_heap COMMAND MGHeapTests)
+
+add_executable(SpaceSavingTests ./SpaceSavingTests.cpp)
+target_link_libraries(SpaceSavingTests SpaceSavingLib doctest)
+add_test(NAME space_saving COMMAND SpaceSavingTests)
+
 
 # All
-add_test(NAME all COMMAND CMSTests SublimeCMSTests 
+add_test(NAME all COMMAND CMSTests SublimeCMSTests
                           CSTests  SublimeCSTests
                           FingerprintTableTests
-                          VALECountersTests SublimeMGTests)
+                          VALECountersTests SublimeMGTests
+                          MGHeapTests SpaceSavingTests)
 

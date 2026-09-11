@@ -15,18 +15,19 @@ SKETCHES_WITH_EXPANSION_RATE_FUNCTION = {"SublimeCMS",
                                          "SublimeCSl2",
                                          "SublimeCSNoTuning"}
 
-def execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, bpk, size_function_power=None, size_function_mult=None, force_counter_count=None, override_size=None):
+def execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, bpk, size_function_power=None, size_function_mult=None, force_counter_count=None, override_size=None, extra_args=""):
     file_to_execute = f"bench/bench_{sketch}"
     size_function_power_option = f"--size-function-power {size_function_power}" if size_function_power != None else ""
     size_function_mult_option = f"--size-function-mult {size_function_mult}" if size_function_mult != None else ""
     counter_count_option = f"--counter-count {force_counter_count}" if force_counter_count != None else ""
+    options = f"{size_function_power_option} {size_function_mult_option} {counter_count_option} {extra_args}"
     if type(bpk) is tuple:
         bpk = [str(i) for i in bpk]
-        command = f"{build_dir}/{file_to_execute} {' '.join(bpk)} -w {workload} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee {output_base}/{sketch}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
-        cli_message_command = f"<build_dir>/{file_to_execute} {' '.join(bpk)} -w <workload_dir>/{workload_subdir}/{workload.name} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee <output_dir>/{workload_subdir}/{sketch}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
+        command = f"{build_dir}/{file_to_execute} {' '.join(bpk)} -w {workload} {options} | tee {output_base}/{sketch}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
+        cli_message_command = f"<build_dir>/{file_to_execute} {' '.join(bpk)} -w <workload_dir>/{workload_subdir}/{workload.name} {options} | tee <output_dir>/{workload_subdir}/{sketch}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
     else:
-        command = f"{build_dir}/{file_to_execute} {bpk} -w {workload} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee {output_base}/{sketch}_{bpk if override_size == None else override_size}_{workload.name}.json"
-        cli_message_command = f"<build_dir>/{file_to_execute} {bpk} -w <workload_dir>/{workload_subdir}/{workload.name} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee <output_dir>/{workload_subdir}/{sketch}_{bpk if override_size == None else override_size}_{workload.name}.json"
+        command = f"{build_dir}/{file_to_execute} {bpk} -w {workload} {options} | tee {output_base}/{sketch}_{bpk if override_size == None else override_size}_{workload.name}.json"
+        cli_message_command = f"<build_dir>/{file_to_execute} {bpk} -w <workload_dir>/{workload_subdir}/{workload.name} {options} | tee <output_dir>/{workload_subdir}/{sketch}_{bpk if override_size == None else override_size}_{workload.name}.json"
 
     print(f"[ Executing: {cli_message_command} ]")
     subprocess.run(command, shell=True)
@@ -235,6 +236,44 @@ def join_size_bench():
                                   size_function_power=0.75, size_function_mult=0.05, override_size="expand")
             
 
+def mg_accuracy_bench():
+    sketches = ["SublimeMG", "MGHeap", "SpaceSaving", "Waving"]
+    memory_footprints = {"caida": [2 ** i for i in range(17, 23)],
+                         "kosarak": [2 ** i for i in range(13, 19)],
+                         "webdocs": [2 ** i for i in range(17, 23)]}
+    workload_subdir = inspect.stack()[0][3]
+    output_base = Path(f"./{output_prefix}/{workload_subdir}/")
+    output_base.mkdir(parents=True, exist_ok=True)
+
+    workload_path = Path(f"{workload_dir}/real")
+    for workload in workload_path.iterdir():
+        if workload.name not in memory_footprints:
+            continue
+        for sketch, memory_footprint in itertools.product(sketches, memory_footprints[workload.name]):
+            execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint)
+
+
+def mg_expansion_bench():
+    # SublimeMG starts here and grows; MGHeap holds this size for the whole stream.
+    START_MEMORY = 2 ** 15
+    MGHEAP_MEMORY = 2 ** 15
+    size_function_powers = [0.5, 0.75, 1.0]
+    size_function_mults = [0.5, 0.05, 0.005]
+    measures = ["error", "total"]
+    workload_subdir = inspect.stack()[0][3]
+    output_base = Path(f"./{output_prefix}/{workload_subdir}/")
+    output_base.mkdir(parents=True, exist_ok=True)
+
+    workload_path = Path(f"{workload_dir}/expand")
+    for workload in workload_path.iterdir():
+        for measure in measures:
+            for power, mult in zip(size_function_powers, size_function_mults):
+                execute_benchmark(build_dir, output_base, workload_subdir, workload, "SublimeMG", START_MEMORY,
+                                  power, mult, override_size=f"{START_MEMORY}_{measure}_{power:.2f}",
+                                  extra_args=f"--expand-measure {measure} --growth-coefficient 4")
+        execute_benchmark(build_dir, output_base, workload_subdir, workload, "MGHeap", MGHEAP_MEMORY)
+
+
 RUNNERS = {accuracy_bench.__name__[:-6]: accuracy_bench,
            skew_bench.__name__[:-6]: skew_bench,
            vale_tuning_bench.__name__[:-6]: vale_tuning_bench,
@@ -242,7 +281,9 @@ RUNNERS = {accuracy_bench.__name__[:-6]: accuracy_bench,
            contraction_bench.__name__[:-6]: contraction_bench,
            accuracy_unbiased_bench.__name__[:-6]: accuracy_unbiased_bench,
            l2_size_function_bench.__name__[:-6]: l2_size_function_bench,
-           join_size_bench.__name__[:-6]: join_size_bench}
+           join_size_bench.__name__[:-6]: join_size_bench,
+           mg_accuracy_bench.__name__[:-6]: mg_accuracy_bench,
+           mg_expansion_bench.__name__[:-6]: mg_expansion_bench}
 
 
 if __name__ == "__main__":

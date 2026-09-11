@@ -42,6 +42,11 @@ SKETCHES_STYLE_KWARGS = {"SublimeCMS": {"marker": 'v', "color": "fuchsia", "zord
                          "NoTuning": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Fixed", "linestyle": ":"},
                          "l1SizeFunction": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "No. of Keys"},
                          "l2SizeFunction": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Variance", "linestyle": ":"},
+                         "SublimeMG": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{MG}"},
+                         "SublimeMG_error": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{MG} (Error-Inducing)"},
+                         "SublimeMG_total": {"marker": '^', "color": "purple", "zorder": 11, "label": "Sublime\\textsubscript{MG} (Stream Length)", "linestyle": "--"},
+                         "MGHeap": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "Misra-Gries"},
+                         "SpaceSaving": {"marker": 's', "color": "C2", "zorder": 9, "label": "Space-Saving"},
                          "CMS": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CMS"},
                          "CMS_Over": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CMS (Overestimated)", "linestyle": ":"},
                          "StingyCM": {"marker": '^', "color": "black", "label": "Stingy\\textsubscript{CMS}"},
@@ -765,6 +770,147 @@ def plot_join_size(result_dir, output_dir):
                       fancybox=True, shadow=False, ncol=1, fontsize=LEGEND_FONT_SIZE, frameon=False)
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_16).pdf"), bbox_inches="tight", pad_inches=0.01)
 
+def plot_mg_accuracy(result_dir, output_dir):
+    LEGEND_FONT_SIZE = 10
+    LABEL_FONT_SIZE = 10
+    WIDTH = 7.75
+    HEIGHT = 4.4
+
+    workloads = ["kosarak", "webdocs", "caida"]
+    workload_subdir = Path("mg_accuracy_bench")
+    sketches = ["SublimeMG", "MGHeap", "SpaceSaving", "Waving"]
+    memory_powers = {"caida": range(17, 23), "kosarak": range(13, 19), "webdocs": range(17, 23)}
+    memory_footprints = {w: [2 ** i for i in memory_powers[w]] for w in workloads}
+
+    fig, axes = plt.subplots(nrows=3, ncols=3, sharex="col", figsize=(WIDTH, HEIGHT))
+
+    result_found = False
+    p99_data = {w: {s: {} for s in sketches} for w in workloads}
+    for i, workload in enumerate(workloads):
+        aae = {s: [] for s in sketches}
+        insert = {s: [] for s in sketches}
+        query = {s: [] for s in sketches}
+        for sketch, memory_footprint in itertools.product(sketches, memory_footprints[workload]):
+            file_path = result_dir / workload_subdir / Path(f"{sketch}_{memory_footprint}_{workload}.json")
+            if not file_path.is_file():
+                continue
+            with open(file_path, 'r') as result_file:
+                contents = result_file.read()
+                if len(contents) == 0:
+                    continue
+                result = json.loads("[" + fix_file_contents(contents[:-2]) + "]")[-1]
+                aae[sketch].append((result["size"], result["aae"]))
+                insert[sketch].append((result["size"], result["time_i"] / result["n_keys"] * 1000.0))
+                query[sketch].append((result["size"], result["time_q"] / result["n_unique_keys"] * 1000.0))
+                p99_data[workload][sketch][memory_footprint] = result.get("p99", 0)
+        for sketch in sketches:
+            if not aae[sketch]:
+                continue
+            result_found = True
+            style = SKETCHES_STYLE_KWARGS[sketch]
+            axes[0][i].plot(*zip(*aae[sketch]), **style, **LINES_STYLE)
+            axes[1][i].plot(*zip(*insert[sketch]), **style, **LINES_STYLE)
+            axes[2][i].plot(*zip(*query[sketch]), **style, **LINES_STYLE)
+    if not result_found:
+        logging.info(inspect.stack()[0][3][5:] + ": Figure not generated due to no benchmark results being found to include")
+        return
+
+    for i, workload in enumerate(workloads):
+        for row in range(3):
+            axes[row][i].set_xscale("log")
+            axes[row][i].margins(0.04)
+        axes[0][i].set_yscale("symlog", linthresh=1e0)
+        axes[0][i].set_title(DATASET_NAMES[workload], fontsize=LABEL_FONT_SIZE + 1)
+        axes[2][i].set_xlabel("Memory [B]", fontsize=LABEL_FONT_SIZE)
+    axes[0][0].set_ylabel("AAE", fontsize=LABEL_FONT_SIZE)
+    axes[1][0].set_ylabel("Insert [ns]", fontsize=LABEL_FONT_SIZE)
+    axes[2][0].set_ylabel("Query [ns]", fontsize=LABEL_FONT_SIZE)
+    fig.subplots_adjust(hspace=0.18, wspace=0.28)
+
+    legend_lines, legend_labels = axes[0][0].get_legend_handles_labels()
+    axes[0][1].legend(legend_lines, legend_labels, loc="lower center", bbox_to_anchor=(0.5, 1.18),
+                      fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE, frameon=False)
+    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_17).pdf"), bbox_inches="tight", pad_inches=0.01)
+
+    with open(output_dir / f"{inspect.stack()[0][3][5:]}_p99_table_(Fig_17).tex", 'w') as table:
+        table.writelines(["\\begin{tabular}{cc" + 'c' * len(sketches) + "} \n", "\\toprule \n",
+                          " & ".join(["Dataset", "Mem [B]"] + [SKETCHES_STYLE_KWARGS[s]["label"] for s in sketches]) + " \\\\ \n",
+                          "\\midrule \n"])
+        for workload in workloads:
+            for memory_footprint in memory_footprints[workload]:
+                cells = [f"{p99_data[workload][s].get(memory_footprint, '-'):.3f}"
+                         if isinstance(p99_data[workload][s].get(memory_footprint), float) else "-" for s in sketches]
+                table.write(" & ".join([DATASET_NAMES[workload], str(memory_footprint)] + cells) + " \\\\ \n")
+        table.writelines(["\\bottomrule \n", "\\end{tabular} \n"])
+
+
+def plot_mg_expansion(result_dir, output_dir):
+    LEGEND_FONT_SIZE = 9
+    LABEL_FONT_SIZE = 10
+    HEIGHT = 1.55
+    WH_RATIO = 2.65 / 1.6
+    WIDTH = 2 * HEIGHT * WH_RATIO
+
+    workload_subdir = Path("mg_expansion_bench")
+    START_MEMORY = 2 ** 15
+    POWER = 0.75                                    # The representative power plotted.
+    workload_candidates = ["webdocs_expand", "caida_expand"]
+
+    workload = None
+    for candidate in workload_candidates:
+        if any((result_dir / workload_subdir).glob(f"*{candidate}.json")):
+            workload = candidate
+            break
+    if workload is None:
+        logging.info(inspect.stack()[0][3][5:] + ": Figure not generated due to no benchmark results being found to include")
+        return
+
+    series = {
+        "SublimeMG_error": result_dir / workload_subdir / Path(f"SublimeMG_{START_MEMORY}_error_{POWER:.2f}_{workload}.json"),
+        "SublimeMG_total": result_dir / workload_subdir / Path(f"SublimeMG_{START_MEMORY}_total_{POWER:.2f}_{workload}.json"),
+        "MGHeap": result_dir / workload_subdir / Path(f"MGHeap_{START_MEMORY}_{workload}.json"),
+    }
+
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(WIDTH, HEIGHT))
+    aae_data = {s: [] for s in series}
+    mem_data = {s: [] for s in series}
+    for sketch, file_path in series.items():
+        if not file_path.is_file():
+            continue
+        with open(file_path, 'r') as result_file:
+            contents = result_file.read()
+            if len(contents) == 0:
+                continue
+            results = json.loads("[" + fix_file_contents(contents[:-2]) + "]")
+            results = [results[2 ** i - 1] for i in range(math.ceil(math.log(len(results), 2)) - 1)] + results[-1:]
+            for result in results:
+                aae_data[sketch].append((result["n_keys"], max(result["aae"], 1e-2)))
+                mem_data[sketch].append((result["n_keys"], result["size"] / result["n_keys"]))
+    if all(len(v) == 0 for v in aae_data.values()):
+        logging.info(inspect.stack()[0][3][5:] + ": Figure not generated due to no benchmark results being found to include")
+        return
+    for sketch in series:
+        if not aae_data[sketch]:
+            continue
+        axes[0].plot(*zip(*aae_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
+        axes[1].plot(*zip(*mem_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
+
+    for ax in axes.flatten():
+        ax.autoscale_view()
+        ax.margins(0.04)
+        ax.set_xlabel("No. of Keys", fontsize=LABEL_FONT_SIZE)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+    axes[0].set_ylabel("AAE", fontsize=LABEL_FONT_SIZE)
+    axes[1].set_ylabel("Memory [B/Key]", fontsize=LABEL_FONT_SIZE)
+    fig.subplots_adjust(wspace=0.4)
+
+    legend_lines, legend_labels = axes[0].get_legend_handles_labels()
+    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.05, 1.42),
+                   fancybox=True, shadow=False, ncol=2, fontsize=LEGEND_FONT_SIZE, frameon=False)
+    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_18).pdf"), bbox_inches="tight", pad_inches=0.01)
+
+
 PLOTTERS = {plot_accuracy.__name__[5:]: plot_accuracy,
             plot_skew_vale_tuning.__name__[5:]: plot_skew_vale_tuning,
             "skew": plot_skew_vale_tuning,
@@ -773,7 +919,9 @@ PLOTTERS = {plot_accuracy.__name__[5:]: plot_accuracy,
             plot_contraction.__name__[5:]: plot_contraction,
             plot_accuracy_unbiased.__name__[5:]: plot_accuracy_unbiased,
             plot_l2_size_function.__name__[5:]: plot_l2_size_function,
-            plot_join_size.__name__[5:]: plot_join_size}
+            plot_join_size.__name__[5:]: plot_join_size,
+            plot_mg_accuracy.__name__[5:]: plot_mg_accuracy,
+            plot_mg_expansion.__name__[5:]: plot_mg_expansion}
 
 
 if __name__ == "__main__":

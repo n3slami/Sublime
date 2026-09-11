@@ -332,6 +332,21 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
                 test_out.AddMeasure("are", are);
                 test_out.AddMeasure("total_overestimation", total_overestimation);
                 test_out.AddMeasure("total_underestimation", total_underestimation);
+
+                std::vector<double> relative_errors;
+                relative_errors.reserve(n_distinct_keys);
+                for (auto& it : freq_checkpoints[checkpoint_ind]) {
+                    const int64_t est_val = query_f(sketch, it.first);
+                    const int64_t real_val = it.second;
+                    const double dist = std::abs(static_cast<double>(est_val - real_val));
+                    relative_errors.push_back(dist / real_val);
+                }
+                std::sort(relative_errors.begin(), relative_errors.end());
+                if (n_distinct_keys > 0) {
+                    test_out.AddMeasure("p90", relative_errors[n_distinct_keys * 90 / 100]);
+                    test_out.AddMeasure("p95", relative_errors[n_distinct_keys * 95 / 100]);
+                    test_out.AddMeasure("p99", relative_errors[n_distinct_keys * 99 / 100]);
+                }
                 test_out.AddMeasure("size", size_f(sketch));
 
                 if (top_aae_are_count != std::numeric_limits<uint32_t>::max()) {

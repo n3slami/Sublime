@@ -633,6 +633,54 @@ public:
         return counters_.get();
     }
 
+    /* Slot sidecar. */
+
+    /**
+     * A caller-owned per-slot array the table keeps aligned to its slots,
+     * mirroring the slot movements of insertion and deletion the way it does
+     * for its own counters. Unlike `EnableCounters` -- which the table owns and
+     * reshapes -- a sidecar holds whatever per-slot data the caller likes (a
+     * plain counter array, a packed heap-position array, ...) and only the
+     * shift-on-insert, shift-on-delete, and reset movements are mirrored;
+     * expansion and contraction are not, so a table carrying a sidecar must not
+     * be expanded or contracted.
+     */
+    struct SlotMirror {
+        virtual ~SlotMirror() = default;
+        /** Fills the hole at `hole` by moving `(hole, last]` down one, clearing `last`. */
+        virtual void ShiftLeftAndClear(uint64_t hole, uint64_t last) = 0;
+        /** Opens a hole at `hole` by moving `[hole, last)` up one, clearing `hole`. */
+        virtual void ShiftRightAndClear(uint64_t hole, uint64_t last) = 0;
+        /** Clears every entry. */
+        virtual void Reset() = 0;
+    };
+
+    /** Attaches a caller-owned sidecar (or detaches with `nullptr`). */
+    void AttachMirror(SlotMirror *mirror) {
+        sidecar_ = mirror;
+    }
+
+    /**
+     * @returns The canonical (home) slot of `key`'s run. Stable across the slot
+     * shifts of insertion and deletion, so a caller can key stable state on it.
+     */
+    uint64_t HomeBucket(uint64_t key, uint8_t flags = 0) const {
+        return bucket_from_hash(hash_key(key, flags));
+    }
+
+    /**
+     * Calls `f(slot)` for every slot of `bucket`'s run, in slot order. Does
+     * nothing if the bucket is not the canonical slot of any run.
+     */
+    template <typename F>
+    void ForEachSlotInRun(uint64_t bucket, F&& f) const {
+        if (!is_occupied(bucket))
+            return;
+        const uint64_t last = run_end(bucket);
+        for (uint64_t s = run_start(bucket); s <= last; s++)
+            f(s);
+    }
+
     /* Stretching. */
 
     /** @returns `r`: every expansion grows the table by a factor of `2^(1/r)`. */
@@ -791,6 +839,8 @@ private:
     bool auto_expand_ = false;
     /** One count per slot, mirroring them. Null unless `EnableCounters` was called. */
     std::unique_ptr<VALECounters> counters_;
+    /** An optional caller-owned per-slot array, mirrored on shifts. See `SlotMirror`. */
+    SlotMirror *sidecar_ = nullptr;
     uint8_t *buffer_ = nullptr;         /**< The blocks. */
     uint64_t buffer_size_ = 0;
 
@@ -1204,6 +1254,8 @@ inline void FingerprintTable::Reset() {
     memset(buffer_, 0, buffer_size_);
     if (counters_ != nullptr)
         counters_->Reset();
+    if (sidecar_ != nullptr)
+        sidecar_->Reset();
 }
 
 
@@ -1406,6 +1458,8 @@ inline void FingerprintTable::remove_slot(bool only_item_in_run, uint64_t bucket
     clear_runend(i);
     if (counters_ != nullptr)
         counters_->ShiftLeftAndClear(remove_index, last_slot_in_cluster);
+    if (sidecar_ != nullptr)
+        sidecar_->ShiftLeftAndClear(remove_index, last_slot_in_cluster);
 
     if (only_item_in_run)
         clear_occupied(bucket_index);
@@ -1516,6 +1570,8 @@ inline int64_t FingerprintTable::insert_fingerprint(uint64_t bucket_index, uint6
     // on starts from zero.
     if (counters_ != nullptr)
         counters_->ShiftRightAndClear(insert_index, empty_slot);
+    if (sidecar_ != nullptr)
+        sidecar_->ShiftRightAndClear(insert_index, empty_slot);
     noccupied_slots_++;
     return insert_index;
 }

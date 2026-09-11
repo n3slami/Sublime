@@ -24,7 +24,9 @@ list(APPEND Targets "SublimeCMS" "SublimeCMSNoTuning" "SublimeCMSNoTuningMorris"
                     "Tailored"
                     "OTailored"
                     "Waving"
-                    "MGDummy")
+                    "SublimeMG"
+                    "MGHeap"
+                    "SpaceSaving")
 
 function(compile_bench ds)
     if (NOT ds IN_LIST Targets)
@@ -100,8 +102,12 @@ function(compile_bench ds)
         set_target_properties(WavingLib PROPERTIES LINKER_LANGUAGE CXX)
         target_compile_options(WavingLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
         target_link_libraries(bench_${ds} WavingLib)
-    elseif (ds STREQUAL "MGDummy")
-        target_link_libraries(bench_${ds} MGDummyLib)
+    elseif (ds STREQUAL "SublimeMG")
+        target_link_libraries(bench_${ds} SublimeMGLib)
+    elseif (ds STREQUAL "MGHeap")
+        target_link_libraries(bench_${ds} MGHeapLib)
+    elseif (ds STREQUAL "SpaceSaving")
+        target_link_libraries(bench_${ds} SpaceSavingLib)
     endif()
 endfunction(compile_bench)
 

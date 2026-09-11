@@ -82,10 +82,16 @@ target_include_directories(SublimeMGLib PUBLIC ./include)
 target_compile_options(SublimeMGLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
 
-add_library(MGDummyLib STATIC ./include/MGDummy.hpp)
-set_target_properties(MGDummyLib PROPERTIES LINKER_LANGUAGE CXX)
-target_include_directories(MGDummyLib  PUBLIC ./include)
-target_compile_options(MGDummyLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+add_library(MGHeapLib STATIC ./include/MGHeap.hpp)
+set_target_properties(MGHeapLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(MGHeapLib PUBLIC ./include)
+target_compile_options(MGHeapLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+
+
+add_library(SpaceSavingLib STATIC ./include/SpaceSaving.hpp)
+set_target_properties(SpaceSavingLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(SpaceSavingLib PUBLIC ./include)
+target_compile_options(SpaceSavingLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
 
 if (BUILD_TESTS)

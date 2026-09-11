@@ -18,9 +18,9 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-FIGURE_OPTIONS=("accuracy" "skew" "vale_tuning" "expansion" "contraction" "accuracy_unbiased" "l2_size_function" "join_size")
+FIGURE_OPTIONS=("accuracy" "skew" "vale_tuning" "expansion" "contraction" "accuracy_unbiased" "l2_size_function" "join_size" "mg_accuracy" "mg_expansion")
 
-FIGURES="accuracy,skew,vale_tuning,expansion,contraction,accuracy_unbiased,l2_size_function,join_size"
+FIGURES="accuracy,skew,vale_tuning,expansion,contraction,accuracy_unbiased,l2_size_function,join_size,mg_accuracy,mg_expansion"
 
 function print_help_message_exit() {
     echo "Usage: generate_datasets.sh <build_path> <real_datasets_path> [-f|--figures ${FIGURES}]"
