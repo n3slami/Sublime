@@ -238,8 +238,9 @@ def join_size_bench():
 
 def mg_accuracy_bench():
     sketches = ["SublimeMG", "MGHeap", "SpaceSaving", "Waving"]
+    SEED = 12345                            # Fixed for the sketches that support it (reproducibility).
     memory_footprints = {"caida": [2 ** i for i in range(17, 23)],
-                         "kosarak": [2 ** i for i in range(13, 19)],
+                         "kosarak": [2 ** i for i in range(14, 19)],
                          "webdocs": [2 ** i for i in range(17, 23)]}
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
@@ -250,15 +251,25 @@ def mg_accuracy_bench():
         if workload.name not in memory_footprints:
             continue
         for sketch, memory_footprint in itertools.product(sketches, memory_footprints[workload.name]):
-            execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint)
+            extra_args = f"--seed {SEED}" if sketch in ("SublimeMG", "MGHeap") else ""
+            execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint,
+                              extra_args=extra_args)
 
 
 def mg_expansion_bench():
     # SublimeMG starts here and grows; MGHeap holds this size for the whole stream.
     START_MEMORY = 2 ** 15
     MGHEAP_MEMORY = 2 ** 15
+    FINGERPRINT_LENGTH = 20                 # Longer fingerprints cut collision over-estimation.
+    SEED = 12345                            # Fixed so error and total are the same run bar the measure.
     size_function_powers = [0.5, 0.75, 1.0]
-    size_function_mults = [0.5, 0.05, 0.005]
+    # Mults are shared between the two measures at each power (W(N) =
+    # (N/mult)^power), which is what guarantees error <= total: the error measure
+    # is a subset of every insertion, so with the same size function it never
+    # expands more than the total measure. Larger mult => later/less expansion;
+    # these keep the power-0.5 (sqrt) line hugging the fixed baseline and the
+    # power-1.0 total line bounded. Calibrated for these datasets' lengths.
+    size_function_mults = [12, 2, 8]
     measures = ["error", "total"]
     workload_subdir = inspect.stack()[0][3]
     output_base = Path(f"./{output_prefix}/{workload_subdir}/")
@@ -266,12 +277,19 @@ def mg_expansion_bench():
 
     workload_path = Path(f"{workload_dir}/expand")
     for workload in workload_path.iterdir():
+        # The dense-start workloads add early checkpoints so the sketches share a
+        # visible common starting memory; the paper's plain expand workloads are
+        # left to the CMS/CS expansion benchmark.
+        if not workload.name.endswith("_mg_expand"):
+            continue
         for measure in measures:
             for power, mult in zip(size_function_powers, size_function_mults):
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, "SublimeMG", START_MEMORY,
                                   power, mult, override_size=f"{START_MEMORY}_{measure}_{power:.2f}",
-                                  extra_args=f"--expand-measure {measure} --growth-coefficient 4")
-        execute_benchmark(build_dir, output_base, workload_subdir, workload, "MGHeap", MGHEAP_MEMORY)
+                                  extra_args=f"--expand-measure {measure} --growth-coefficient 4 "
+                                             f"--fingerprint-length {FINGERPRINT_LENGTH} --seed {SEED}")
+        execute_benchmark(build_dir, output_base, workload_subdir, workload, "MGHeap", MGHEAP_MEMORY,
+                          extra_args=f"--fingerprint-length {FINGERPRINT_LENGTH} --seed {SEED}")
 
 
 RUNNERS = {accuracy_bench.__name__[:-6]: accuracy_bench,

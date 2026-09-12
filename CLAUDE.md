@@ -67,13 +67,14 @@ so they poke at private internals (`set_counter`, `sketches.back()`, `stub_size`
 `FingerprintTableTest`, `VALECountersTest`, and `SublimeMGTest` do the same. Add
 new white-box checks as static methods on that friend class and wire them into a `TEST_CASE`.
 
-## Sublime_MG (journal extension, in progress)
+## Sublime_MG (journal extension)
 
-The `journal_extension` branch is building Sublime_MG — Sublime applied to Misra-Gries — in
-steps. What exists: `FingerprintTable` (the monitored-key set), `VALECounters` (the counts),
-and the wiring between them in `SublimeMG`. The table mirrors every slot it shifts into the
-counter array via `AttachCounters`, which is also what makes the counter prefetch in
-`FindLongestMatch` possible.
+The `journal_extension` branch adds Sublime_MG — Sublime applied to Misra-Gries. It is
+`FingerprintTable` (the monitored-key set), `VALECounters` (the counts), and the wiring between
+them in `SublimeMG`. The table mirrors every slot it shifts into the counter array it owns
+(`EnableCounters`), which is also what makes the counter prefetch in `FindLongestMatch`
+possible. The algorithm, its tests, both benchmark experiments, and their figures are all done
+(see "State of play").
 
 The table *owns* its counters (`EnableCounters`, not an attach-a-pointer arrangement), because
 the two must be resized in lockstep and only the table knows when that happens. `Expand` and
@@ -242,7 +243,9 @@ monitored set is a fixed-size RSQF `FingerprintTable` (10-bit fingerprints by de
 plain 32-bit counter array and a packed per-slot `heap_offset` array, plus an accurate
 `(count, home_bucket)` min-heap; and `SpaceSaving` — a textbook Stream-Summary storing full
 64-bit keys, deliberately pointer-heavy. Plus `Waving`. All fixed-size. See the `MGHeap` /
-`SpaceSaving` rows in the architecture table.
+`SpaceSaving` rows in the architecture table. Note the two figures run at different fingerprint
+lengths: `mg_accuracy` uses the default 10-bit, `mg_expansion` overrides to 20-bit (`--seed` is
+also fixed for both).
 
 The **`FingerprintTable::SlotMirror`** hook (`AttachMirror`) is what lets `MGHeap` keep its
 plain counter + packed-offset arrays aligned as RSQF slots shift: the table calls the sidecar
@@ -267,23 +270,46 @@ Glue rules that bite (all handled in the committed benches):
   error) curves.
 - **String workloads (CAIDA)** are hashed to `uint64` in the glue and passed with
   `flag_key_is_hash`; int workloads (kosarak, webdocs) go in raw under `hashmode::Default`.
-- New flags: `--fingerprint-length` (default 10), `--growth-coefficient` (`r`), and
-  `--expand-measure error|total` (picks `SublimeMG<true>`/`<false>` at runtime).
+- New flags on `bench_SublimeMG`: `--fingerprint-length` (default 10), `--growth-coefficient`
+  (`r`), `--expand-measure error|total` (picks `SublimeMG<true>`/`<false>` at runtime), and
+  `--seed` (0 = time-based; `bench_MGHeap` also takes `--fingerprint-length`/`--seed`). The
+  benches also report their final VALE tuning (`counters_per_chunk`, `stub_length`) as extra
+  parameters, which is what the Fig. 17 VALE table is built from.
 
 **`mg_expansion` (Fig. 18)** shows Sublime_MG improving accuracy across expansions and the memory
 win of the error-inducing measure. It plots `SublimeMG<error>` and `SublimeMG<total>` (both
-expanding from a small budget, `r = 4`, size-function power/mult swept in `run_benchmarks.py`)
-against a fixed-size `MGHeap` that just ingests to the end of the stream. The two measures differ
-because the total counts every insertion while the error measure counts only those that matched
-nothing, so on a skewed stream `<error>` expands far less for comparable accuracy (a synthetic
-check saw ~5x less memory). Panels are AAE and Memory[B/key] vs number of keys.
+expanding from a small budget with **20-bit fingerprints**, `r = 4`, a fixed `--seed`) against a
+fixed-size `MGHeap` that just ingests to the end of the stream. The size-function **power is
+swept** (0.5 solid, 0.75 dashed, 1.0 dotted, as in the CMS expansion figure) for both measures,
+each labelled with its power. **The mult is shared between the two measures at each power** --
+`W(N) = (N/mult)^power` -- which is what guarantees `error <= total`: error-inducing insertions
+are a subset of all insertions, so the same size function never expands error more than total.
+(Per-measure mults break that; a fixed seed makes the invariant hold bit-exactly.) On WebDocs at
+power 1.0, `<error>` reaches AAE 3.2 at 6.5 MB while `<total>` needs 164 MB for AAE 0.06 -- ~25x
+less memory. Panels are AAE and Memory[B/key] vs number of keys.
 
-Both experiments are wired through the pipeline exactly like the paper figures: `mg_accuracy_bench`
-/ `mg_expansion_bench` in `run_benchmarks.py`, `plot_mg_accuracy` (Fig. 17, with a P99 companion
-table) / `plot_mg_expansion` (Fig. 18) in `plot.py`, and `mg_accuracy` / `mg_expansion` figure
-options in `generate_datasets.sh` and `evaluate.sh` (they reuse the `real` and `expand` workloads
-via the existing `*"accuracy"*` / `*"expansion"*` substring guards). Error is reported over all
-distinct keys; P99 goes to the table.
+**Dense-start expand workloads.** Because the harness snapshots the whole ground-truth map at every
+checkpoint, the measurement period must stay coarse (a fine period on WebDocs OOMs), so the first
+checkpoint lands well after the size function has already expanded -- making the sketches look like
+they start at different sizes when they all begin at the same budget. `workload_gen`'s opt-in
+`--dense-start` adds early checkpoints at doubling stream positions (2048, 4096, 8192, ... so a
+power-of-two byte budget like `2^15` lands exactly on one, where the fixed baselines sit at 1
+byte/key) before the regular period, so the first plotted point precedes any expansion and the
+common starting memory is visible. `mg_expansion` uses dedicated `caida_mg_expand` /
+`webdocs_mg_expand` workloads built with it; the paper's plain `caida_expand` / `webdocs_expand`
+(used by the CMS/CS `expansion` figure) are left untouched. `plot_mg_expansion` starts the x-axis
+at that 1-byte/key checkpoint.
+
+Both experiments are wired through the pipeline like the paper figures: `mg_accuracy_bench` /
+`mg_expansion_bench` in `run_benchmarks.py` (the latter runs only on `*_mg_expand` workloads;
+both pin a fixed `--seed` on the sketches that support it), `plot_mg_accuracy` (Fig. 17, plus two
+companion `.tex` tables -- a P99 table and a VALE `(c, s)` tuning table like the CMS accuracy
+figure's) / `plot_mg_expansion` (Fig. 18) in `plot.py`, and `mg_accuracy` / `mg_expansion` figure
+options in `generate_datasets.sh` and `evaluate.sh`. `mg_accuracy` reuses the `real` workloads via
+the `*"accuracy"*` substring guard; `mg_expansion` triggers generation of the dense-start
+workloads under the `*"expansion"*` guard. Error is reported over all distinct keys; P99 goes to
+the table. Fig. 17 shares the insert/query rows' y-axes and matches the Sublime_CMS accuracy
+figure's panel dimensions.
 
 **CAIDA stays private.** Kosarak and WebDocs come from `download_datasets.sh`; CAIDA is generated
 *locally* from `caida_tmp/*.dat` by pointing `generate_datasets.sh`'s real-datasets path at
@@ -310,11 +336,12 @@ deleted from `Expand`, so the threshold never advanced — made `grow_to_fit` do
 until the machine ran out of memory. That is what the `Capacity() < SizeMeasure()` cap now
 prevents, but the harness should not depend on it: run the mutant under `ulimit -v` too.
 
-The benchmark glue and both experiments are now implemented too (see "Benchmarking Sublime_MG"):
-`MGHeap` (7 `mg_heap` cases) and `SpaceSaving` (3 `space_saving` cases) are green under `ctest`
-and ASan-clean, built the same mutation-injection way. Nothing in the algorithm is left open; what
-remains is running `mg_accuracy`/`mg_expansion` on the real datasets and tuning the size-function
-sweep (`run_benchmarks.py::mg_expansion_bench`), `fingerprint_length`, and `r`.
+The benchmark glue and both experiments are implemented (see "Benchmarking Sublime_MG"): `MGHeap`
+(7 `mg_heap` cases) and `SpaceSaving` (3 `space_saving` cases) are green under `ctest` and
+ASan-clean, built the same mutation-injection way. Both figures have been run on the real datasets
+and tuned (20-bit fingerprints, `r = 4`, per-power mults shared across the two measures, fixed
+seed), and the final Fig. 17/18 PDFs and their `.tex` tables generated. Nothing in the algorithm
+or the pipeline is left open.
 
 ## Compile-time tuning knobs
 
@@ -342,8 +369,8 @@ per data point to sweep them — expect benchmark runs to rebuild the tree repea
 | `MGHeap.hpp` | Classic heap-based Misra-Gries baseline: a fixed-size RSQF `FingerprintTable` (fixed-length fingerprints, no expansion, so single-match lookups and no chains) with a plain 32-bit counter array and a packed per-slot `heap_offset`, both mirrored through slot shifts by a `FingerprintTable::SlotMirror` sidecar, plus an accurate `(count, home_bucket)` min-heap. Heap→slot resolution scans the (short) run for the matching offset, so heap addresses survive shifts without patching. |
 | `SpaceSaving.hpp` | Space-Saving baseline over the Stream-Summary structure (sorted doubly-linked bucket list + per-bucket monitor lists + hash map), storing full 64-bit keys. Pointer-heavy by design. |
 | `VALECounters.hpp` | A flat VALE counter array (chunk = cache line: overflows bitmap + stubs + extension pool, spilling to a heap tails array), extracted from `SublimeCMS`'s sketch layout. `ShiftLeft/RightAndClear` move a range by one slot touching only stubs, the bitmap, and any tails array — the pool is ordered by counter position, so a shift by one leaves it bit-identical and only the counters *crossing a chunk boundary* need their extensions moved. `MaybeRetune` mirrors `SublimeCMS`'s tails-fraction trigger. `Retune(offset, shrank)` subtracts a uniform `offset` as it rebuilds; `shrank` says the caller already made the counters smaller itself, which frees the tuning the same way a non-zero offset does. A counter tops out at `2^(32+stub_size)` (tails are `uint32_t`). |
-| `SublimeMG.hpp` | Sublime_MG: a `FingerprintTable` with counters enabled, so counter `i` is the count of the fingerprint in slot `i`. `Insert` applies all three Misra-Gries cases; `Query` sums the *chain* of matching fingerprints and takes `lazy_decrement_` off once. Case-3 insertions batch into a `B`-entry buffer; a flush takes one pass for the `B` smallest chain sums, replays the batch against them, and sweeps up everything the decrement emptied. Expansion is driven by the size function `expansion_f` handed to the constructor, as in the other Sublime sketches; `template <bool expand_on_error_inducing_insertions = true>` picks whether that size function is read against the insertions that matched nothing or against every insertion. **Work in progress** — see below. |
-| `FingerprintTable.hpp` | Compact hash table for the in-progress Sublime_MG: an RSQF with Memento filter's hashing, Aleph filter's variable-length fingerprints, and Zeno filter's Stretching; mementos removed. One fingerprint per slot. With growth coefficient `r` (ctor arg, default 1 = plain doubling) `Expand` grows by `2^(1/r)`, mapping base bucket `i` to `floor(i * 2^(epoch/r))`; only the `r`-th expansion of a *period* trades a fingerprint bit for a bucket-index bit. `CountSlotsAfterExpansion`/`CountSlotsAfterContraction` predict either without building the table, for callers that decide on a resize before making it. |
+| `SublimeMG.hpp` | Sublime_MG: a `FingerprintTable` with counters enabled, so counter `i` is the count of the fingerprint in slot `i`. `Insert` applies all three Misra-Gries cases; `Query` sums the *chain* of matching fingerprints and takes `lazy_decrement_` off once. Case-3 insertions batch into a `B`-entry buffer; a flush takes one pass for the `B` smallest chain sums, replays the batch against them, and sweeps up everything the decrement emptied. Expansion is driven by the size function `expansion_f` handed to the constructor, as in the other Sublime sketches; `template <bool expand_on_error_inducing_insertions = true>` picks whether that size function is read against the insertions that matched nothing or against every insertion — the two Sublime_MG "versions". See the Sublime_MG section above. |
+| `FingerprintTable.hpp` | Compact hash table for Sublime_MG (and, fixed-size, for `MGHeap`): an RSQF with Memento filter's hashing, Aleph filter's variable-length fingerprints, and Zeno filter's Stretching; mementos removed. Carries an optional `SlotMirror` sidecar (`AttachMirror`) plus `HomeBucket`/`ForEachSlotInRun`, all used only by `MGHeap`. One fingerprint per slot. With growth coefficient `r` (ctor arg, default 1 = plain doubling) `Expand` grows by `2^(1/r)`, mapping base bucket `i` to `floor(i * 2^(epoch/r))`; only the `r`-th expansion of a *period* trades a fingerprint bit for a bucket-index bit. `CountSlotsAfterExpansion`/`CountSlotsAfterContraction` predict either without building the table, for callers that decide on a resize before making it. |
 | `util.hpp`, `MurmurHash.hpp` | `BITMASK`/`MAX_VALUE`, `bit_rank`/`bit_select`, `fast_reduce`, extension-length lookup table. |
 
 Public API on every Sublime variant: `Insert`, `Delete`, `Query`, `Size`, `FlushPrefetchQueue`.

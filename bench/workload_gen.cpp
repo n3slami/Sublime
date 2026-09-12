@@ -234,10 +234,33 @@ void expand_bench(argparse::ArgumentParser& parser) {
     std::shuffle(int_keys.begin(), int_keys.end(), rng);
 
     WorkloadIO wio(parser.get<std::string>("--output-file"), WorkloadIO::iomode::Write, is_string);
-    const uint32_t measurement_period = parser.get<uint64_t>("--measurement-period");
-    for (uint32_t i = 0; i + measurement_period <= std::max(keys.size(), int_keys.size()); i += measurement_period) {
+    const uint64_t measurement_period = parser.get<uint64_t>("--measurement-period");
+    const bool dense_start = parser.get<bool>("--dense-start");
+    const uint64_t total = std::max(keys.size(), int_keys.size());
+
+    // The stream positions at which to take an accuracy checkpoint. With
+    // `--dense-start` a handful of geometrically-growing early checkpoints are
+    // taken before the regular fixed-period ones, so that the first checkpoint
+    // lands before any expansion -- every sketch is still at its initial size
+    // there, making the common starting memory visible on the plot.
+    std::vector<uint64_t> checkpoints;
+    if (dense_start) {
+        // Absolute doubling checkpoints, so a power-of-two initial memory budget
+        // (e.g. 2^15 bytes) lands exactly on a checkpoint -- that is where the
+        // fixed baselines sit at one byte per key.
+        for (uint64_t cp = 2048; cp < measurement_period && cp <= total; cp *= 2)
+            checkpoints.push_back(cp);
+    }
+    uint64_t pos = checkpoints.empty() ? 0 : checkpoints.back();
+    while (pos + measurement_period <= total) {
+        pos += measurement_period;
+        checkpoints.push_back(pos);
+    }
+
+    uint64_t start = 0;
+    for (uint64_t end : checkpoints) {
         wio.Timer('i');
-        for (uint32_t j = i; j < i + measurement_period; j++) {
+        for (uint64_t j = start; j < end; j++) {
             if (is_string)
                 wio.Insert(keys[j]);
             else
@@ -245,6 +268,7 @@ void expand_bench(argparse::ArgumentParser& parser) {
         }
         wio.Timer('i');
         wio.Flush();
+        start = end;
     }
 }
 
@@ -412,6 +436,12 @@ int main(int argc, char const *argv[]) {
             .default_value(static_cast<uint32_t>(13))
             .scan<'u', uint32_t>()
             .nargs(1);
+
+    parser.add_argument("--dense-start")
+            .help("For expand workloads: add geometrically-spaced early checkpoints so a growing "
+                  "sketch and the fixed baselines share a visible common starting memory")
+            .default_value(false)
+            .implicit_value(true);
 
     parser.add_argument("--seed")
             .help("The seed used for random number generation")

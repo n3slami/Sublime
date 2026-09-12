@@ -43,8 +43,12 @@ SKETCHES_STYLE_KWARGS = {"SublimeCMS": {"marker": 'v', "color": "fuchsia", "zord
                          "l1SizeFunction": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "No. of Keys"},
                          "l2SizeFunction": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Variance", "linestyle": ":"},
                          "SublimeMG": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{MG}"},
-                         "SublimeMG_error": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{MG} (Error-Inducing)"},
-                         "SublimeMG_total": {"marker": '^', "color": "purple", "zorder": 11, "label": "Sublime\\textsubscript{MG} (Stream Length)", "linestyle": "--"},
+                         "SublimeMG_error_0.50": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{MG} (Error-Inducing)", "linestyle": "-"},
+                         "SublimeMG_error_0.75": {"marker": 'v', "color": "fuchsia", "zorder": 12, "linestyle": "--"},
+                         "SublimeMG_error_1.00": {"marker": 'v', "color": "fuchsia", "zorder": 12, "linestyle": ":"},
+                         "SublimeMG_total_0.50": {"marker": '^', "color": "purple", "zorder": 11, "label": "Sublime\\textsubscript{MG} (Stream Length)", "linestyle": "-"},
+                         "SublimeMG_total_0.75": {"marker": '^', "color": "purple", "zorder": 11, "linestyle": "--"},
+                         "SublimeMG_total_1.00": {"marker": '^', "color": "purple", "zorder": 11, "linestyle": ":"},
                          "MGHeap": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "Misra-Gries"},
                          "SpaceSaving": {"marker": 's', "color": "C2", "zorder": 9, "label": "Space-Saving"},
                          "CMS": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CMS"},
@@ -773,19 +777,28 @@ def plot_join_size(result_dir, output_dir):
 def plot_mg_accuracy(result_dir, output_dir):
     LEGEND_FONT_SIZE = 10
     LABEL_FONT_SIZE = 10
+    # Sized so each of the three rows is the same panel width/height as a full
+    # (ratio-1) row of the original Sublime_CMS accuracy figure (WIDTH 7.75,
+    # HEIGHT 5.0 over height ratios [1, 1, 0.2, 0.75], wspace 0.25, hspace 0.12).
     WIDTH = 7.75
-    HEIGHT = 4.4
+    HEIGHT = 5.04
 
     workloads = ["kosarak", "webdocs", "caida"]
     workload_subdir = Path("mg_accuracy_bench")
     sketches = ["SublimeMG", "MGHeap", "SpaceSaving", "Waving"]
-    memory_powers = {"caida": range(17, 23), "kosarak": range(13, 19), "webdocs": range(17, 23)}
+    memory_powers = {"caida": range(17, 23), "kosarak": range(14, 19), "webdocs": range(17, 23)}
     memory_footprints = {w: [2 ** i for i in memory_powers[w]] for w in workloads}
 
     fig, axes = plt.subplots(nrows=3, ncols=3, sharex="col", figsize=(WIDTH, HEIGHT))
+    for row in (1, 2):                                  # Share the insert/query rows' y across datasets.
+        axes[row][1].sharey(axes[row][0])
+        axes[row][2].sharey(axes[row][0])
+        axes[row][1].tick_params(labelleft=True)        # ...but keep the tick labels on every column.
+        axes[row][2].tick_params(labelleft=True)
 
     result_found = False
     p99_data = {w: {s: {} for s in sketches} for w in workloads}
+    vale_params = {w: {} for w in workloads}            # (counters-per-chunk, stub-length) for SublimeMG.
     for i, workload in enumerate(workloads):
         aae = {s: [] for s in sketches}
         insert = {s: [] for s in sketches}
@@ -803,6 +816,8 @@ def plot_mg_accuracy(result_dir, output_dir):
                 insert[sketch].append((result["size"], result["time_i"] / result["n_keys"] * 1000.0))
                 query[sketch].append((result["size"], result["time_q"] / result["n_unique_keys"] * 1000.0))
                 p99_data[workload][sketch][memory_footprint] = result.get("p99", 0)
+                if sketch == "SublimeMG" and "counters_per_chunk" in result:
+                    vale_params[workload][memory_footprint] = (result["counters_per_chunk"], result["stub_length"])
         for sketch in sketches:
             if not aae[sketch]:
                 continue
@@ -815,17 +830,28 @@ def plot_mg_accuracy(result_dir, output_dir):
         logging.info(inspect.stack()[0][3][5:] + ": Figure not generated due to no benchmark results being found to include")
         return
 
+    memory_footprint_labels = {w: [f"${2 ** (p - 20)}$" if p >= 20 else f"$1/{2 ** (20 - p)}$"
+                                   for p in memory_powers[w]] for w in workloads}
     for i, workload in enumerate(workloads):
         for row in range(3):
             axes[row][i].set_xscale("log")
             axes[row][i].margins(0.04)
-        axes[0][i].set_yscale("symlog", linthresh=1e0)
+        axes[0][i].set_yscale("symlog", linthresh=1e1)
+        axes[0][i].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
+        axes[1][i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(10))
+        axes[2][i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(5))
         axes[0][i].set_title(DATASET_NAMES[workload], fontsize=LABEL_FONT_SIZE + 1)
-        axes[2][i].set_xlabel("Memory [B]", fontsize=LABEL_FONT_SIZE)
+        axes[2][i].set_xlabel("Memory [MB]", fontsize=LABEL_FONT_SIZE)
+        axes[2][i].xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+        axes[2][i].set_xticks(memory_footprints[workload])
+        axes[2][i].set_xticklabels(memory_footprint_labels[workload], fontsize=LABEL_FONT_SIZE - 2)
+        axes[2][i].set_xlim(memory_footprints[workload][0] / 1.1, 1.1 * memory_footprints[workload][-1])
+    axes[1][0].set_ylim(bottom=0)                       # Shared -> applies across the insert row.
+    axes[2][0].set_ylim(bottom=0)                       # Shared -> applies across the query row.
     axes[0][0].set_ylabel("AAE", fontsize=LABEL_FONT_SIZE)
-    axes[1][0].set_ylabel("Insert [ns]", fontsize=LABEL_FONT_SIZE)
-    axes[2][0].set_ylabel("Query [ns]", fontsize=LABEL_FONT_SIZE)
-    fig.subplots_adjust(hspace=0.18, wspace=0.28)
+    axes[1][0].set_ylabel("Insert Latency [ns]", fontsize=LABEL_FONT_SIZE)
+    axes[2][0].set_ylabel("Query Latency [ns]", fontsize=LABEL_FONT_SIZE)
+    fig.subplots_adjust(hspace=0.12, wspace=0.25)
 
     legend_lines, legend_labels = axes[0][0].get_legend_handles_labels()
     axes[0][1].legend(legend_lines, legend_labels, loc="lower center", bbox_to_anchor=(0.5, 1.18),
@@ -843,18 +869,40 @@ def plot_mg_accuracy(result_dir, output_dir):
                 table.write(" & ".join([DATASET_NAMES[workload], str(memory_footprint)] + cells) + " \\\\ \n")
         table.writelines(["\\bottomrule \n", "\\end{tabular} \n"])
 
+    # The final VALE tuning (c = counters per chunk, s = stub length) SublimeMG
+    # settled on at each memory budget, as in the Sublime_CMS accuracy figure.
+    all_memory_footprints = sorted({mf for w in workloads for mf in memory_footprints[w]})
+    with open(output_dir / f"{inspect.stack()[0][3][5:]}_vale_table_(Fig_17).tex", 'w') as table:
+        table.writelines(["\\begin{tabular}[b]{" + 'c' * (2 * len(workloads) + 1) + "} \n", "\\toprule \n",
+                          " & ".join(["\\multirow{2}{*}{Memory [MB]}"]
+                                     + ["\\multicolumn{2}{c}{" + DATASET_NAMES[w] + "}" for w in workloads]) + " \\\\ \n",
+                          " & ".join([""] + ["$c$", "$s$"] * len(workloads)) + " \\\\ \n",
+                          "\\midrule \n"])
+        for memory_footprint in all_memory_footprints:
+            memory_power = math.ceil(math.log(memory_footprint, 2))
+            memory_label = f"{2 ** (memory_power - 20)}" if memory_power >= 20 else f"1/{2 ** (20 - memory_power)}"
+            line = memory_label
+            for workload in workloads:
+                cs = vale_params[workload].get(memory_footprint)
+                line += f" & {cs[0]} & {cs[1]}" if cs is not None else " & - & -"
+            table.write(line + " \\\\ \n")
+        table.writelines(["\\bottomrule \n", "\\end{tabular} \n"])
+
 
 def plot_mg_expansion(result_dir, output_dir):
     LEGEND_FONT_SIZE = 9
     LABEL_FONT_SIZE = 10
     HEIGHT = 1.55
-    WH_RATIO = 2.65 / 1.6
+    WH_RATIO = 3.2 / 1.6
     WIDTH = 2 * HEIGHT * WH_RATIO
 
     workload_subdir = Path("mg_expansion_bench")
     START_MEMORY = 2 ** 15
-    POWER = 0.75                                    # The representative power plotted.
-    workload_candidates = ["webdocs_expand", "caida_expand"]
+    # The size-function power is swept, encoded by line style: 0.5 solid, 0.75
+    # dashed, 1.0 dotted (as in the Sublime_CMS expansion figure).
+    size_function_powers = [0.5, 0.75, 1.0]
+    measures = ["error", "total"]
+    workload_candidates = ["webdocs_mg_expand", "caida_mg_expand", "webdocs_expand", "caida_expand"]
 
     workload = None
     for candidate in workload_candidates:
@@ -865,11 +913,12 @@ def plot_mg_expansion(result_dir, output_dir):
         logging.info(inspect.stack()[0][3][5:] + ": Figure not generated due to no benchmark results being found to include")
         return
 
-    series = {
-        "SublimeMG_error": result_dir / workload_subdir / Path(f"SublimeMG_{START_MEMORY}_error_{POWER:.2f}_{workload}.json"),
-        "SublimeMG_total": result_dir / workload_subdir / Path(f"SublimeMG_{START_MEMORY}_total_{POWER:.2f}_{workload}.json"),
-        "MGHeap": result_dir / workload_subdir / Path(f"MGHeap_{START_MEMORY}_{workload}.json"),
-    }
+    series = {}
+    for measure in measures:
+        for power in size_function_powers:
+            series[f"SublimeMG_{measure}_{power:.2f}"] = result_dir / workload_subdir / \
+                Path(f"SublimeMG_{START_MEMORY}_{measure}_{power:.2f}_{workload}.json")
+    series["MGHeap"] = result_dir / workload_subdir / Path(f"MGHeap_{START_MEMORY}_{workload}.json")
 
     fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(WIDTH, HEIGHT))
     aae_data = {s: [] for s in series}
@@ -882,6 +931,11 @@ def plot_mg_expansion(result_dir, output_dir):
             if len(contents) == 0:
                 continue
             results = json.loads("[" + fix_file_contents(contents[:-2]) + "]")
+            # Start the plot where the fixed baselines sit at one byte per key
+            # (n = START_MEMORY), dropping the extreme early points, then subsample.
+            results = [r for r in results if r["n_keys"] >= START_MEMORY]
+            if len(results) < 2:
+                continue
             results = [results[2 ** i - 1] for i in range(math.ceil(math.log(len(results), 2)) - 1)] + results[-1:]
             for result in results:
                 aae_data[sketch].append((result["n_keys"], max(result["aae"], 1e-2)))
@@ -896,18 +950,84 @@ def plot_mg_expansion(result_dir, output_dir):
         axes[1].plot(*zip(*mem_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
 
     for ax in axes.flatten():
+        ax.set_xscale("log")
+        ax.set_yscale("log")
         ax.autoscale_view()
         ax.margins(0.04)
         ax.set_xlabel("No. of Keys", fontsize=LABEL_FONT_SIZE)
-        ax.set_xscale("log")
-        ax.set_yscale("log")
+        # All major decades, plus minor ticks, on both the x and y log axes.
+        ax.yaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10, numticks=15))
+        ax.yaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs="auto", numticks=15))
+        ax.xaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10, numticks=15))
+        ax.xaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, subs="auto", numticks=15))
+        # A little (~2pt) padding below the lowest data so bottom markers breathe.
+        ylo, yhi = ax.get_ylim()
+        axes_height_pt = fig.get_size_inches()[1] * ax.get_position().height * 72
+        pad = 2.0 / axes_height_pt * (math.log10(yhi) - math.log10(ylo))
+        ax.set_ylim(10 ** (math.log10(ylo) - pad), yhi)
     axes[0].set_ylabel("AAE", fontsize=LABEL_FONT_SIZE)
     axes[1].set_ylabel("Memory [B/Key]", fontsize=LABEL_FONT_SIZE)
+
+    # Label the size-function power on each panel, on both the error and total
+    # lines, in a single column just inside the axes. The labels are spread in
+    # log-y with a minimum gap (and clamped to the axis) so that no two overlap,
+    # even where lines coincide (e.g. the identical power-0.5 error/total lines).
+    for ax, data in ((axes[0], aae_data), (axes[1], mem_data)):
+        xmin, xmax = ax.get_xlim()
+        ax.set_xlim(xmin, xmax * 2.3)
+        ylo, yhi = (math.log10(v) for v in ax.get_ylim())
+        entries, label_x = [], 0.0
+        for measure in measures:
+            for power in size_function_powers:
+                sketch = f"SublimeMG_{measure}_{power:.2f}"
+                if not data[sketch]:
+                    continue
+                x, y = data[sketch][-1]
+                label_x = max(label_x, x)
+                entries.append([math.log10(y), f"${power:.2f}$", SKETCHES_STYLE_KWARGS[sketch]["color"],
+                                f"{measure}_{power:.2f}"])
+        entries.sort()
+        # Just-enough vertical gap so coincident labels stack almost touching
+        # (~2pt apart): convert the target point spacing to log-y using the axes
+        # height, rather than a fixed fraction of the range.
+        FONT_PT = 0.68 * LABEL_FONT_SIZE
+        axes_height_pt = fig.get_size_inches()[1] * ax.get_position().height * 72
+        gap = (0.72 * FONT_PT + 1) / axes_height_pt * (yhi - ylo)
+        gap = min(gap, 0.9 * (yhi - ylo) / max(len(entries) - 1, 1))
+        for i in range(1, len(entries)):                # Push overlapping labels up.
+            entries[i][0] = max(entries[i][0], entries[i - 1][0] + gap)
+        if entries and entries[-1][0] > yhi:            # Clamp to the top, push the rest down.
+            entries[-1][0] = yhi
+            for i in range(len(entries) - 2, -1, -1):
+                entries[i][0] = min(entries[i][0], entries[i + 1][0] - gap)
+        # Shift each stacked (coincident) pair/group down by ~4pt so it sits
+        # centred on its lines rather than pushed above them.
+        shift = 4.0 / axes_height_pt * (yhi - ylo)
+        i = 0
+        while i < len(entries):
+            j = i
+            while j + 1 < len(entries) and entries[j + 1][0] - entries[j][0] <= gap * 1.05:
+                j += 1
+            if j > i:
+                for k in range(i, j + 1):
+                    entries[k][0] -= shift
+            i = j + 1
+        # On the AAE panel, nudge the error-version 0.75 label up ~2pt.
+        if ax is axes[0]:
+            for e in entries:
+                if e[3] == "error_0.75":
+                    e[0] += 2.0 / axes_height_pt * (yhi - ylo)
+        # Extra horizontal clearance so the plotted lines never occlude the text.
+        for logy, text, color, _ in entries:
+            ax.annotate(text, (label_x * 1.32, 10 ** logy), fontsize=0.68 * LABEL_FONT_SIZE,
+                        va="center", ha="left", color=color)
     fig.subplots_adjust(wspace=0.4)
 
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
-    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.05, 1.42),
-                   fancybox=True, shadow=False, ncol=2, fontsize=LEGEND_FONT_SIZE, frameon=False)
+    axes_h_pt = fig.get_size_inches()[1] * axes[0].get_position().height * 72
+    axes[0].legend(legend_lines, legend_labels, loc="lower center",
+                   bbox_to_anchor=(1.1, 1.0 + 2.0 / axes_h_pt),
+                   fancybox=True, shadow=False, ncol=3, fontsize=LEGEND_FONT_SIZE, frameon=False)
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_18).pdf"), bbox_inches="tight", pad_inches=0.01)
 
 

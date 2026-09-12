@@ -267,8 +267,34 @@ generate_expand() {
     if ! test -f webdocs_expand; then
         echo "    [++] generating webdocs_expand "
         $WORKLOAD_GEN_PATH -t expand --measurement-period 5000000 --fdist real $REAL_DATASETS_PATH/webdocs.dat --key-len-binary 0 -o webdocs_expand
-    else 
+    else
         echo "    [--] webdocs_expand already generated"
+    fi
+
+    if [[ "$FIGURES" == *"mg_expansion"* ]]; then
+        # Dense-start variants for the Sublime_MG expansion figure: extra early
+        # checkpoints so a growing sketch and the fixed baselines share a visible
+        # common starting memory.
+        caida_fdist=""
+        for i in $(seq 0 10); do
+            if test -f $REAL_DATASETS_PATH/$i.dat; then
+                caida_fdist="$caida_fdist real $REAL_DATASETS_PATH/$i.dat"
+            else
+                caida_fdist="$caida_fdist real $REAL_DATASETS_PATH/0.dat"
+            fi
+        done
+        if ! test -f caida_mg_expand; then
+            echo "    [++] generating caida_mg_expand "
+            $WORKLOAD_GEN_PATH -t expand --measurement-period 200000 --fdist $caida_fdist --dense-start -o caida_mg_expand
+        else
+            echo "    [--] caida_mg_expand already generated"
+        fi
+        if ! test -f webdocs_mg_expand; then
+            echo "    [++] generating webdocs_mg_expand "
+            $WORKLOAD_GEN_PATH -t expand --measurement-period 5000000 --fdist real $REAL_DATASETS_PATH/webdocs.dat --key-len-binary 0 --dense-start -o webdocs_mg_expand
+        else
+            echo "    [--] webdocs_mg_expand already generated"
+        fi
     fi
 }
 

@@ -101,6 +101,8 @@ inline std::unordered_map<std::string, uint32_t> get_extra_parameters(SublimeMG<
     res["monitored"] = sketch->CountMonitored();
     res["capacity"] = sketch->Capacity();
     res["error_inducing"] = sketch->CountErrorInducingInsertions();
+    res["counters_per_chunk"] = sketch->Counters().GetCountersPerChunk();
+    res["stub_length"] = sketch->Counters().GetStubLength();
     return res;
 }
 
@@ -135,6 +137,9 @@ int main(int argc, char const *argv[]) {
     parser.add_argument("--expand-measure")
             .help("what the size function is tested against: 'error' (error-inducing insertions) or 'total'")
             .nargs(1).default_value(std::string("error"));
+    parser.add_argument("--seed")
+            .help("hash seed; 0 (the default) uses a time-based seed")
+            .nargs(1).default_value(static_cast<uint32_t>(0)).scan<'u', uint32_t>();
 
     try {
         parser.parse_args(argc, argv);
@@ -150,7 +155,9 @@ int main(int argc, char const *argv[]) {
 
     g_fingerprint_length = parser.get<uint32_t>("--fingerprint-length");
     g_growth_coefficient = parser.get<uint32_t>("--growth-coefficient");
-    g_seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now())
+    g_seed = parser.get<uint32_t>("--seed");
+    if (g_seed == 0)
+        g_seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now())
                     .time_since_epoch().count();
 
     const double power = parser.get<double>("--size-function-power");

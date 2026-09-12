@@ -74,6 +74,9 @@ int main(int argc, char const *argv[]) {
     parser.add_argument("--fingerprint-length")
             .help("the length, in bits, of a stored fingerprint")
             .nargs(1).default_value(static_cast<uint32_t>(10)).scan<'u', uint32_t>();
+    parser.add_argument("--seed")
+            .help("hash seed; 0 (the default) uses a time-based seed")
+            .nargs(1).default_value(static_cast<uint32_t>(0)).scan<'u', uint32_t>();
 
     try {
         parser.parse_args(argc, argv);
@@ -87,7 +90,9 @@ int main(int argc, char const *argv[]) {
     auto memory_budgets = parser.get<std::vector<uint64_t>>("arg");
     read_workload(parser.get<std::string>("--workload"));
     g_fingerprint_length = parser.get<uint32_t>("--fingerprint-length");
-    g_seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now())
+    g_seed = parser.get<uint32_t>("--seed");
+    if (g_seed == 0)
+        g_seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now())
                     .time_since_epoch().count();
 
     const uint64_t nslots = nslots_for_budget(memory_budgets[0]);
