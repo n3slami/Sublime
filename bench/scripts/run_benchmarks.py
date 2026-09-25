@@ -260,7 +260,7 @@ def mg_expansion_bench():
     # SublimeMG starts here and grows; MGHeap holds this size for the whole stream.
     START_MEMORY = 2 ** 15
     MGHEAP_MEMORY = 2 ** 15
-    FINGERPRINT_LENGTH = 20                 # Longer fingerprints cut collision over-estimation.
+    FINGERPRINT_LENGTH = 32                 # The sketches' default; long fingerprints cut collision over-estimation.
     SEED = 12345                            # Fixed so error and total are the same run bar the measure.
     size_function_powers = [0.5, 0.75, 1.0]
     # Mults are shared between the two measures at each power (W(N) =

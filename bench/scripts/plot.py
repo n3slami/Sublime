@@ -43,13 +43,13 @@ SKETCHES_STYLE_KWARGS = {"SublimeCMS": {"marker": 'v', "color": "fuchsia", "zord
                          "l1SizeFunction": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "No. of Keys"},
                          "l2SizeFunction": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Variance", "linestyle": ":"},
                          "SublimeMG": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{MG}"},
-                         "SublimeMG_error_0.50": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{MG} (Error-Inducing)", "linestyle": "-"},
+                         "SublimeMG_error_0.50": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{MG}", "linestyle": "-"},
                          "SublimeMG_error_0.75": {"marker": 'v', "color": "fuchsia", "zorder": 12, "linestyle": "--"},
                          "SublimeMG_error_1.00": {"marker": 'v', "color": "fuchsia", "zorder": 12, "linestyle": ":"},
                          "SublimeMG_total_0.50": {"marker": '^', "color": "purple", "zorder": 11, "label": "Sublime\\textsubscript{MG} (Stream Length)", "linestyle": "-"},
                          "SublimeMG_total_0.75": {"marker": '^', "color": "purple", "zorder": 11, "linestyle": "--"},
                          "SublimeMG_total_1.00": {"marker": '^', "color": "purple", "zorder": 11, "linestyle": ":"},
-                         "MGHeap": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "Misra-Gries"},
+                         "MGHeap": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "MG"},
                          "SpaceSaving": {"marker": 's', "color": "C2", "zorder": 9, "label": "Space-Saving"},
                          "CMS": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CMS"},
                          "CMS_Over": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CMS (Overestimated)", "linestyle": ":"},
@@ -782,6 +782,11 @@ def plot_mg_accuracy(result_dir, output_dir):
     # HEIGHT 5.0 over height ratios [1, 1, 0.2, 0.75], wspace 0.25, hspace 0.12).
     WIDTH = 7.75
     HEIGHT = 5.04
+    # The AAE axis is logarithmic, which has no room for the exact answers
+    # (AAE 0) a summary large enough to monitor every key gives. Those are
+    # clamped to the floor so the line still reaches its last budget, the same
+    # convention the Sublime_MG expansion figure uses.
+    AAE_FLOOR = 1e-2
 
     workloads = ["kosarak", "webdocs", "caida"]
     workload_subdir = Path("mg_accuracy_bench")
@@ -812,7 +817,7 @@ def plot_mg_accuracy(result_dir, output_dir):
                 if len(contents) == 0:
                     continue
                 result = json.loads("[" + fix_file_contents(contents[:-2]) + "]")[-1]
-                aae[sketch].append((result["size"], result["aae"]))
+                aae[sketch].append((result["size"], max(result["aae"], AAE_FLOOR)))
                 insert[sketch].append((result["size"], result["time_i"] / result["n_keys"] * 1000.0))
                 query[sketch].append((result["size"], result["time_q"] / result["n_unique_keys"] * 1000.0))
                 p99_data[workload][sketch][memory_footprint] = result.get("p99", 0)
@@ -836,8 +841,12 @@ def plot_mg_accuracy(result_dir, output_dir):
         for row in range(3):
             axes[row][i].set_xscale("log")
             axes[row][i].margins(0.04)
-        axes[0][i].set_yscale("symlog", linthresh=1e1)
-        axes[0][i].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
+        axes[0][i].set_yscale("log")
+        # An explicit `numticks` on the major locator too: the default one
+        # thins the decades out once a panel spans more than a few (Kosarak
+        # runs from the AAE floor to ~1e3), dropping every other label.
+        axes[0][i].yaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10, numticks=15))
+        axes[0][i].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, numticks=15, subs="auto"))
         axes[1][i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(10))
         axes[2][i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(5))
         axes[0][i].set_title(DATASET_NAMES[workload], fontsize=LABEL_FONT_SIZE + 1)

@@ -10,8 +10,9 @@
 
 using sublime::SublimeMG;
 
-static uint32_t g_fingerprint_length = 10;
+static uint32_t g_fingerprint_length = 32;
 static uint32_t g_growth_coefficient = 1;
+static uint64_t g_buffer_capacity = SublimeMG<>::default_buffer_capacity;
 static std::function<uint64_t(double)> g_size_function;
 static uint32_t g_seed = 0;
 
@@ -34,7 +35,8 @@ template <bool E>
 static uint64_t nslots_for_budget(uint64_t budget) {
     const auto size_at = [&](uint64_t nslots) {
         SublimeMG<E> probe(nslots, key_bits_for(nslots, g_fingerprint_length),
-                           SublimeMG<E>::hashmode::Default, 1, g_growth_coefficient);
+                           SublimeMG<E>::hashmode::Default, 1, g_growth_coefficient,
+                           g_buffer_capacity);
         return probe.SizeInBytes();
     };
     uint64_t lo = 16, hi = 16;
@@ -103,6 +105,7 @@ inline std::unordered_map<std::string, uint32_t> get_extra_parameters(SublimeMG<
     res["error_inducing"] = sketch->CountErrorInducingInsertions();
     res["counters_per_chunk"] = sketch->Counters().GetCountersPerChunk();
     res["stub_length"] = sketch->Counters().GetStubLength();
+    res["buffer_capacity"] = sketch->GetBufferCapacity();
     return res;
 }
 
@@ -111,8 +114,7 @@ static void run(uint64_t budget) {
     const uint64_t nslots = nslots_for_budget<E>(budget);
     auto *sketch = new SublimeMG<E>(nslots, key_bits_for(nslots, g_fingerprint_length),
                                     SublimeMG<E>::hashmode::Default, g_seed,
-                                    g_growth_coefficient,
-                                    SublimeMG<E>::default_buffer_capacity,
+                                    g_growth_coefficient, g_buffer_capacity,
                                     g_size_function);
     top_aae_are_count = sketch->Capacity();
     if (wio.StringKeys())
@@ -130,13 +132,17 @@ int main(int argc, char const *argv[]) {
     auto parser = init_parser("bench-SublimeMG");
     parser.add_argument("--fingerprint-length")
             .help("the length, in bits, of a stored fingerprint")
-            .nargs(1).default_value(static_cast<uint32_t>(10)).scan<'u', uint32_t>();
+            .nargs(1).default_value(static_cast<uint32_t>(32)).scan<'u', uint32_t>();
     parser.add_argument("--growth-coefficient")
             .help("r: expansions before a full doubling")
             .nargs(1).default_value(static_cast<uint32_t>(1)).scan<'u', uint32_t>();
     parser.add_argument("--expand-measure")
             .help("what the size function is tested against: 'error' (error-inducing insertions) or 'total'")
             .nargs(1).default_value(std::string("error"));
+    parser.add_argument("--buffer-capacity")
+            .help("B: how many case-3 insertions batch up before a flush")
+            .nargs(1).default_value(static_cast<uint64_t>(SublimeMG<>::default_buffer_capacity))
+            .scan<'u', uint64_t>();
     parser.add_argument("--seed")
             .help("hash seed; 0 (the default) uses a time-based seed")
             .nargs(1).default_value(static_cast<uint32_t>(0)).scan<'u', uint32_t>();
@@ -155,6 +161,7 @@ int main(int argc, char const *argv[]) {
 
     g_fingerprint_length = parser.get<uint32_t>("--fingerprint-length");
     g_growth_coefficient = parser.get<uint32_t>("--growth-coefficient");
+    g_buffer_capacity = parser.get<uint64_t>("--buffer-capacity");
     g_seed = parser.get<uint32_t>("--seed");
     if (g_seed == 0)
         g_seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now())

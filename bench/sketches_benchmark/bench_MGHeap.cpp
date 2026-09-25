@@ -8,7 +8,7 @@
 
 using sublime::MGHeap;
 
-static uint32_t g_fingerprint_length = 10;
+static uint32_t g_fingerprint_length = MGHeap::default_fingerprint_length;
 static uint32_t g_seed = 0;
 
 static inline uint64_t hash_string(const std::string& key) {
@@ -73,7 +73,8 @@ int main(int argc, char const *argv[]) {
     auto parser = init_parser("bench-MGHeap");
     parser.add_argument("--fingerprint-length")
             .help("the length, in bits, of a stored fingerprint")
-            .nargs(1).default_value(static_cast<uint32_t>(10)).scan<'u', uint32_t>();
+            .nargs(1).default_value(static_cast<uint32_t>(MGHeap::default_fingerprint_length))
+            .scan<'u', uint32_t>();
     parser.add_argument("--seed")
             .help("hash seed; 0 (the default) uses a time-based seed")
             .nargs(1).default_value(static_cast<uint32_t>(0)).scan<'u', uint32_t>();

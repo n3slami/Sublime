@@ -239,13 +239,17 @@ The glue and two experiments are implemented: `bench/sketches_benchmark/bench_Su
 `compile_bench` branches. **`MGDummy` was removed** in favour of the two fair baselines below.
 
 **Baselines** (`mg_accuracy`, Fig. 17): `MGHeap` — a classic heap-based Misra-Gries whose
-monitored set is a fixed-size RSQF `FingerprintTable` (10-bit fingerprints by default) with a
+monitored set is a fixed-size RSQF `FingerprintTable` (32-bit fingerprints by default) with a
 plain 32-bit counter array and a packed per-slot `heap_offset` array, plus an accurate
 `(count, home_bucket)` min-heap; and `SpaceSaving` — a textbook Stream-Summary storing full
 64-bit keys, deliberately pointer-heavy. Plus `Waving`. All fixed-size. See the `MGHeap` /
-`SpaceSaving` rows in the architecture table. Note the two figures run at different fingerprint
-lengths: `mg_accuracy` uses the default 10-bit, `mg_expansion` overrides to 20-bit (`--seed` is
-also fixed for both).
+`SpaceSaving` rows in the architecture table. Both figures run at the sketches' default
+fingerprint length, 32 bits (`MGHeap::default_fingerprint_length`, which `bench_SublimeMG`'s own
+default matches); `--seed` is fixed for both. Note what the length costs: a wider slot roughly
+halves capacity per byte (Sublime_MG at 128 KB monitors 21.7k keys against 45.7k at 10 bits, and
+its capacity lead over `MGHeap` falls from ~6x to ~3.3x), which on these datasets outweighs the
+collision over-estimation the longer fingerprint removes -- Sublime_MG's AAE is worse at 32 bits
+than at 10 nearly everywhere, though still well ahead of every baseline.
 
 The **`FingerprintTable::SlotMirror`** hook (`AttachMirror`) is what lets `MGHeap` keep its
 plain counter + packed-offset arrays aligned as RSQF slots shift: the table calls the sidecar
@@ -270,7 +274,7 @@ Glue rules that bite (all handled in the committed benches):
   error) curves.
 - **String workloads (CAIDA)** are hashed to `uint64` in the glue and passed with
   `flag_key_is_hash`; int workloads (kosarak, webdocs) go in raw under `hashmode::Default`.
-- New flags on `bench_SublimeMG`: `--fingerprint-length` (default 10), `--growth-coefficient`
+- New flags on `bench_SublimeMG`: `--fingerprint-length` (default 32), `--growth-coefficient`
   (`r`), `--expand-measure error|total` (picks `SublimeMG<true>`/`<false>` at runtime), and
   `--seed` (0 = time-based; `bench_MGHeap` also takes `--fingerprint-length`/`--seed`). The
   benches also report their final VALE tuning (`counters_per_chunk`, `stub_length`) as extra
@@ -278,15 +282,15 @@ Glue rules that bite (all handled in the committed benches):
 
 **`mg_expansion` (Fig. 18)** shows Sublime_MG improving accuracy across expansions and the memory
 win of the error-inducing measure. It plots `SublimeMG<error>` and `SublimeMG<total>` (both
-expanding from a small budget with **20-bit fingerprints**, `r = 4`, a fixed `--seed`) against a
-fixed-size `MGHeap` that just ingests to the end of the stream. The size-function **power is
-swept** (0.5 solid, 0.75 dashed, 1.0 dotted, as in the CMS expansion figure) for both measures,
-each labelled with its power. **The mult is shared between the two measures at each power** --
+expanding from a small budget with the default **32-bit fingerprints**, `r = 4`, a fixed
+`--seed`) against a fixed-size `MGHeap` that just ingests to the end of the stream. The
+size-function **power is swept** (0.5 solid, 0.75 dashed, 1.0 dotted, as in the CMS expansion
+figure) for both measures, each labelled with its power. **The mult is shared between the two measures at each power** --
 `W(N) = (N/mult)^power` -- which is what guarantees `error <= total`: error-inducing insertions
 are a subset of all insertions, so the same size function never expands error more than total.
-(Per-measure mults break that; a fixed seed makes the invariant hold bit-exactly.) On WebDocs at
-power 1.0, `<error>` reaches AAE 3.2 at 6.5 MB while `<total>` needs 164 MB for AAE 0.06 -- ~25x
-less memory. Panels are AAE and Memory[B/key] vs number of keys.
+(Per-measure mults break that.) On WebDocs at power 1.0, `<error>` reaches AAE 3.3 at 8.4 MB
+while `<total>` needs 217 MB for AAE 0.017 -- ~26x less memory. Panels are AAE and
+Memory[B/key] vs number of keys.
 
 **Dense-start expand workloads.** Because the harness snapshots the whole ground-truth map at every
 checkpoint, the measurement period must stay coarse (a fine period on WebDocs OOMs), so the first
@@ -339,7 +343,7 @@ prevents, but the harness should not depend on it: run the mutant under `ulimit 
 The benchmark glue and both experiments are implemented (see "Benchmarking Sublime_MG"): `MGHeap`
 (7 `mg_heap` cases) and `SpaceSaving` (3 `space_saving` cases) are green under `ctest` and
 ASan-clean, built the same mutation-injection way. Both figures have been run on the real datasets
-and tuned (20-bit fingerprints, `r = 4`, per-power mults shared across the two measures, fixed
+and tuned (32-bit fingerprints, `r = 4`, per-power mults shared across the two measures, fixed
 seed), and the final Fig. 17/18 PDFs and their `.tex` tables generated. Nothing in the algorithm
 or the pipeline is left open.
 

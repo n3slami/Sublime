@@ -119,7 +119,7 @@ public:
     static constexpr int32_t err_no_space = FingerprintTable::err_no_space;
 
     /** The default length, in bits, of a stored fingerprint. */
-    static constexpr uint32_t default_fingerprint_length = 10;
+    static constexpr uint32_t default_fingerprint_length = 32;
 
     /**
      * @param nslots The number of slots the fingerprint table holds. `Capacity`
