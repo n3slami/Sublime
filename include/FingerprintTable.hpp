@@ -4,7 +4,7 @@
  * ============================================================================
  *
  *        FingerprintTable
- *          A compact hash table storing a multiset of variable-length
+ *          A compact hash table storing a multiset of fixed-length
  *          fingerprints. It is the building block of Sublime_MG, i.e., the
  *          Sublime framework applied to the Misra-Gries summary.
  *
@@ -18,9 +18,8 @@
  * ============================================================================
  *
  * This is a rank-and-select quotient filter (RSQF) with Memento filter's
- * hashing semantics, Aleph filter's variable-length fingerprints, and Zeno
- * filter's Stretching, but with all of Memento filter's memento/keepsake-box
- * machinery removed. Every stored item occupies exactly one slot holding just
+ * hashing semantics and Zeno filter's Stretching, but with all of Memento
+ * filter's memento/keepsake-box machinery removed. Every stored item occupies exactly one slot holding just
  * a fingerprint, which makes the run encoding considerably simpler than
  * Memento filter's.
  *
@@ -37,40 +36,36 @@
  *      bucket = [fast-reduced original quotient : hash bits [OQB, BIHS)]
  *      fingerprint = hash bits [BIHS, BIHS + L)
  *
- * Expanding the table by a factor of two increases BIHS by one, so the
- * *least* significant bit of every fingerprint is donated to the bucket index.
+ * `key_bits` is fixed for the life of the table. Expanding by a factor of two
+ * increases BIHS by one, so the *least* significant bit of every fingerprint
+ * is donated to the bucket index and `L` falls by one; contracting hands the
+ * bit back. The hash the table keeps of a key -- its bucket together with its
+ * fingerprint -- is therefore always exactly `key_bits` wide, however often
+ * the table has been resized.
  *
  * ---------------------------------------------------------------------------
- * Variable-length fingerprints (Aleph filter)
+ * Fixed-length fingerprints
  * ---------------------------------------------------------------------------
- * A slot is `fingerprint_bits + 1` bits wide. A fingerprint of length `L` is
- * stored as
+ * A slot is exactly `L = fingerprint_bits` bits wide and holds
  *
- *      (1 << L) | (hash bits [BIHS, BIHS + L))
+ *      hash bits [BIHS, BIHS + L)
  *
- * i.e., a "void bit" is prepended to the fingerprint, and its position encodes
- * the fingerprint's length. Two fingerprints match when they agree on the
- * lowest `min(L1, L2)` bits, so a shorter stored fingerprint is a weaker,
- * more false-positive-prone witness for a key.
+ * and nothing else. Every fingerprint in the table is of that one length, the
+ * length a fresh insertion would produce, because an expansion shortens the
+ * stored ones and `fingerprint_bits` in the same step. So two fingerprints
+ * match when they are *equal*, one key corresponds to exactly one entry, and a
+ * run is simply held in ascending fingerprint order.
  *
- * Since the void bit dominates the value of a slot, ordering the slots of a
- * run by their raw value orders them by fingerprint length first and by
- * fingerprint value second. That is the invariant this table maintains, and it
- * is what makes "find the longest fingerprint matching this key" a single
- * left-to-right scan of a run that keeps the *last* match it sees.
+ * Shortening is what a resize costs in accuracy: a shorter fingerprint stands
+ * for a larger family of keys, so entries the table could once tell apart
+ * merge into one. Because both the stored and the fresh length shrink
+ * together, a slot also gets one bit narrower per doubling, which gives some
+ * of that space back.
  *
- * Expanding shortens every fingerprint by one bit. A fingerprint that reaches
- * length zero ("a void entry") no longer has a bit to donate, so on the next
- * expansion the item could belong to either of the two candidate buckets and
- * is stored in *both* of them. Contracting is the exact inverse of expanding:
- * the bucket index gives the bit back, and fingerprints grow by one bit, up to
- * the width of a slot. It is an exact inverse for every entry that still has a
- * fingerprint left; the copies of a void entry are *not* merged back into one,
- * as there is no way to tell them apart from two distinct items that happen to
- * collide. So a table that has been expanded past the point where its
- * fingerprints run out holds more entries than it started with, both after
- * expanding and after contracting back, and `Contract` can fail outright if
- * those copies no longer fit.
+ * Contraction is the exact inverse of expansion -- an entry's `key_bits`-wide
+ * hash survives both, so a resize is a pure re-hash and round-trips exactly.
+ * The table can only shed as many bits as it has: `Expand` refuses once the
+ * fingerprint is down to a single bit.
  *
  * ---------------------------------------------------------------------------
  * Stretching (Zeno filter, Section 4.1)
@@ -381,77 +376,53 @@ public:
      */
     void DeleteSlot(uint64_t bucket, uint64_t slot);
 
-    /** One entry of a run, and the sum its chain of prefixes adds up to. */
-    struct ChainedEntry {
-        uint64_t slot;          /**< The slot it sits in, and its counter's index. */
-        uint64_t bucket;        /**< The canonical slot of its run. */
-        uint64_t fingerprint;   /**< The raw slot contents: void bit and fingerprint. */
-        uint64_t count;         /**< Its own counter. */
-        /**
-         * Its counter plus the counters of every earlier entry of its run
-         * whose fingerprint is a prefix of its own -- which is exactly what a
-         * query matching it would add up.
-         */
-        uint64_t chain_sum;
-    };
+    /**
+     * Removes the entries sitting in the given `(bucket, slot)` pairs. The
+     * pairs normally come from a pass that has just located them, such as an
+     * eviction sweep.
+     *
+     * @param victims The entries to remove, in any order. Left reordered:
+     * sorting them highest-slot-first is what makes the removals independent,
+     * since removing a slot only moves the slots above it.
+     */
+    void DeleteSlots(std::vector<std::pair<uint64_t, uint64_t>>& victims);
 
     /**
-     * Calls `f(entry)` for every stored fingerprint, run by run and in slot
-     * order, handing it the entry's chain sum along with it.
+     * @returns The canonical bucket of the run the entry in `slot` belongs to,
+     * which is what `DeleteSlot` needs and a scan that found the slot by any
+     * other route -- a counter, say -- does not have.
      *
-     * A run is held in ascending slot value, and the void bit outweighs the
-     * fingerprint, so a run is in ascending order of *length*: an earlier
-     * entry of a run is a prefix of a later one exactly when the two match.
-     * The chain sums therefore come out of one left-to-right sweep per run.
-     *
-     * Requires counters. `f` must not change the table's shape; it may write
-     * counters, since each run is read out in full before any of its entries
-     * are reported and no later run has been read yet.
+     * Found by walking back to the start of the slot's cluster, which is
+     * always the canonical slot of the run that opens it, and then pairing
+     * runs with occupied buckets forward from there. That is the same walk
+     * `remove_slot` makes, and costs the same: the length of the cluster.
      */
-    template <typename F>
-    void ForEachEntryWithChainSum(F&& f) const;
+    uint64_t BucketOfSlot(uint64_t slot) const {
+        assert(slot < xnslots_);
+        assert(offset_lower_bound(slot) != 0);      // The slot has to be in use.
+        uint64_t start = slot;
+        while (start > 0 && offset_lower_bound(start - 1) != 0)
+            start--;
+        assert(is_occupied(start));
 
-    /**
-     * Removes the given entries and repairs the runs they leave behind, so
-     * that every entry still standing keeps the chain sum it had.
-     *
-     * Removing an entry takes its counter out of the chain sums of every
-     * longer entry of its run that matched it, which would silently cut those
-     * entries' counts. The repair puts it back: the entries that lose their
-     * last surviving prefix take on what the entries removed from under them
-     * held. That is one addition per newly rootless entry, and nothing else in
-     * the run is touched -- in particular no counter is ever made smaller, so
-     * no count can go negative here.
-     *
-     * The entries to remove must be *downward closed* within each run: if an
-     * entry goes, every entry of its run that is a prefix of it goes too.
-     * Anything an eviction policy driven by chain sums picks out has that
-     * property already, since a prefix's chain sum is no larger than the sums
-     * of the entries above it.
-     *
-     * @param victims The entries to remove, in any order. Left reordered.
-     * @returns The change in the total of all the counters, which is negative
-     * unless a removed entry's counter had to be carried over into more than
-     * one entry above it.
-     */
-    int64_t DeleteEntriesPreservingChainSums(std::vector<std::pair<uint64_t, uint64_t>>& victims);
-
-    /**
-     * Removes the longest stored fingerprint matching `key`, repairing its run
-     * exactly as `DeleteEntriesPreservingChainSums` does. The longest match of
-     * one key can still be a prefix of entries that match other keys, so the
-     * repair is needed here too.
-     *
-     * @param counter_delta Set to the change in the total of all the counters.
-     * @returns 0, or `err_doesnt_exist` if nothing in `key`'s run matches it.
-     */
-    int32_t DeletePreservingChainSums(uint64_t key, uint8_t flags, int64_t& counter_delta);
+        uint64_t bucket = start, pos = start;
+        while (true) {
+            uint64_t end = pos;
+            while (!is_runend(end))
+                end++;
+            if (slot <= end)
+                return bucket;
+            pos = end + 1;
+            do {
+                bucket++;
+            } while (!is_occupied(bucket));
+        }
+    }
 
     /**
      * @returns The bits of `key`'s hash that the table keeps: its bucket and
-     * its full-length fingerprint. Two keys share this value exactly when no
-     * insertion or query can tell them apart, which is what a caller batching
-     * insertions up needs in order to merge them.
+     * its fingerprint. Two keys share this value exactly when no insertion or
+     * query can tell them apart.
      */
     uint64_t EntryIdentity(uint64_t key, uint8_t flags = 0) const {
         return hash_key(key, flags) & fpt::bitmask(key_bits_);
@@ -460,9 +431,9 @@ public:
     /**
      * @param key The key to look up.
      * @param flags Set `flag_key_is_hash` if `key` is already hashed.
-     * @returns The number of stored fingerprints matching `key`'s hash. This
-     * never undercounts how many times `key` was inserted, but it may
-     * overcount, as a fingerprint of another key may match by chance.
+     * @returns The number of stored fingerprints equal to `key`'s. This never
+     * undercounts how many times `key` was inserted, but it may overcount, as
+     * a fingerprint of another key may match by chance.
      */
     uint64_t Count(uint64_t key, uint8_t flags = 0) const;
 
@@ -472,71 +443,36 @@ public:
      * @returns `true` if any stored fingerprint matches `key`'s hash.
      */
     bool Contains(uint64_t key, uint8_t flags = 0) const {
-        return MatchLength(key, flags) >= 0;
+        return FindMatch(key, flags) >= 0;
     }
 
     /**
-     * @param key The key to look up.
-     * @param flags Set `flag_key_is_hash` if `key` is already hashed.
-     * @returns The length, in bits, of the longest stored fingerprint matching
-     * `key`'s hash, or -1 if nothing matches it.
-     */
-    int32_t MatchLength(uint64_t key, uint8_t flags = 0) const;
-
-    /**
-     * @returns The slot holding the longest stored fingerprint matching `key`,
-     * or -1 if the key's run holds no match at all. That slot is where a
+     * @returns The slot holding the stored fingerprint matching `key`, or -1
+     * if the key's run holds no match at all. That slot is where a
      * mirroring counter array keeps the fingerprint's count, and the search
      * starts that counter's chunk on its way into cache before it touches the
      * table at all, so that reading or updating the count does not stall on a
      * second miss queued up behind this one.
      */
-    int64_t FindLongestMatch(uint64_t key, uint8_t flags = 0) const;
-
-    /** What `SumMatchingCounters` found in a key's run. */
-    struct MatchSum {
-        uint64_t count = 0;     /**< How many stored fingerprints matched. */
-        uint64_t sum = 0;       /**< The sum of their counters. */
-    };
-
-    /**
-     * Scans `key`'s run once and adds up the counters of *every* stored
-     * fingerprint matching it, of whatever length. A matching fingerprint
-     * shorter than the full length may belong to another key, so its counter
-     * is not necessarily the key's -- but the key's own counter is certainly
-     * among those added up, which is what makes the total an over-estimate
-     * rather than a possible under-estimate.
-     *
-     * @param key The key to look up.
-     * @param flags Set `flag_key_is_hash` if `key` is already hashed.
-     * @returns The number of matches and the sum of their counters; `{0, 0}`
-     * if nothing matches. All zeroes, too, if the table has no counters.
-     */
-    MatchSum SumMatchingCounters(uint64_t key, uint8_t flags = 0) const;
+    int64_t FindMatch(uint64_t key, uint8_t flags = 0) const;
 
     /**
      * Doubles the number of slots. Every stored fingerprint donates its lowest
-     * bit to the bucket index and so loses one bit of length. A fingerprint
-     * that is already of length zero has no bit to donate, so its item is
-     * stored in both of the buckets it could now belong to.
+     * bit to the bucket index, so the fingerprint length -- stored and fresh
+     * alike -- falls by one and a slot gets one bit narrower.
      *
      * Counts, if the table is keeping any, follow their fingerprints across.
-     * Both copies of a duplicated void entry keep the whole count: neither has
-     * a fingerprint left to tell it from the other, so a query may land on
-     * either, and giving each the full count is what keeps the answer an
-     * over-estimate rather than an under-estimate.
      *
      * @returns The number of fingerprints in the expanded table, or a negative
-     * status code on failure. The table is left untouched on failure.
+     * status code on failure, in particular `err_no_space` if the fingerprint
+     * is down to its last bit. The table is left untouched on failure.
      */
     int64_t Expand();
 
     /**
-     * Halves the number of slots, the inverse of `Expand`: the bucket index
-     * gives a bit back to every fingerprint, which therefore grows by one bit,
-     * capped at the width of a slot. The duplicate copies of a void entry are
-     * not merged back into one, so contracting a table that was expanded past
-     * the length of its fingerprints does not undo the growth in entry count.
+     * Halves the number of slots, the exact inverse of `Expand`: the bucket
+     * index gives a bit back to every fingerprint, which therefore grows by
+     * one bit.
      *
      * @returns The number of fingerprints in the contracted table,
      * `err_cannot_contract` if the table is already at its original size, or
@@ -615,8 +551,8 @@ public:
      * and only the table knows when that happens. Calling this again zeroes
      * the counters and re-shapes them to the current slot capacity.
      */
-    void EnableCounters() {
-        counters_ = std::make_unique<VALECounters>(xnslots_);
+    void EnableCounters(bool with_min_tree = false) {
+        counters_ = std::make_unique<VALECounters>(xnslots_, with_min_tree);
     }
     /** Throws the counters away, leaving a plain fingerprint table. */
     void DisableCounters() {
@@ -651,6 +587,17 @@ public:
         virtual void ShiftLeftAndClear(uint64_t hole, uint64_t last) = 0;
         /** Opens a hole at `hole` by moving `[hole, last)` up one, clearing `hole`. */
         virtual void ShiftRightAndClear(uint64_t hole, uint64_t last) = 0;
+        /**
+         * Moves one slot's data to another, and clears one outright. This
+         * table never does either -- it only ever shifts -- but `CuckooTable`
+         * only ever does these, and declaring both here is what lets one
+         * sidecar serve whichever table its owner was built on.
+         */
+        virtual void MoveSlot(uint64_t from, uint64_t to) = 0;
+        virtual void SwapWithHeld(uint64_t slot) = 0;
+        /** Empties that hand, before a kick path starts carrying. */
+        virtual void ClearHeld() = 0;
+        virtual void Clear(uint64_t slot) = 0;
         /** Clears every entry. */
         virtual void Reset() = 0;
     };
@@ -658,27 +605,6 @@ public:
     /** Attaches a caller-owned sidecar (or detaches with `nullptr`). */
     void AttachMirror(SlotMirror *mirror) {
         sidecar_ = mirror;
-    }
-
-    /**
-     * @returns The canonical (home) slot of `key`'s run. Stable across the slot
-     * shifts of insertion and deletion, so a caller can key stable state on it.
-     */
-    uint64_t HomeBucket(uint64_t key, uint8_t flags = 0) const {
-        return bucket_from_hash(hash_key(key, flags));
-    }
-
-    /**
-     * Calls `f(slot)` for every slot of `bucket`'s run, in slot order. Does
-     * nothing if the bucket is not the canonical slot of any run.
-     */
-    template <typename F>
-    void ForEachSlotInRun(uint64_t bucket, F&& f) const {
-        if (!is_occupied(bucket))
-            return;
-        const uint64_t last = run_end(bucket);
-        for (uint64_t s = run_start(bucket); s <= last; s++)
-            f(s);
     }
 
     /* Stretching. */
@@ -726,7 +652,7 @@ public:
      */
     uint64_t CountSlotsAfterExpansion() const {
         const bool ending_period = (epoch_ + 1 >= growth_coefficient_);
-        if (ending_period && key_bits_ + 2 > 64)
+        if (ending_period && fingerprint_bits_ <= 1)
             return nslots_;
         return ending_period ? base_nslots_ * 2
                              : stretch_at(base_nslots_, epoch_ + 1, growth_coefficient_);
@@ -798,13 +724,11 @@ public:
         uint64_t fingerprint() const {
             return table_->get_slot(current_);
         }
-        /** @returns The length, in bits, of the fingerprint pointed at. */
-        uint32_t fingerprint_length() const {
-            return fpt::highbit_position(fingerprint());
-        }
         /**
-         * @returns As much of the hash of the item pointed at as the table
-         * still remembers, laid out the way `Insert` expects a pre-hashed key.
+         * @returns The `key_bits`-wide hash of the item pointed at, laid out
+         * the way `Insert` expects a pre-hashed key. The bucket and the
+         * fingerprint together carry every bit of it, so nothing is lost and a
+         * resize can re-split it however its own shape dictates.
          */
         uint64_t hash() const;
 
@@ -824,8 +748,8 @@ private:
     uint64_t xnslots_;                  /**< The number of slots actually allocated, leaving room for runs to spill over. */
     uint64_t nblocks_;
     uint64_t key_bits_;
-    uint64_t fingerprint_bits_;         /**< The maximum fingerprint length, i.e., the length of a freshly inserted one. */
-    uint64_t bits_per_slot_;            /**< `fingerprint_bits_ + 1`, the extra bit being the void bit. */
+    uint64_t fingerprint_bits_;         /**< The fingerprint length, which every stored fingerprint shares. */
+    uint64_t bits_per_slot_;            /**< The same thing: a slot holds a fingerprint and nothing else. */
     uint64_t original_quotient_bits_;
     uint64_t original_nslots_;          /**< The slot count the table was constructed with, before any expansion. */
     uint64_t base_nslots_;              /**< The slot count the current period started with, `original_nslots_ << GetPeriodCount()`. */
@@ -1013,32 +937,18 @@ private:
         return stretch(base_bucket);
     }
 
-    /** @returns The slot contents encoding a length-`len` fingerprint of `hash`. */
-    uint64_t fingerprint_from_hash(uint64_t hash, uint32_t len) const {
-        return ((hash >> GetBucketIndexHashSize()) & fpt::bitmask(len)) | (1ULL << len);
-    }
-
-    /**
-     * @returns Whether `stored` is a prefix match of the full-length
-     * fingerprint `target`, i.e., whether the two agree on `stored`'s bits.
-     */
-    static bool fingerprints_match(uint64_t stored, uint64_t target) {
-        return ((stored ^ target) & fpt::bitmask(fpt::highbit_position(stored))) == 0;
+    /** @returns The slot contents holding `hash`'s fingerprint. */
+    uint64_t fingerprint_from_hash(uint64_t hash) const {
+        return (hash >> GetBucketIndexHashSize()) & fpt::bitmask(fingerprint_bits_);
     }
 
     /**
      * @param runstart The first slot of the run to scan.
-     * @param fingerprint The full-length fingerprint to match against.
-     * @returns The position of the longest fingerprint in the run matching
+     * @param fingerprint The fingerprint to look for.
+     * @returns The position of the fingerprint in the run equal to
      * `fingerprint`, or -1 if there is none.
      */
-    int64_t longest_match_in_run(uint64_t runstart, uint64_t fingerprint) const;
-
-    /**
-     * Reads out every entry of `bucket`'s run, in slot order, leaving each
-     * one's `chain_sum` unset. `out` is cleared first.
-     */
-    void collect_run(uint64_t bucket, std::vector<ChainedEntry>& out) const;
+    int64_t find_in_run(uint64_t runstart, uint64_t fingerprint) const;
 
     /**
      * @param runstart The first slot of the run to scan.
@@ -1056,26 +966,24 @@ private:
      */
     int64_t insert_fingerprint(uint64_t bucket_index, uint64_t fingerprint);
 
-    /** Inserts a length-`len` fingerprint of the pre-folded `hash`. */
-    int32_t insert_hash(uint64_t hash, uint32_t len) {
-        const int64_t ret = insert_hash_at(hash, len);
+    /** Inserts the fingerprint of the pre-folded `hash`. */
+    int32_t insert_hash(uint64_t hash) {
+        const int64_t ret = insert_hash_at(hash);
         return ret < 0 ? static_cast<int32_t>(ret) : 0;
     }
 
     /** As `insert_hash`, but reporting the slot the fingerprint landed in. */
-    int64_t insert_hash_at(uint64_t hash, uint32_t len) {
-        return insert_fingerprint(bucket_from_hash(hash), fingerprint_from_hash(hash, len));
+    int64_t insert_hash_at(uint64_t hash) {
+        return insert_fingerprint(bucket_from_hash(hash), fingerprint_from_hash(hash));
     }
 
-    /** Rebuilds this table into `dest`, whose size differs by a factor of two. */
-    /** What a rebuild has to do to each entry's fingerprint on the way over. */
-    enum class rebuild_op {
-        restretch,      /**< Nothing: the bucket index is as wide as it was, only stretched differently. */
-        sacrifice,      /**< Every fingerprint donates its lowest bit to the bucket index. */
-        unsacrifice     /**< Every fingerprint takes a bit back from the bucket index. */
-    };
-
-    int64_t rebuild_into(FingerprintTable& dest, rebuild_op op) const;
+    /**
+     * Re-inserts every entry of this table into `dest`, which differs from it
+     * in size. Each entry carries its whole `key_bits`-wide hash over, and
+     * `dest` splits it into a bucket and a fingerprint by its own shape, so
+     * the same routine serves a stretch, an expansion and a contraction alike.
+     */
+    int64_t rebuild_into(FingerprintTable& dest) const;
 };
 
 
@@ -1110,16 +1018,17 @@ inline void FingerprintTable::allocate(const Shape& shape, uint32_t growth_coeff
     xnslots_ = nslots_ + 10 * sqrt((double) nslots_);
     nblocks_ = (xnslots_ + slots_per_block_ - 1) / slots_per_block_;
 
-    // The extra bit is the void bit delimiting the fingerprint's length.
-    bits_per_slot_ = fingerprint_bits_ + 1;
+    // Every fingerprint is of the same length, so a slot holds one and
+    // nothing else -- and gets one bit narrower with every doubling.
+    bits_per_slot_ = fingerprint_bits_;
     original_quotient_bits_ = shape.orig_quotient_bits ? shape.orig_quotient_bits
                                                        : key_bits_ - fingerprint_bits_;
 
-    // A slot must be addressable by the 64-bit reads in `get_slot`, and a
-    // reconstructed hash carries the quotient, the fingerprint, and the void
-    // bit, so it must fit in a word too.
+    // A slot must be addressable by the 64-bit reads in `get_slot`, and it
+    // has to be wide enough to tell anything apart at all.
     assert(bits_per_slot_ <= 56);
-    assert(key_bits_ + 1 <= 64);
+    assert(fingerprint_bits_ >= 1);
+    assert(key_bits_ <= 64);
     assert(original_quotient_bits_ <= 32);
     assert(GetBucketIndexHashSize() >= original_quotient_bits_);
     assert(base_nslots_ == (original_nslots_ << GetPeriodCount()));
@@ -1488,24 +1397,21 @@ inline void FingerprintTable::remove_slot(bool only_item_in_run, uint64_t bucket
  * Scanning a run.                                                *
  ******************************************************************/
 
-inline int64_t FingerprintTable::longest_match_in_run(uint64_t runstart, uint64_t fingerprint) const {
-    int64_t best = -1;
+inline int64_t FingerprintTable::find_in_run(uint64_t runstart, uint64_t fingerprint) const {
     uint64_t pos = runstart;
     while (true) {
         const uint64_t current = get_slot(pos);
-        // Runs are sorted, and every fingerprint matching a full-length target
-        // is numerically at most that target, so we are done once we pass it.
+        // Runs are held in ascending fingerprint order, so we are done once we
+        // pass the one we are looking for.
         if (current > fingerprint)
             break;
-        // Matches of greater length are numerically larger, so the last match
-        // in scan order is the longest one.
-        if (fingerprints_match(current, fingerprint))
-            best = pos;
+        if (current == fingerprint)
+            return static_cast<int64_t>(pos);
         if (is_runend(pos))
             break;
         pos++;
     }
-    return best;
+    return -1;
 }
 
 
@@ -1614,7 +1520,7 @@ inline int64_t FingerprintTable::InsertAt(uint64_t key, uint8_t flags) {
     }
 
     const uint64_t hash = hash_key(key, flags);
-    return insert_fingerprint(bucket_from_hash(hash), fingerprint_from_hash(hash, fingerprint_bits_));
+    return insert_fingerprint(bucket_from_hash(hash), fingerprint_from_hash(hash));
 }
 
 
@@ -1633,8 +1539,8 @@ inline int32_t FingerprintTable::Delete(uint64_t key, uint8_t flags) {
         return err_doesnt_exist;
 
     const uint64_t runstart = run_start(bucket_index);
-    const uint64_t fingerprint = fingerprint_from_hash(hash, fingerprint_bits_);
-    const int64_t pos = longest_match_in_run(runstart, fingerprint);
+    const uint64_t fingerprint = fingerprint_from_hash(hash);
+    const int64_t pos = find_in_run(runstart, fingerprint);
     if (pos < 0)
         return err_doesnt_exist;
 
@@ -1650,14 +1556,14 @@ inline uint64_t FingerprintTable::Count(uint64_t key, uint8_t flags) const {
     if (!is_occupied(bucket_index))
         return 0;
 
-    const uint64_t fingerprint = fingerprint_from_hash(hash, fingerprint_bits_);
+    const uint64_t fingerprint = fingerprint_from_hash(hash);
     uint64_t res = 0;
     uint64_t pos = run_start(bucket_index);
     while (true) {
         const uint64_t current = get_slot(pos);
         if (current > fingerprint)
             break;
-        res += fingerprints_match(current, fingerprint);
+        res += (current == fingerprint);
         if (is_runend(pos))
             break;
         pos++;
@@ -1666,7 +1572,7 @@ inline uint64_t FingerprintTable::Count(uint64_t key, uint8_t flags) const {
 }
 
 
-inline int64_t FingerprintTable::FindLongestMatch(uint64_t key, uint8_t flags) const {
+inline int64_t FingerprintTable::FindMatch(uint64_t key, uint8_t flags) const {
     const uint64_t hash = hash_key(key, flags);
     const uint64_t bucket_index = bucket_from_hash(hash);
     // Issued here, before a single one of the table's own blocks is touched,
@@ -1678,212 +1584,33 @@ inline int64_t FingerprintTable::FindLongestMatch(uint64_t key, uint8_t flags) c
     // always the one the count turns out to live in.
     if (counters_ != nullptr)
         counters_->Prefetch(bucket_index);
+    // Prefetching the table's *own* memory here -- the slots of the bucket's
+    // block, a cache line or two past the metadata that locates them -- was
+    // tried and does nothing (within 2% either way at 64k and 256k slots).
+    // There is no second miss to overlap with: the metadata has to arrive
+    // before the slot index even exists, so the two are serial whatever is
+    // issued when. The counter prefetch above is different only because the
+    // counter's address is known from the bucket alone. `CuckooTable` is the
+    // structure that can win here, having two independent buckets to read.
     if (!is_occupied(bucket_index))
         return -1;
 
-    return longest_match_in_run(run_start(bucket_index),
-                                fingerprint_from_hash(hash, fingerprint_bits_));
+    return find_in_run(run_start(bucket_index), fingerprint_from_hash(hash));
 }
 
 
-inline int32_t FingerprintTable::MatchLength(uint64_t key, uint8_t flags) const {
-    const uint64_t hash = hash_key(key, flags);
-    const uint64_t bucket_index = bucket_from_hash(hash);
-    if (!is_occupied(bucket_index))
-        return -1;
-
-    const uint64_t fingerprint = fingerprint_from_hash(hash, fingerprint_bits_);
-    const int64_t pos = longest_match_in_run(run_start(bucket_index), fingerprint);
-    if (pos < 0)
-        return -1;
-    return static_cast<int32_t>(fpt::highbit_position(get_slot(pos)));
-}
-
-
-inline FingerprintTable::MatchSum
-FingerprintTable::SumMatchingCounters(uint64_t key, uint8_t flags) const {
-    MatchSum res;
-    if (counters_ == nullptr)
-        return res;
-
-    const uint64_t hash = hash_key(key, flags);
-    const uint64_t bucket_index = bucket_from_hash(hash);
-    // Same reasoning as in `FindLongestMatch`: the counter chunk goes out
-    // before any of the table's own blocks are touched, so that the two misses
-    // travel together instead of queueing up behind one another.
-    counters_->Prefetch(bucket_index);
-    if (!is_occupied(bucket_index))
-        return res;
-
-    const uint64_t fingerprint = fingerprint_from_hash(hash, fingerprint_bits_);
-    uint64_t pos = run_start(bucket_index);
-    while (true) {
-        const uint64_t current = get_slot(pos);
-        // Runs are sorted, and every fingerprint matching a full-length target
-        // is numerically at most that target, so we are done once we pass it.
-        if (current > fingerprint)
-            break;
-        if (fingerprints_match(current, fingerprint)) {
-            res.count++;
-            res.sum += counters_->Get(pos);
-        }
-        if (is_runend(pos))
-            break;
-        pos++;
-    }
-    return res;
-}
-
-
-inline void FingerprintTable::collect_run(uint64_t bucket, std::vector<ChainedEntry>& out) const {
-    out.clear();
-    if (!is_occupied(bucket))
-        return;
-    uint64_t pos = run_start(bucket);
-    while (true) {
-        out.push_back({pos, bucket, get_slot(pos),
-                       counters_ != nullptr ? counters_->Get(pos) : 0, 0});
-        if (is_runend(pos))
-            break;
-        pos++;
-    }
-}
-
-
-template <typename F>
-inline void FingerprintTable::ForEachEntryWithChainSum(F&& f) const {
-    assert(counters_ != nullptr);
-    std::vector<ChainedEntry> run;
-
-    // An entry's chain is the entries before it in the run that match it, so
-    // a run has to be complete before any of its sums are.
-    const auto sweep_run = [&]() {
-        for (size_t j = 0; j < run.size(); j++) {
-            uint64_t sum = run[j].count;
-            for (size_t i = 0; i < j; i++)
-                if (fingerprints_match(run[i].fingerprint, run[j].fingerprint))
-                    sum += run[i].count;
-            run[j].chain_sum = sum;
-            f(const_cast<const ChainedEntry&>(run[j]));
-        }
-        run.clear();
-    };
-
-    for (auto it = begin(); it != end(); ++it) {
-        if (!run.empty() && it.bucket() != run.front().bucket)
-            sweep_run();
-        run.push_back({it.slot(), it.bucket(), it.fingerprint(),
-                       counters_->Get(it.slot()), 0});
-    }
-    sweep_run();
-}
-
-
-inline int64_t FingerprintTable::DeleteEntriesPreservingChainSums(
-        std::vector<std::pair<uint64_t, uint64_t>>& victims) {
+inline void FingerprintTable::DeleteSlots(std::vector<std::pair<uint64_t, uint64_t>>& victims) {
     if (victims.empty())
-        return 0;
-    assert(counters_ != nullptr);
+        return;
 
     // Highest slot first. Removing an entry slides the rest of its cluster
     // down over the hole, so the slots above it move and the ones below do
-    // not: going downwards, every victim is still where it was found. A run
-    // occupies a contiguous stretch of slots, so this also groups the victims
-    // of each run together.
+    // not: going downwards, every victim is still where it was found.
     std::sort(victims.begin(), victims.end(),
               [](const std::pair<uint64_t, uint64_t>& a,
                  const std::pair<uint64_t, uint64_t>& b) { return a.second > b.second; });
-
-    // What each run has to be repaired by, worked out before anything moves.
-    struct Repair {
-        uint64_t bucket;
-        std::vector<uint64_t> additions;    /**< One per surviving entry, in run order. */
-    };
-    std::vector<Repair> repairs;
-    std::vector<ChainedEntry> run;
-    std::vector<bool> doomed;
-    int64_t delta = 0;
-
-    for (size_t at = 0; at < victims.size();) {
-        const uint64_t bucket = victims[at].first;
-        size_t group_end = at;
-        while (group_end < victims.size() && victims[group_end].first == bucket)
-            group_end++;
-
-        collect_run(bucket, run);
-        doomed.assign(run.size(), false);
-        for (size_t i = at; i < group_end; i++) {
-            const auto entry = std::find_if(run.begin(), run.end(),
-                    [&](const ChainedEntry& e) { return e.slot == victims[i].second; });
-            assert(entry != run.end());
-            doomed[entry - run.begin()] = true;
-            delta -= static_cast<int64_t>(entry->count);
-        }
-
-        Repair repair{bucket, {}};
-        for (size_t j = 0; j < run.size(); j++) {
-            if (doomed[j])
-                continue;
-            // Whatever was removed from under this entry, and whether anything
-            // is left between it and the bottom of its chain.
-            uint64_t removed = 0;
-            bool has_surviving_prefix = false;
-            for (size_t i = 0; i < j; i++) {
-                if (!fingerprints_match(run[i].fingerprint, run[j].fingerprint))
-                    continue;
-                if (doomed[i])
-                    removed += run[i].count;
-                else
-                    has_surviving_prefix = true;
-            }
-            // Only the entries that lose their last surviving prefix take the
-            // removed counters on: every entry above one of those reaches the
-            // same removed entries through it, so its chain sum is repaired
-            // along with theirs.
-            const uint64_t addition = has_surviving_prefix ? 0 : removed;
-            repair.additions.push_back(addition);
-            delta += static_cast<int64_t>(addition);
-        }
-        if (!repair.additions.empty())
-            repairs.push_back(std::move(repair));
-        at = group_end;
-    }
-
     for (const auto& [bucket, slot] : victims)
         DeleteSlot(bucket, slot);
-
-    // The survivors kept their order within the run, so the repairs line up
-    // with a plain walk of what is left of it.
-    for (const Repair& repair : repairs) {
-        assert(is_occupied(repair.bucket));
-        uint64_t pos = run_start(repair.bucket);
-        for (const uint64_t addition : repair.additions) {
-            if (addition != 0)
-                counters_->Set(pos, counters_->Get(pos) + addition);
-            pos++;
-        }
-    }
-    return delta;
-}
-
-
-inline int32_t FingerprintTable::DeletePreservingChainSums(uint64_t key, uint8_t flags,
-                                                           int64_t& counter_delta) {
-    const uint64_t hash = hash_key(key, flags);
-    const uint64_t bucket_index = bucket_from_hash(hash);
-    counter_delta = 0;
-    if (!is_occupied(bucket_index))
-        return err_doesnt_exist;
-
-    const int64_t pos = longest_match_in_run(run_start(bucket_index),
-                                             fingerprint_from_hash(hash, fingerprint_bits_));
-    if (pos < 0)
-        return err_doesnt_exist;
-
-    std::vector<std::pair<uint64_t, uint64_t>> victim{{bucket_index,
-                                                       static_cast<uint64_t>(pos)}};
-    counter_delta = DeleteEntriesPreservingChainSums(victim);
-    return 0;
 }
 
 
@@ -1891,70 +1618,23 @@ inline int32_t FingerprintTable::DeletePreservingChainSums(uint64_t key, uint8_t
  * Expansion and contraction.                                     *
  ******************************************************************/
 
-inline int64_t FingerprintTable::rebuild_into(FingerprintTable& dest, rebuild_op op) const {
-    const uint32_t dest_bihs = dest.GetBucketIndexHashSize();
+inline int64_t FingerprintTable::rebuild_into(FingerprintTable& dest) const {
     int64_t moved = 0;
     for (auto it = begin(); it != end(); ++it) {
+        // An entry's bucket and fingerprint carry its whole `key_bits`-wide
+        // hash between them, and `key_bits` is the one thing a resize leaves
+        // alone -- so handing `dest` the hash is all there is to it, whether
+        // it is wider than us, narrower, or merely stretched differently. It
+        // splits the hash by its own shape. A count belongs to its
+        // fingerprint, so it travels with it.
         const uint64_t hash = it.hash();
-        const uint32_t len = it.fingerprint_length();
-        // A count belongs to its fingerprint, so it travels with it.
         const uint64_t count = (counters_ != nullptr ? counters_->Get(it.slot()) : 0);
 
-        int64_t at = 0;
-        switch (op) {
-            case rebuild_op::restretch:
-                // A Stretching step, in either direction. The destination
-                // reads the same bits of the hash as we do and derives the
-                // same base bucket from them; only the slot that bucket is
-                // stretched to differs, and `dest.insert_hash_at` works that
-                // out on its own. The fingerprint is untouched.
-                at = dest.insert_hash_at(hash, len);
-                moved++;
-                break;
-
-            case rebuild_op::sacrifice:
-                if (len == 0) {
-                    // A void entry: its fingerprint has no bit left to donate
-                    // to the bucket index, so the item may belong to either of
-                    // the two candidate buckets. Store it in both, as Aleph
-                    // filter does, which keeps queries free of false negatives.
-                    const uint64_t hash_1 = hash & fpt::bitmask(dest_bihs - 1);
-                    const uint64_t hash_2 = hash_1 | (1ULL << (dest_bihs - 1));
-                    at = dest.insert_hash_at(hash_1, 0);
-                    if (at >= 0) {
-                        // Both copies carry the count. Either one of them may
-                        // be the entry a later query lands on, and neither has
-                        // a fingerprint left to tell it apart from the other,
-                        // so the only answer that stays an over-estimate --
-                        // never an under-estimate -- is to give each the whole
-                        // count. Setting this one before inserting the second
-                        // is safe: that insertion shifts slots, and the
-                        // counters shift right along with them.
-                        dest.set_count(at, count);
-                        at = dest.insert_hash_at(hash_2, 0);
-                    }
-                    moved += 2;
-                }
-                else {
-                    at = dest.insert_hash_at(hash, len - 1);
-                    moved++;
-                }
-                break;
-
-            case rebuild_op::unsacrifice:
-                // Hands a bit of the bucket index back to the fingerprint, up
-                // to the width of a slot. Capping at `fingerprint_bits_`
-                // yields exactly the fingerprint a fresh insertion into the
-                // smaller table would produce. The duplicated copies of a void
-                // entry are not merged back into one, so each keeps its count.
-                at = dest.insert_hash_at(hash, std::min<uint64_t>(len + 1, dest.fingerprint_bits_));
-                moved++;
-                break;
-        }
-
+        const int64_t at = dest.insert_hash_at(hash);
         if (at < 0)
             return at;
         dest.set_count(at, count);
+        moved++;
     }
     return moved;
 }
@@ -1966,19 +1646,26 @@ inline int64_t FingerprintTable::Expand() {
     // stretch the same buckets over more slots. With `r == 1` every expansion
     // is the last one, which is plain doubling.
     const bool ending_period = (epoch_ + 1 >= growth_coefficient_);
-    if (ending_period && key_bits_ + 2 > 64)
+    // The doubling takes a bit off every fingerprint, and a fingerprint has to
+    // keep at least one: a zero-width slot holds nothing to tell keys apart by.
+    if (ending_period && fingerprint_bits_ <= 1)
         return err_no_space;
 
     const Shape shape{original_nslots_,
                       ending_period ? base_nslots_ * 2 : base_nslots_,
-                      key_bits_ + ending_period,
+                      key_bits_,
                       original_quotient_bits_,
                       ending_period ? 0u : epoch_ + 1};
     FingerprintTable expanded(shape, hash_mode_, seed_, growth_coefficient_);
     expanded.auto_expand_ = auto_expand_;
     expanded.mirror_counters_of(*this);
-    const int64_t res = rebuild_into(expanded, ending_period ? rebuild_op::sacrifice
-                                                             : rebuild_op::restretch);
+    // Every counter is about to be written, so a min tree is better rebuilt
+    // once at the end than climbed per entry.
+    if (expanded.counters_ != nullptr)
+        expanded.counters_->SuspendTree();
+    const int64_t res = rebuild_into(expanded);
+    if (expanded.counters_ != nullptr)
+        expanded.counters_->RebuildTree();
     if (res < 0)
         return res;
 
@@ -1993,19 +1680,23 @@ inline int64_t FingerprintTable::Contract() {
 
     // Undo whatever the matching expansion did: step back an epoch, or, if we
     // are sitting at the start of a period, reopen the previous one at its
-    // last epoch and give every fingerprint its bit back.
+    // last epoch and give every fingerprint its bit back. Either way it is an
+    // exact inverse, since the hash a rebuild carries over is untouched.
     const bool reopening_period = (epoch_ == 0);
     assert(!reopening_period || base_nslots_ % 2 == 0);
     const Shape shape{original_nslots_,
                       reopening_period ? base_nslots_ / 2 : base_nslots_,
-                      key_bits_ - reopening_period,
+                      key_bits_,
                       original_quotient_bits_,
                       reopening_period ? growth_coefficient_ - 1 : epoch_ - 1};
     FingerprintTable contracted(shape, hash_mode_, seed_, growth_coefficient_);
     contracted.auto_expand_ = auto_expand_;
     contracted.mirror_counters_of(*this);
-    const int64_t res = rebuild_into(contracted, reopening_period ? rebuild_op::unsacrifice
-                                                                  : rebuild_op::restretch);
+    if (contracted.counters_ != nullptr)
+        contracted.counters_->SuspendTree();
+    const int64_t res = rebuild_into(contracted);
+    if (contracted.counters_ != nullptr)
+        contracted.counters_->RebuildTree();
     if (res < 0)
         return res;
 

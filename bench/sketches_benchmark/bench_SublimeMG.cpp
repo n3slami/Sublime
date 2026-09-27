@@ -1,4 +1,5 @@
 #include <chrono>
+#include <type_traits>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -6,13 +7,13 @@
 #include <string>
 
 #include "../bench_template.hpp"
+#include "CuckooTable.hpp"
 #include "SublimeMG.hpp"
 
 using sublime::SublimeMG;
 
 static uint32_t g_fingerprint_length = 32;
 static uint32_t g_growth_coefficient = 1;
-static uint64_t g_buffer_capacity = SublimeMG<>::default_buffer_capacity;
 static std::function<uint64_t(double)> g_size_function;
 static uint32_t g_seed = 0;
 
@@ -31,12 +32,11 @@ static inline uint64_t hash_string(const std::string& key) {
 }
 
 /** The largest `nslots` whose empty sketch fits inside `budget` bytes. */
-template <bool E>
+template <bool E, bool T, typename Tab>
 static uint64_t nslots_for_budget(uint64_t budget) {
     const auto size_at = [&](uint64_t nslots) {
-        SublimeMG<E> probe(nslots, key_bits_for(nslots, g_fingerprint_length),
-                           SublimeMG<E>::hashmode::Default, 1, g_growth_coefficient,
-                           g_buffer_capacity);
+        SublimeMG<E, T, Tab> probe(nslots, key_bits_for(nslots, g_fingerprint_length),
+                           SublimeMG<E, T, Tab>::hashmode::Default, 1, g_growth_coefficient);
         return probe.SizeInBytes();
     };
     uint64_t lo = 16, hi = 16;
@@ -58,46 +58,40 @@ static uint64_t nslots_for_budget(uint64_t budget) {
     return best;
 }
 
-template <bool E>
-inline void insert_sketch(SublimeMG<E> *sketch, const std::string& key) {
-    sketch->Insert(hash_string(key), SublimeMG<E>::flag_key_is_hash);
+template <bool E, bool T, typename Tab>
+inline void insert_sketch(SublimeMG<E, T, Tab> *sketch, const std::string& key) {
+    sketch->Insert(hash_string(key), SublimeMG<E, T, Tab>::flag_key_is_hash);
 }
-template <bool E, typename T>
-inline void insert_sketch(SublimeMG<E> *sketch, T key) {
+template <bool E, bool T, typename Tab, typename K>
+inline void insert_sketch(SublimeMG<E, T, Tab> *sketch, K key) {
     sketch->Insert(static_cast<uint64_t>(key));
 }
 
-template <bool E>
-inline void delete_sketch(SublimeMG<E> *, const std::string&) {
+template <bool E, bool T, typename Tab>
+inline void delete_sketch(SublimeMG<E, T, Tab> *, const std::string&) {
     throw std::runtime_error("Deletes not implemented");
 }
-template <bool E, typename T>
-inline void delete_sketch(SublimeMG<E> *, T) {
+template <bool E, bool T, typename Tab, typename K>
+inline void delete_sketch(SublimeMG<E, T, Tab> *, K) {
     throw std::runtime_error("Deletes not implemented");
 }
 
-// A query has to see the buffered insertions, but only the first query of a
-// checkpoint pays for the flush -- the rest find the buffer already empty.
-template <bool E>
-inline int32_t query_sketch(SublimeMG<E> *sketch, const std::string& key) {
-    if (sketch->CountBuffered() > 0)
-        sketch->FlushBuffer();
-    return sketch->Query(hash_string(key), SublimeMG<E>::flag_key_is_hash);
+template <bool E, bool T, typename Tab>
+inline int32_t query_sketch(SublimeMG<E, T, Tab> *sketch, const std::string& key) {
+    return sketch->Query(hash_string(key), SublimeMG<E, T, Tab>::flag_key_is_hash);
 }
-template <bool E, typename T>
-inline int32_t query_sketch(SublimeMG<E> *sketch, T key) {
-    if (sketch->CountBuffered() > 0)
-        sketch->FlushBuffer();
+template <bool E, bool T, typename Tab, typename K>
+inline int32_t query_sketch(SublimeMG<E, T, Tab> *sketch, K key) {
     return sketch->Query(static_cast<uint64_t>(key));
 }
 
-template <bool E>
-inline uint32_t size_of_sketch(SublimeMG<E> *sketch) {
+template <bool E, bool T, typename Tab>
+inline uint32_t size_of_sketch(SublimeMG<E, T, Tab> *sketch) {
     return sketch->SizeInBytes();
 }
 
-template <bool E>
-inline std::unordered_map<std::string, uint32_t> get_extra_parameters(SublimeMG<E> *sketch) {
+template <bool E, bool T, typename Tab>
+inline std::unordered_map<std::string, uint32_t> get_extra_parameters(SublimeMG<E, T, Tab> *sketch) {
     std::unordered_map<std::string, uint32_t> res;
     res["expansions"] = sketch->CountExpansions();
     res["monitored"] = sketch->CountMonitored();
@@ -105,26 +99,31 @@ inline std::unordered_map<std::string, uint32_t> get_extra_parameters(SublimeMG<
     res["error_inducing"] = sketch->CountErrorInducingInsertions();
     res["counters_per_chunk"] = sketch->Counters().GetCountersPerChunk();
     res["stub_length"] = sketch->Counters().GetStubLength();
-    res["buffer_capacity"] = sketch->GetBufferCapacity();
+    res["min_tree"] = T ? 1 : 0;
+    res["cuckoo"] = std::is_same<Tab, sublime::CuckooTable>::value ? 1 : 0;
+    res["fingerprint_bits"] = sketch->GetTable().GetNumFingerprintBits();
+    // A cuckoo filter drops an entry when a kick path gives up on it, which is
+    // silent accuracy loss -- so it is reported rather than left to be guessed.
+    if constexpr (std::is_same<Tab, sublime::CuckooTable>::value)
+        res["lost_entries"] = sketch->GetTable().CountLostEntries();
     return res;
 }
 
-template <bool E>
+template <bool E, bool T, typename Tab>
 static void run(uint64_t budget) {
-    const uint64_t nslots = nslots_for_budget<E>(budget);
-    auto *sketch = new SublimeMG<E>(nslots, key_bits_for(nslots, g_fingerprint_length),
-                                    SublimeMG<E>::hashmode::Default, g_seed,
-                                    g_growth_coefficient, g_buffer_capacity,
-                                    g_size_function);
+    const uint64_t nslots = nslots_for_budget<E, T, Tab>(budget);
+    auto *sketch = new SublimeMG<E, T, Tab>(nslots, key_bits_for(nslots, g_fingerprint_length),
+                                    SublimeMG<E, T, Tab>::hashmode::Default, g_seed,
+                                    g_growth_coefficient, g_size_function);
     top_aae_are_count = sketch->Capacity();
     if (wio.StringKeys())
         experiment_string(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch),
                            pass_fun(query_sketch), pass_fun(size_of_sketch),
-                           reinterpret_cast<void *>(get_extra_parameters<E>));
+                           reinterpret_cast<void *>(get_extra_parameters<E, T, Tab>));
     else
         experiment(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch),
                    pass_fun(query_sketch), pass_fun(size_of_sketch),
-                   reinterpret_cast<void *>(get_extra_parameters<E>));
+                   reinterpret_cast<void *>(get_extra_parameters<E, T, Tab>));
 }
 
 
@@ -139,10 +138,16 @@ int main(int argc, char const *argv[]) {
     parser.add_argument("--expand-measure")
             .help("what the size function is tested against: 'error' (error-inducing insertions) or 'total'")
             .nargs(1).default_value(std::string("error"));
-    parser.add_argument("--buffer-capacity")
-            .help("B: how many case-3 insertions batch up before a flush")
-            .nargs(1).default_value(static_cast<uint64_t>(SublimeMG<>::default_buffer_capacity))
-            .scan<'u', uint64_t>();
+    parser.add_argument("--cuckoo")
+            .help("keep the monitored keys in a cuckoo filter rather than a quotient filter")
+            .default_value(false).implicit_value(true);
+    parser.add_argument("--min-tree")
+            .help("lay a min segment tree over the counters: O(log w) evictions, twice the counters")
+            .default_value(false).implicit_value(true);
+    parser.add_argument("--tail-latency")
+            .help("time every insertion and report the tail; the average latency of such a run "
+                  "is meaningless, so this wants a run of its own")
+            .default_value(false).implicit_value(true);
     parser.add_argument("--seed")
             .help("hash seed; 0 (the default) uses a time-based seed")
             .nargs(1).default_value(static_cast<uint32_t>(0)).scan<'u', uint32_t>();
@@ -161,7 +166,7 @@ int main(int argc, char const *argv[]) {
 
     g_fingerprint_length = parser.get<uint32_t>("--fingerprint-length");
     g_growth_coefficient = parser.get<uint32_t>("--growth-coefficient");
-    g_buffer_capacity = parser.get<uint64_t>("--buffer-capacity");
+    measure_insert_latency = parser.get<bool>("--tail-latency");
     g_seed = parser.get<uint32_t>("--seed");
     if (g_seed == 0)
         g_seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now())
@@ -177,8 +182,20 @@ int main(int argc, char const *argv[]) {
     if (memory_budgets.size() != 1)
         throw std::runtime_error("SublimeMG benchmark takes a single memory budget");
 
-    if (parser.get<std::string>("--expand-measure") == "total")
-        run<false>(memory_budgets[0]);
-    else
-        run<true>(memory_budgets[0]);
+    const bool error_measure = parser.get<std::string>("--expand-measure") != "total";
+    const bool tree = parser.get<bool>("--min-tree");
+    if (parser.get<bool>("--cuckoo")) {
+        using Tab = sublime::CuckooTable;
+        if (error_measure && tree)        run<true, true, Tab>(memory_budgets[0]);
+        else if (error_measure)           run<true, false, Tab>(memory_budgets[0]);
+        else if (tree)                    run<false, true, Tab>(memory_budgets[0]);
+        else                              run<false, false, Tab>(memory_budgets[0]);
+    }
+    else {
+        using Tab = sublime::FingerprintTable;
+        if (error_measure && tree)        run<true, true, Tab>(memory_budgets[0]);
+        else if (error_measure)           run<true, false, Tab>(memory_budgets[0]);
+        else if (tree)                    run<false, true, Tab>(memory_budgets[0]);
+        else                              run<false, false, Tab>(memory_budgets[0]);
+    }
 }

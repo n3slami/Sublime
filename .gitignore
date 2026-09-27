@@ -48,3 +48,7 @@ build/*
 
 # neovim
 .cache/
+
+# The private CAIDA traces, and Python bytecode from the benchmark scripts.
+caida_tmp/
+bench/scripts/__pycache__/

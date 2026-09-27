@@ -25,7 +25,7 @@ list(APPEND Targets "SublimeCMS" "SublimeCMSNoTuning" "SublimeCMSNoTuningMorris"
                     "OTailored"
                     "Waving"
                     "SublimeMG"
-                    "MGHeap"
+                    "MG"
                     "SpaceSaving")
 
 function(compile_bench ds)
@@ -104,8 +104,8 @@ function(compile_bench ds)
         target_link_libraries(bench_${ds} WavingLib)
     elseif (ds STREQUAL "SublimeMG")
         target_link_libraries(bench_${ds} SublimeMGLib)
-    elseif (ds STREQUAL "MGHeap")
-        target_link_libraries(bench_${ds} MGHeapLib)
+    elseif (ds STREQUAL "MG")
+        target_link_libraries(bench_${ds} MGLib)
     elseif (ds STREQUAL "SpaceSaving")
         target_link_libraries(bench_${ds} SpaceSavingLib)
     endif()

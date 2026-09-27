@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <iostream>
 
+#include "MG.hpp"
+#include "CuckooTable.hpp"
 #include "SublimeMG.hpp"
 
 namespace sublime {
@@ -30,10 +32,10 @@ public:
      * occupied carries the count `ref` says it should, and -- just as
      * important -- that every slot it considers empty carries nothing.
      */
-    template <bool E>
-    static void CheckMirrored(const SublimeMG<E>& mg,
+    template <typename MGT>
+    static void CheckMirrored(const MGT& mg,
                               const std::map<std::pair<uint64_t, uint64_t>, uint64_t>& ref) {
-        const FingerprintTable& table = mg.table_;
+        const auto& table = mg.table_;
         const VALECounters& counters = mg.Counters();
         REQUIRE_EQ(counters.CountCounters(), table.GetSlotCapacity());
 
@@ -57,19 +59,18 @@ public:
     }
 
     /** The reference key for the entry a key maps to. */
-    template <bool E>
-    static std::pair<uint64_t, uint64_t> RefKey(const SublimeMG<E>& mg, uint64_t key) {
+    template <typename MGT>
+    static std::pair<uint64_t, uint64_t> RefKey(const MGT& mg, uint64_t key) {
         const uint64_t hash = mg.table_.hash_key(key, 0);
-        return {mg.table_.bucket_from_hash(hash),
-                mg.table_.fingerprint_from_hash(hash, mg.table_.GetNumFingerprintBits())};
+        return {mg.table_.bucket_from_hash(hash), mg.table_.fingerprint_from_hash(hash)};
     }
 
     /**
      * @returns `count` keys that all land on distinct entries, so that a
      * reference model keyed by the entry is exact rather than approximate.
      */
-    template <bool E>
-    static std::vector<uint64_t> DistinctKeys(const SublimeMG<E>& mg, uint64_t count, uint64_t seed) {
+    template <typename MGT>
+    static std::vector<uint64_t> DistinctKeys(const MGT& mg, uint64_t count, uint64_t seed) {
         std::mt19937_64 rng(seed);
         std::set<std::pair<uint64_t, uint64_t>> used;
         std::vector<uint64_t> res;
@@ -83,14 +84,13 @@ public:
 
     /**
      * The weaker invariant that survives a resize, when the entry a key maps
-     * to changes and a void entry may have been duplicated: every slot the
-     * table calls occupied carries a count of at least one -- every monitored
-     * key was admitted at one and only ever counted up -- and every slot it
-     * calls empty carries nothing at all.
+     * to changes: every slot the table calls occupied carries a count of at
+     * least one -- an entry a decrement empties is evicted -- and every slot
+     * it calls empty carries nothing at all.
      */
-    template <bool E>
-    static void CheckNoCountIsStranded(const SublimeMG<E>& mg) {
-        const FingerprintTable& table = mg.table_;
+    template <typename MGT>
+    static void CheckNoCountIsStranded(const MGT& mg) {
+        const auto& table = mg.table_;
         const VALECounters& counters = mg.Counters();
         REQUIRE_EQ(counters.CountCounters(), table.GetSlotCapacity());
 
@@ -108,8 +108,8 @@ public:
     }
 
     /** @returns Every count stored in the table, in slot order. */
-    template <bool E>
-    static std::vector<uint64_t> StoredCounts(const SublimeMG<E>& mg) {
+    template <typename MGT>
+    static std::vector<uint64_t> StoredCounts(const MGT& mg) {
         std::vector<uint64_t> res;
         for (auto it = mg.table_.begin(); it != mg.table_.end(); ++it)
             res.push_back(mg.Counters().Get(it.slot()));
@@ -117,60 +117,41 @@ public:
     }
 
     /**
-     * Every entry of the table, with the chain sum a query matching it would
-     * add up: its own counter plus the counters of the earlier entries of its
-     * run that its fingerprint extends. Worked out here by comparing stored
-     * lengths, independently of the table's own sweep.
-     */
-    template <bool E>
-    static std::vector<std::pair<uint64_t, uint64_t>> ChainSums(const SublimeMG<E>& mg) {
-        struct Entry { uint64_t bucket, fingerprint, count; };
-        std::vector<Entry> entries;
-        for (auto it = mg.table_.begin(); it != mg.table_.end(); ++it)
-            entries.push_back({it.bucket(), it.fingerprint(), mg.Counters().Get(it.slot())});
-
-        std::vector<std::pair<uint64_t, uint64_t>> res;   // (own counter, chain sum)
-        for (size_t j = 0; j < entries.size(); j++) {
-            uint64_t sum = entries[j].count;
-            for (size_t i = 0; i < j; i++) {
-                if (entries[i].bucket != entries[j].bucket)
-                    continue;
-                uint32_t length = 0;
-                while ((entries[i].fingerprint >> (length + 1)) != 0)
-                    length++;
-                const uint64_t mask = (1ULL << length) - 1;
-                if ((entries[i].fingerprint & mask) == (entries[j].fingerprint & mask))
-                    sum += entries[i].count;
-            }
-            res.push_back({entries[j].count, sum});
-        }
-        return res;
-    }
-
-    /**
      * What has to hold of the summary between operations, on top of the
-     * mirroring: every entry's chain sum stands strictly above the lazy
-     * decrement -- so the count of the key family ending there is at least one
-     * -- the running sum the merge policy is driven from agrees with the
-     * counters themselves, and no more keys are monitored than the summary has
-     * room for.
-     *
-     * Note that an individual counter may well sit *below* the lazy decrement:
-     * an entry admitted onto a chain that already carries it holds only its
-     * own count. It is the chain that owes the decrement, not the entry.
+     * mirroring: every entry's count stands strictly above zero -- an entry a
+     * decrement emptied is evicted, never left behind -- one entry is
+     * monitored per stored fingerprint, and no more keys are monitored than
+     * the summary has room for.
      */
-    template <bool E>
-    static void CheckSummary(const SublimeMG<E>& mg) {
+    template <typename MGT>
+    static void CheckSummary(const MGT& mg) {
         CheckNoCountIsStranded(mg);
-        uint64_t sum = 0, entries = 0;
-        for (const auto& [own, chain_sum] : ChainSums(mg)) {
-            REQUIRE_GT(chain_sum, mg.lazy_decrement_);
-            sum += own;
+        uint64_t entries = 0, smallest = 0;
+        for (auto it = mg.table_.begin(); it != mg.table_.end(); ++it) {
+            const uint64_t stored = mg.Counters().Get(it.slot());
+            REQUIRE_GT(stored, 0);
+            // Nothing may sit below the decrement it owes: an entry at exactly
+            // the decrement is a key whose count has reached zero, waiting to
+            // be evicted, and one below it would read as a negative count.
+            REQUIRE_GE(stored, mg.GetLazyDecrement());
+            if (smallest == 0 || stored < smallest)
+                smallest = stored;
             entries++;
         }
-        REQUIRE_EQ(sum, mg.counter_sum_);
         REQUIRE_EQ(entries, mg.CountMonitored());
         REQUIRE_LE(mg.CountMonitored(), mg.Capacity());
+
+        if (mg.Counters().HasMinTree()) {
+            // The tree's root is that smallest counter, and its candidate is
+            // an entry holding it -- worked out here by walking the table,
+            // independently of the tree's own bookkeeping.
+            REQUIRE_EQ(mg.Counters().MinValue(), smallest);
+            if (smallest != 0)
+                REQUIRE_EQ(mg.Counters().Get(mg.Counters().MinSlot()), smallest);
+        }
+        else {
+            REQUIRE_EQ(mg.GetLazyDecrement(), 0);
+        }
     }
 
     /** @returns The exact frequency of every key of a stream. */
@@ -195,16 +176,39 @@ public:
      * @returns How many keys of the stream were frequent enough for the
      * guarantee to say anything about them.
      */
-    template <bool E>
-    static uint64_t CheckMisraGriesGuarantee(const SublimeMG<E>& mg,
+    /**
+     * How many entries the monitored set has dropped on its own -- which only
+     * a cuckoo filter does, when a kick path runs out of patience. The
+     * quotient filter never loses one, so it always answers 0.
+     */
+    template <typename MGT>
+    static uint64_t LostEntries(const MGT& mg) {
+        if constexpr (std::is_same_v<typename MGT::table_type, sublime::CuckooTable>)
+            return mg.GetTable().CountLostEntries();
+        else
+            return 0;
+    }
+
+    template <typename MGT>
+    static uint64_t CheckMisraGriesGuarantee(const MGT& mg,
                                              const std::vector<uint64_t>& stream,
                                              uint64_t capacity_bound = 0) {
         const auto truth = Frequencies(stream);
         const uint64_t decrements = mg.CountDecrements();
+        // An entry the table dropped takes its whole count with it, and an
+        // occurrence the table had no room for is never counted at all, so
+        // neither side of the understatement bound survives a loss. The
+        // over-estimation side does: a count only ever rises on an occurrence
+        // of a key that matches it.
+        const bool lossy = LostEntries(mg) > 0;
         uint64_t heavy = 0;
         for (const auto& [key, frequency] : truth) {
             const uint64_t estimate = mg.Query(key);
             REQUIRE_LE(estimate, frequency);
+            if (lossy) {
+                heavy += (frequency > decrements && estimate > 0);
+                continue;
+            }
             REQUIRE_GE(estimate + decrements, frequency);
             if (frequency > decrements) {
                 REQUIRE_GT(estimate, 0);
@@ -217,7 +221,7 @@ public:
         return heavy;
     }
 
-    static void InsertIncrementsTheLongestMatch() {
+    static void InsertIncrementsTheMatch() {
         SublimeMG<> mg(1024, 26, hashmode::Default, 1);
         REQUIRE_EQ(mg.CountMonitored(), 0);
 
@@ -355,7 +359,7 @@ public:
                 const uint64_t key = keys[rng() % keys.size()];
                 if (mg.IsMonitored(key))
                     continue;
-                if (mg.CountMonitored() + 1 >= mg.Table().CountSlots() * FingerprintTable::max_load_factor)
+                if (mg.CountMonitored() + 1 >= mg.GetTable().CountSlots() * FingerprintTable::max_load_factor)
                     continue;
                 REQUIRE_EQ(mg.StartMonitoring(key), 0);
                 ref[RefKey(mg, key)] = 1;
@@ -445,10 +449,10 @@ public:
             CheckNoCountIsStranded(mg);
 
             for (uint32_t e = 1; e <= 3 * r; e++) {
-                REQUIRE_EQ(mg.Expand(), keys.size());   // No void entries at this size.
+                REQUIRE_EQ(mg.Expand(), keys.size());   // One entry in, one entry out.
                 CheckNoCountIsStranded(mg);
                 REQUIRE_EQ(mg.CountMonitored(), keys.size());
-                REQUIRE_EQ(mg.Counters().CountCounters(), mg.Table().GetSlotCapacity());
+                REQUIRE_EQ(mg.Counters().CountCounters(), mg.GetTable().GetSlotCapacity());
                 for (const auto& [key, count] : ref)
                     REQUIRE_EQ(mg.Query(key), count);
             }
@@ -462,54 +466,6 @@ public:
             for (const auto& [key, count] : ref)
                 REQUIRE_EQ(mg.Query(key), count);
         }
-    }
-
-    /**
-     * A void entry has no fingerprint bit left to say which of the two buckets
-     * it now belongs to, so it goes into both -- and both copies keep the
-     * whole count, since a query may land on either and an under-estimate is
-     * the one thing a Misra-Gries count must never be.
-     */
-    static void VoidEntriesKeepTheWholeCountTwice() {
-        SublimeMG<> mg(64, 14, hashmode::Default, 3);
-        const uint64_t full_length = mg.Table().GetNumFingerprintBits();
-        REQUIRE_EQ(full_length, 8);
-
-        const uint64_t key = 0xC0FFEE;
-        REQUIRE_EQ(mg.StartMonitoring(key), 0);
-        const uint64_t count = 40000;   // Long enough to need an extension.
-        for (uint64_t i = 1; i < count; i++)
-            REQUIRE_EQ(mg.Insert(key), 0);
-        REQUIRE_EQ(mg.Query(key), count);
-
-        // Spend the fingerprint one bit at a time. Until it runs out, the
-        // entry stays single and keeps its count.
-        for (uint64_t e = 1; e <= full_length; e++) {
-            REQUIRE_EQ(mg.Expand(), 1);
-            CheckNoCountIsStranded(mg);
-            REQUIRE_EQ(mg.CountMonitored(), 1);
-            REQUIRE_EQ(mg.Table().MatchLength(key), full_length - e);
-            REQUIRE_EQ(mg.Query(key), count);
-            REQUIRE(StoredCounts(mg) == std::vector<uint64_t>{count});
-        }
-
-        // From here on every expansion doubles the entries, and every copy
-        // carries the full count.
-        uint64_t expected = 1;
-        for (uint32_t e = 1; e <= 3; e++) {
-            expected *= 2;
-            REQUIRE_EQ(mg.Expand(), expected);
-            CheckNoCountIsStranded(mg);
-            REQUIRE_EQ(mg.CountMonitored(), expected);
-            REQUIRE_EQ(mg.Query(key), count);
-            REQUIRE(StoredCounts(mg) == std::vector<uint64_t>(expected, count));
-        }
-
-        // Counting the key again finds one copy and raises it; the answer
-        // stays an over-estimate of the truth either way.
-        REQUIRE_EQ(mg.Insert(key), 0);
-        REQUIRE_EQ(mg.Query(key), count + 1);
-        CheckNoCountIsStranded(mg);
     }
 
     /** Contraction gives back exactly what expansion took, counts included. */
@@ -526,7 +482,7 @@ public:
                 ref[keys[i]] = target;
             }
             const auto counts_before = StoredCounts(mg);
-            const uint64_t slots_before = mg.Table().CountSlots();
+            const uint64_t slots_before = mg.GetTable().CountSlots();
 
             const uint32_t steps = 2 * r + 1;
             for (uint32_t i = 0; i < steps; i++)
@@ -537,7 +493,7 @@ public:
                 for (const auto& [key, count] : ref)
                     REQUIRE_EQ(mg.Query(key), count);
             }
-            REQUIRE_EQ(mg.Table().CountSlots(), slots_before);
+            REQUIRE_EQ(mg.GetTable().CountSlots(), slots_before);
             // Right down to which slot holds which count.
             REQUIRE(StoredCounts(mg) == counts_before);
         }
@@ -553,12 +509,12 @@ public:
 
         for (int32_t step = 0; step < 6000; step++) {
             const uint32_t action = rng() % 100;
-            if (action < 3 && mg.Table().GetNumKeyBits() < 44) {
+            if (action < 3 && mg.GetTable().GetNumKeyBits() < 44) {
                 REQUIRE_GE(mg.Expand(), 0);
                 CheckNoCountIsStranded(mg);
             }
-            else if (action < 6 && mg.Table().GetExpansionCount() > 0
-                     && mg.CountMonitored() < mg.Table().CountSlots() / 2
+            else if (action < 6 && mg.GetTable().GetExpansionCount() > 0
+                     && mg.CountMonitored() < mg.GetTable().CountSlots() / 2
                                                 * FingerprintTable::max_load_factor) {
                 REQUIRE_GE(mg.Contract(), 0);
                 CheckNoCountIsStranded(mg);
@@ -567,7 +523,7 @@ public:
                 const uint64_t key = keys[rng() % keys.size()];
                 if (mg.IsMonitored(key))
                     continue;
-                if (mg.CountMonitored() + 1 >= mg.Table().CountSlots()
+                if (mg.CountMonitored() + 1 >= mg.GetTable().CountSlots()
                                                 * FingerprintTable::max_load_factor)
                     continue;
                 REQUIRE_EQ(mg.StartMonitoring(key), 0);
@@ -649,7 +605,7 @@ public:
 
     /** While there is room, an unmonitored key is simply admitted at one. */
     static void AdmitsWhileThereIsRoom() {
-        SublimeMG<> mg(128, 26, hashmode::Default, 1, 1, /*buffer_capacity=*/8);
+        SublimeMG<> mg(128, 26, hashmode::Default, 1);
         const uint64_t capacity = mg.Capacity();
         REQUIRE_EQ(capacity, static_cast<uint64_t>(128 * FingerprintTable::max_load_factor));
 
@@ -658,8 +614,7 @@ public:
             REQUIRE_EQ(mg.Insert(keys[i]), 0);
             REQUIRE_EQ(mg.CountMonitored(), i + 1);
             REQUIRE_EQ(mg.Query(keys[i]), 1);
-            // Nothing is buffered and nothing is decremented while there is room.
-            REQUIRE_EQ(mg.CountBuffered(), 0);
+            // Nothing is decremented while there is still room.
             REQUIRE_EQ(mg.CountDecrements(), 0);
         }
         CheckSummary(mg);
@@ -668,65 +623,31 @@ public:
             REQUIRE_EQ(mg.Insert(key), 0);
         for (const uint64_t key : keys)
             REQUIRE_EQ(mg.Query(key), 2);
-        REQUIRE_EQ(mg.CountBuffered(), 0);
-        CheckSummary(mg);
-    }
-
-    /** Once it is full, an unmonitored key waits in the buffer. */
-    static void BuffersWhenFull() {
-        const uint64_t buffer_capacity = 8;
-        SublimeMG<> mg(128, 26, hashmode::Default, 1, 1, buffer_capacity);
-        const auto keys = DistinctKeys(mg, mg.Capacity() + buffer_capacity, 32);
-        for (uint64_t i = 0; i < mg.Capacity(); i++)
-            REQUIRE_EQ(mg.Insert(keys[i]), 0);
-        const uint64_t monitored = mg.CountMonitored();
-
-        // The next few go into the buffer and change nothing yet.
-        for (uint64_t i = 0; i < buffer_capacity - 1; i++) {
-            REQUIRE_EQ(mg.Insert(keys[monitored + i]), 0);
-            REQUIRE_EQ(mg.CountBuffered(), i + 1);
-            REQUIRE_EQ(mg.CountMonitored(), monitored);
-            REQUIRE_EQ(mg.CountDecrements(), 0);
-            // A buffered insertion is not visible until it is applied.
-            REQUIRE_EQ(mg.Query(keys[monitored + i]), 0);
-        }
-
-        // The one that fills the buffer applies the whole batch. Every count
-        // here is one, so the first decrement alone empties the summary and
-        // the rest of the batch moves into the room that makes -- no more
-        // decrements needed.
-        REQUIRE_EQ(mg.Insert(keys[monitored + buffer_capacity - 1]), 0);
-        REQUIRE_EQ(mg.CountBuffered(), 0);
-        REQUIRE_EQ(mg.CountDecrements(), 1);
-        REQUIRE_EQ(mg.CountMonitored(), buffer_capacity);
-        CheckSummary(mg);
-
-        // Flushing an empty buffer is a no-op.
-        REQUIRE_EQ(mg.FlushBuffer(), 0);
         CheckSummary(mg);
     }
 
     /**
-     * The batch evicts exactly the smallest counters, in order, and hands each
-     * freed slot to the buffered key whose decrement emptied it -- and a key
-     * that took a slot is itself decremented by whatever follows it in the
-     * batch, exactly as Misra-Gries would have it.
+     * The sweep evicts exactly the counters it empties -- the smallest ones,
+     * in order -- and the arrival that paid for it takes one of the slots it
+     * freed. An arrival that took a slot is then itself decremented by the
+     * next sweep, exactly as Misra-Gries would have it.
      *
      * That last part is what makes the arithmetic here interesting. Against a
-     * summary holding counts 1, 2, 3, ... the first arrival decrements once
-     * and takes the slot the count of one leaves. The second decrements again,
-     * which frees the count of two *and* the first arrival -- two slots, so it
-     * and the third arrival both get in. The next decrement frees three, and
-     * so on: the arrivals admitted between two decrements all die at the next
-     * one, so a batch of `B` keys spends its decrements in a triangular
-     * pattern, `1 + 2 + 3 + ...` keys per decrement, and only the arrivals
-     * after the last decrement are still standing at the end of it.
+     * summary holding counts 1, 2, 3, ... the first arrival sweeps once and
+     * takes the slot the count of one leaves. The next arrival finds the
+     * summary full again and sweeps a second time, which empties the count of
+     * two *and* the first arrival -- two slots, so the arrival after it walks
+     * straight into the room that leaves without sweeping at all. The third
+     * sweep frees three, and so on: the arrivals admitted between two sweeps
+     * all die at the next one, so the sweeps come in a triangular pattern,
+     * `1 + 2 + 3 + ...` arrivals apart, and only the arrivals after the last
+     * one are still standing at the end.
      */
     static void EvictsTheSmallestCounters() {
-        const uint64_t buffer_capacity = 8;
-        SublimeMG<> mg(128, 30, hashmode::Default, 1, 1, buffer_capacity);
+        const uint64_t arrivals = 8;
+        SublimeMG<> mg(128, 30, hashmode::Default, 1);
         const uint64_t capacity = mg.Capacity();
-        const auto keys = DistinctKeys(mg, capacity + buffer_capacity, 33);
+        const auto keys = DistinctKeys(mg, capacity + arrivals, 33);
 
         // Counts 1, 2, 3, ... so that the order the evictions come in is known.
         for (uint64_t i = 0; i < capacity; i++) {
@@ -737,14 +658,13 @@ public:
         }
         REQUIRE_EQ(mg.CountMonitored(), capacity);
 
-        // Fill the buffer with keys the summary has never seen.
-        for (uint64_t i = 0; i < buffer_capacity; i++)
+        // Now keys the summary has never seen, one at a time.
+        for (uint64_t i = 0; i < arrivals; i++)
             REQUIRE_EQ(mg.Insert(keys[capacity + i]), 0);
-        REQUIRE_EQ(mg.CountBuffered(), 0);   // The last one flushed it.
         CheckSummary(mg);
 
-        // 1 + 2 + 3 = 6 of the eight keys were spent on four decrements, the
-        // fourth of which had room for four and only two left to put in it.
+        // 1 + 2 + 3 = 6 of the eight arrivals fell on a sweep, the fourth of
+        // which freed four slots with only two arrivals left to fill them.
         const uint64_t decrements = 4;
         const uint64_t survivors = 2;
         REQUIRE_EQ(mg.CountDecrements(), decrements);
@@ -756,194 +676,50 @@ public:
         for (uint64_t i = decrements; i < capacity; i++)
             REQUIRE_EQ(mg.Query(keys[i]), i + 1 - decrements);
 
-        // Of the batch, only the keys that arrived after the last decrement
-        // are still there; the earlier ones were admitted and decremented back
-        // out again before the batch was through.
-        for (uint64_t i = 0; i + survivors < buffer_capacity; i++)
+        // Only the keys that arrived after the last sweep are still there;
+        // the earlier ones were admitted and decremented back out again.
+        for (uint64_t i = 0; i + survivors < arrivals; i++)
             REQUIRE_FALSE(mg.IsMonitored(keys[capacity + i]));
-        for (uint64_t i = buffer_capacity - survivors; i < buffer_capacity; i++)
+        for (uint64_t i = arrivals - survivors; i < arrivals; i++)
             REQUIRE_EQ(mg.Query(keys[capacity + i]), 1);
         REQUIRE_EQ(mg.CountMonitored(), capacity - decrements + survivors);
     }
 
     /**
-     * A batch large enough to zero more counters than one pass looks at. The
-     * pass only collects the `B` smallest, so the sweep that follows the
-     * replay -- which takes every entry the decrement has caught up with, seen
-     * or not -- is what keeps entries from being left standing at zero.
+     * A summary whose counts are all one: a single sweep empties every one of
+     * them at once, and every entry it emptied has to go -- nothing may be
+     * left standing at zero.
      */
     static void ManyTiedCountersEmptyAtOnce() {
-        const uint64_t buffer_capacity = 8;
-        SublimeMG<> mg(256, 30, hashmode::Default, 1, 1, buffer_capacity);
+        const uint64_t arrivals = 8;
+        SublimeMG<> mg(256, 30, hashmode::Default, 1);
         const uint64_t capacity = mg.Capacity();
-        const auto keys = DistinctKeys(mg, capacity + buffer_capacity, 34);
+        const auto keys = DistinctKeys(mg, capacity + arrivals, 34);
 
-        // Every single count is one, so the first decrement zeroes all of them
-        // at once -- far more than the `B` the pass collects.
+        // Every single count is one, so the first sweep zeroes all of them.
         for (uint64_t i = 0; i < capacity; i++)
             REQUIRE_EQ(mg.Insert(keys[i]), 0);
         REQUIRE_EQ(mg.CountMonitored(), capacity);
 
-        for (uint64_t i = 0; i < buffer_capacity; i++)
+        for (uint64_t i = 0; i < arrivals; i++)
             REQUIRE_EQ(mg.Insert(keys[capacity + i]), 0);
         CheckSummary(mg);
 
-        // One decrement emptied the summary, and the buffered keys moved in.
+        // One sweep emptied the summary, and the arrivals walked into the room
+        // it left: only the first of them had to pay for it.
         REQUIRE_EQ(mg.CountDecrements(), 1);
         for (uint64_t i = 0; i < capacity; i++)
             REQUIRE_FALSE(mg.IsMonitored(keys[i]));
-        REQUIRE_EQ(mg.CountMonitored(), buffer_capacity);
-        for (uint64_t i = 0; i < buffer_capacity; i++)
+        REQUIRE_EQ(mg.CountMonitored(), arrivals);
+        for (uint64_t i = 0; i < arrivals; i++)
             REQUIRE_EQ(mg.Query(keys[capacity + i]), 1);
     }
 
-    /**
-     * A count reads as the stored value less the lazy decrement, and merging
-     * the one into the other changes no count at all.
-     */
-    static void LazyDecrementAndMerging() {
-        const uint64_t buffer_capacity = 4;
-        SublimeMG<> mg(128, 30, hashmode::Default, 1, 1, buffer_capacity);
-        const uint64_t capacity = mg.Capacity();
-        const auto keys = DistinctKeys(mg, capacity + 200, 35);
-
-        for (uint64_t i = 0; i < capacity; i++) {
-            REQUIRE_EQ(mg.StartMonitoring(keys[i]), 0);
-            for (uint64_t k = 0; k < 200 + i; k++)
-                REQUIRE_EQ(mg.Insert(keys[i]), 0);
-        }
-        // Nothing has been decremented, so nothing is owed.
-        REQUIRE_EQ(mg.GetLazyDecrement(), 0);
-        CheckSummary(mg);
-
-        // Drive the lazy counter up without letting the automatic merge fire:
-        // the counts here are in the hundreds, so it takes a while.
-        for (uint64_t i = 0; i < 100; i++)
-            REQUIRE_EQ(mg.Insert(keys[capacity + i]), 0);
-        mg.FlushBuffer();
-        REQUIRE_GT(mg.GetLazyDecrement(), 0);
-        CheckSummary(mg);
-
-        // Every count is the stored value less what is owed.
-        std::map<uint64_t, uint64_t> counts;
-        for (auto it = mg.table_.begin(); it != mg.table_.end(); ++it)
-            REQUIRE_EQ(mg.Counters().Get(it.slot()) - mg.GetLazyDecrement(),
-                       mg.Counters().Get(it.slot()) - mg.lazy_decrement_);
-        for (uint64_t i = 0; i < capacity + 100; i++)
-            if (mg.IsMonitored(keys[i]))
-                counts[keys[i]] = mg.Query(keys[i]);
-        const uint64_t owed = mg.GetLazyDecrement();
-        const auto stored_before = StoredCounts(mg);
-
-        // Merging subtracts it out of every counter and leaves the counts alone.
-        mg.MergeLazyDecrement();
-        REQUIRE_EQ(mg.GetLazyDecrement(), 0);
-        CheckSummary(mg);
-        for (const auto& [key, count] : counts)
-            REQUIRE_EQ(mg.Query(key), count);
-        const auto stored_after = StoredCounts(mg);
-        REQUIRE_EQ(stored_after.size(), stored_before.size());
-        for (size_t i = 0; i < stored_after.size(); i++)
-            REQUIRE_EQ(stored_after[i] + owed, stored_before[i]);
-
-        // Merging again is a no-op.
-        mg.MergeLazyDecrement();
-        REQUIRE(StoredCounts(mg) == stored_after);
-    }
-
-    /**
-     * The automatic merge fires once the lazy counter overtakes the mean of
-     * the counts, and never leaves a count wrong.
-     */
-    static void MergesOnItsOwn() {
-        // Counts stay small here, so the lazy counter overtakes them quickly.
-        SublimeMG<> mg(256, 30, hashmode::Default, 1, 1, 16);
-        std::mt19937_64 rng(36);
-        std::vector<uint64_t> stream;
-        for (int32_t i = 0; i < 60000; i++) {
-            const uint64_t key = rng() % 4000;
-            stream.push_back(key);
-            REQUIRE_EQ(mg.Insert(key), 0);
-        }
-        mg.FlushBuffer();
-        CheckSummary(mg);
-
-        // It has been merging all along: the lazy counter never ran away with
-        // itself, even though far more decrements than that were applied.
-        REQUIRE_GT(mg.CountDecrements(), 0);
-        REQUIRE_LT(mg.GetLazyDecrement(), mg.CountDecrements());
-        // Nothing in this stream is frequent enough for the guarantee to
-        // promise it a count, but it still may not be over-counted.
-        CheckMisraGriesGuarantee(mg, stream);
-    }
-
-    /**
-     * A retune reads and rewrites every counter, which is exactly what merging
-     * the lazy decrement takes -- so a retune always clears it, whether or not
-     * the merge's own trigger was anywhere near firing.
-     */
-    static void RetuningAppliesTheLazyDecrement() {
-        const uint64_t buffer_capacity = 4;
-        SublimeMG<> mg(256, 34, hashmode::Default, 43, 1, buffer_capacity);
-        const uint64_t capacity = mg.Capacity();
-        const auto keys = DistinctKeys(mg, capacity + buffer_capacity, 44);
-
-        // Fill it, with counts in the thousands.
-        for (uint64_t i = 0; i < capacity; i++) {
-            REQUIRE_EQ(mg.StartMonitoring(keys[i]), 0);
-            for (uint64_t k = 1; k < 2000; k++)
-                REQUIRE_EQ(mg.Insert(keys[i]), 0);
-        }
-        // Put something on the lazy decrement. Against counts this large its
-        // own trigger is nowhere near firing, so nothing will merge it.
-        for (uint64_t i = 0; i < buffer_capacity; i++)
-            REQUIRE_EQ(mg.Insert(keys[capacity + i]), 0);
-        mg.FlushBuffer();
-        REQUIRE_GT(mg.GetLazyDecrement(), 0);
-        REQUIRE_FALSE(mg.lazy_decrement_is_dead_weight());
-        CheckSummary(mg);
-
-        // Whatever the eviction left standing.
-        std::vector<uint64_t> survivors;
-        std::vector<uint64_t> expected;
-        for (uint64_t i = 0; i < capacity; i++) {
-            if (!mg.IsMonitored(keys[i]))
-                continue;
-            survivors.push_back(keys[i]);
-            expected.push_back(mg.Query(keys[i]));
-        }
-        REQUIRE_GT(survivors.size(), 0);
-        const uint32_t stub_before = mg.Counters().GetStubLength();
-
-        // Now count the survivors up hard. Every one of them is monitored, so
-        // these are all case-1 insertions: nothing is buffered, nothing is
-        // decremented, and the lazy decrement cannot move. The only thing that
-        // changes is that the counts outgrow VALE's tuning.
-        const uint64_t decrements_before = mg.CountDecrements();
-        uint64_t rounds = 0;
-        while (mg.Counters().GetStubLength() == stub_before) {
-            for (size_t i = 0; i < survivors.size(); i++) {
-                for (int32_t k = 0; k < 200; k++)
-                    REQUIRE_EQ(mg.Insert(survivors[i]), 0);
-                expected[i] += 200;
-            }
-            REQUIRE_LT(++rounds, 200);      // It has to happen sooner than this.
-        }
-        REQUIRE_EQ(mg.CountDecrements(), decrements_before);
-
-        // The retune took the lazy decrement with it, and left every count
-        // exactly where it was.
-        REQUIRE_EQ(mg.GetLazyDecrement(), 0);
-        CheckSummary(mg);
-        for (size_t i = 0; i < survivors.size(); i++)
-            REQUIRE_EQ(mg.Query(survivors[i]), expected[i]);
-    }
-
-    /** The guarantee itself, on a skewed stream, at several buffer sizes. */
+    /** The guarantee itself, on a skewed stream. */
     static void KeepsTheMisraGriesGuarantee() {
-        for (const uint64_t buffer_capacity : {1ULL, 4ULL, 64ULL, 512ULL}) {
-            SublimeMG<> mg(1024, 34, hashmode::Default, 37, 1, buffer_capacity);
-            std::mt19937_64 rng(38);
+        for (const uint32_t seed : {37u, 91u, 113u}) {
+            SublimeMG<> mg(1024, 34, hashmode::Default, seed);
+            std::mt19937_64 rng(seed + 1);
             std::vector<uint64_t> stream;
             for (int32_t i = 0; i < 300000; i++) {
                 // Skewed: a few keys dominate, with a long tail behind them.
@@ -952,15 +728,194 @@ public:
                 stream.push_back(key);
                 REQUIRE_EQ(mg.Insert(key), 0);
             }
-            mg.FlushBuffer();
             CheckSummary(mg);
             REQUIRE_GT(CheckMisraGriesGuarantee(mg, stream), 0);
         }
     }
 
+    /**
+     * At a fixed size, `SublimeMG` and `MG` are the same algorithm over the
+     * same monitored set: same table, same fingerprint length, same seed, and
+     * the only difference is that one keeps its counts in VALE's
+     * variable-length counters and the other in a plain `uint32_t` array. So
+     * every query has to agree exactly, insertion for insertion -- and the
+     * space they take must not.
+     */
+    static void AgreesWithPlainMisraGries() {
+        const uint64_t nslots = 512;
+        const uint32_t fingerprint_length = 20, seed = 4242;
+        uint64_t quotient_bits = 0;
+        for (uint64_t n = nslots; n > 1; n >>= 1)
+            quotient_bits++;
+
+        SublimeMG<> sublime(nslots, quotient_bits + fingerprint_length,
+                            hashmode::Default, seed);
+        MG plain(nslots, hashmode::Default, seed, fingerprint_length);
+        REQUIRE_EQ(sublime.Capacity(), plain.Capacity());
+
+        std::mt19937_64 rng(4243);
+        std::vector<uint64_t> stream;
+        for (int32_t i = 0; i < 200000; i++) {
+            const double u = (rng() % 1000000) / 1000000.0;
+            const uint64_t key = static_cast<uint64_t>(30000 * u * u * u);
+            stream.push_back(key);
+            REQUIRE_EQ(sublime.Insert(key), 0);
+            plain.Insert(key);
+            if (i % 20000 == 0) {
+                REQUIRE_EQ(sublime.CountMonitored(), plain.CountMonitored());
+                REQUIRE_EQ(sublime.CountDecrements(), plain.CountDecrements());
+            }
+        }
+        CheckSummary(sublime);
+        REQUIRE_EQ(sublime.CountMonitored(), plain.CountMonitored());
+        REQUIRE_EQ(sublime.CountDecrements(), plain.CountDecrements());
+        REQUIRE_GT(sublime.CountDecrements(), 0);
+
+        for (const auto& [key, frequency] : Frequencies(stream))
+            REQUIRE_EQ(sublime.Query(key), plain.Query(key));
+
+        // Which is the whole point: the same answers, in less space.
+        REQUIRE_LT(sublime.SizeInBytes(), plain.SizeInBytes());
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * The min segment tree.
+     * ------------------------------------------------------------------
+     */
+
+    /** A skewed stream through one instantiation or another, checked throughout. */
+    template <typename MGT = SublimeMG<true, true>>
+    static void TreeMonteCarlo(uint64_t nslots, uint64_t universe, int32_t steps, uint32_t seed) {
+        MGT mg(nslots, 34, hashmode::Default, seed);
+        std::mt19937_64 rng(seed + 1);
+        std::vector<uint64_t> stream;
+        const int32_t check_at = steps / 20 + 1;
+        for (int32_t i = 0; i < steps; i++) {
+            const double u = (rng() % 1000000) / 1000000.0;
+            const uint64_t key = static_cast<uint64_t>(universe * u * u * u);
+            stream.push_back(key);
+            // A cuckoo filter can turn an insertion away with room left in the
+            // table, which `SublimeMG` reports and the stream goes on past.
+            const int32_t status = mg.Insert(key);
+            REQUIRE((status == 0 || status == MGT::err_no_space));
+            if (i % check_at == 0)
+                CheckSummary(mg);
+        }
+        CheckSummary(mg);
+        REQUIRE_GT(CheckMisraGriesGuarantee(mg, stream), 0);
+    }
+
+    /**
+     * The keys a decrement empties all go at once, and the decrement is paid
+     * for once. Admitting every key at the same moment leaves them all at the
+     * same count, so the first arrival that finds the summary full takes the
+     * whole table with it.
+     */
+    static void TreeEvictsEveryEmptiedKeyAtOnce() {
+        SublimeMG<true, true> mg(128, 30, hashmode::Default, 5);
+        const uint64_t capacity = mg.Capacity();
+        const auto keys = DistinctKeys(mg, capacity + 4, 6);
+        for (uint64_t i = 0; i < capacity; i++)
+            REQUIRE_EQ(mg.Insert(keys[i]), 0);
+        REQUIRE_EQ(mg.CountMonitored(), capacity);
+        REQUIRE_EQ(mg.GetLazyDecrement(), 0);
+        CheckSummary(mg);
+
+        // Every count is one, so one decrement empties all of them.
+        REQUIRE_EQ(mg.Insert(keys[capacity]), 0);
+        REQUIRE_EQ(mg.CountDecrements(), 1);
+        REQUIRE_EQ(mg.GetLazyDecrement(), 1);
+        REQUIRE_EQ(mg.CountMonitored(), 1);             // All gone, the arrival admitted.
+        REQUIRE_EQ(mg.Query(keys[capacity]), 1);
+        for (uint64_t i = 0; i < capacity; i++)
+            REQUIRE_EQ(mg.Query(keys[i]), 0);
+        CheckSummary(mg);
+
+        // And the arrivals behind it walk into the room that left, without
+        // paying for a decrement of their own.
+        REQUIRE_EQ(mg.Insert(keys[capacity + 1]), 0);
+        REQUIRE_EQ(mg.CountDecrements(), 1);
+        REQUIRE_EQ(mg.CountMonitored(), 2);
+        CheckSummary(mg);
+    }
+
+    /** An arrival that empties nothing is dropped, and pays for its decrement. */
+    static void TreeDropsAnArrivalThatFreesNothing() {
+        SublimeMG<true, true> mg(128, 30, hashmode::Default, 7);
+        const uint64_t capacity = mg.Capacity();
+        const auto keys = DistinctKeys(mg, capacity + 2, 8);
+        for (uint64_t i = 0; i < capacity; i++)
+            for (int32_t rep = 0; rep < 3; rep++)       // A head start, so nothing is at one.
+                REQUIRE_EQ(mg.Insert(keys[i]), 0);
+        REQUIRE_EQ(mg.CountMonitored(), capacity);
+
+        REQUIRE_EQ(mg.Insert(keys[capacity]), 0);
+        REQUIRE_EQ(mg.CountDecrements(), 1);
+        REQUIRE_EQ(mg.CountMonitored(), capacity);      // Nothing emptied...
+        REQUIRE_EQ(mg.Query(keys[capacity]), 0);        // ...so nothing admitted.
+        for (uint64_t i = 0; i < capacity; i++)
+            REQUIRE_EQ(mg.Query(keys[i]), 2);           // Everything came down by one.
+        CheckSummary(mg);
+    }
+
+    /**
+     * The lazy decrement is merged out once it passes half of what a stub can
+     * hold, and every count survives the rebuild it rides on.
+     */
+    static void TreeMergesTheLazyDecrement() {
+        SublimeMG<true, true> mg(256, 34, hashmode::Default, 9);
+        std::mt19937_64 rng(10);
+        std::vector<uint64_t> stream;
+        uint64_t merges = 0, previous = 0, widest_stub = 0;
+        for (int32_t i = 0; i < 400000; i++) {
+            const double u = (rng() % 1000000) / 1000000.0;
+            const uint64_t key = static_cast<uint64_t>(40000 * u * u * u);
+            stream.push_back(key);
+            REQUIRE_EQ(mg.Insert(key), 0);
+            // A merge is the only thing that makes the decrement fall.
+            if (mg.GetLazyDecrement() < previous) {
+                merges++;
+                REQUIRE_EQ(mg.GetLazyDecrement(), 1);
+                CheckSummary(mg);
+                widest_stub = 0;
+            }
+            previous = mg.GetLazyDecrement();
+            // It never climbs far past the threshold it is merged at. The
+            // threshold is read against the stub of the moment, and a merge
+            // can leave a narrower one behind, so the bound to hold it to is
+            // the widest stub it has seen since the last merge.
+            widest_stub = std::max(widest_stub,
+                                   static_cast<uint64_t>(mg.Counters().GetStubLength()));
+            REQUIRE_LE(mg.GetLazyDecrement(), ((uint64_t{1} << widest_stub) - 1) / 2 + 1);
+        }
+        REQUIRE_GT(merges, 0);
+        CheckSummary(mg);
+        REQUIRE_GT(CheckMisraGriesGuarantee(mg, stream), 0);
+    }
+
+    /** The tree instantiation expands under the size function like the other. */
+    static void TreeExpands() {
+        auto f = [](double size) { return static_cast<uint64_t>(2 * size); };
+        SublimeMG<true, true> mg(64, 30, hashmode::Default, 11, 1, f);
+        std::mt19937_64 rng(12);
+        std::vector<uint64_t> stream;
+        for (int32_t i = 0; i < 200000; i++) {
+            const double u = (rng() % 1000000) / 1000000.0;
+            const uint64_t key = static_cast<uint64_t>(20000 * u * u * u);
+            stream.push_back(key);
+            REQUIRE_EQ(mg.Insert(key), 0);
+        }
+        REQUIRE_GT(mg.CountExpansions(), 0);
+        CheckSummary(mg);
+        // The decrements happened while the summary was smaller, so its final
+        // capacity is no bound on them; the stream length is.
+        REQUIRE_GT(CheckMisraGriesGuarantee(mg, stream, 1), 0);
+    }
+
     /** A uniform stream, where nothing is frequent and everything churns. */
     static void SurvivesAStreamWithNoHeavyHitters() {
-        SublimeMG<> mg(256, 30, hashmode::Default, 39, 1, 32);
+        SublimeMG<> mg(256, 30, hashmode::Default, 39);
         std::mt19937_64 rng(40);
         std::vector<uint64_t> stream;
         for (int32_t i = 0; i < 100000; i++) {
@@ -968,11 +923,9 @@ public:
             stream.push_back(key);
             REQUIRE_EQ(mg.Insert(key), 0);
             if (i % 5000 == 0) {
-                mg.FlushBuffer();
                 CheckSummary(mg);
             }
         }
-        mg.FlushBuffer();
         CheckSummary(mg);
         // Nothing may be over-counted, however hard the summary churned.
         const auto truth = Frequencies(stream);
@@ -983,7 +936,7 @@ public:
 
     /** Resizing mid-stream keeps the guarantee, and widens the summary. */
     static void KeepsTheGuaranteeAcrossResizes() {
-        SublimeMG<> mg(256, 36, hashmode::Default, 41, 2, 32);
+        SublimeMG<> mg(256, 36, hashmode::Default, 41, 2);
         std::mt19937_64 rng(42);
         std::vector<uint64_t> stream;
         const uint64_t capacity_before = mg.Capacity();
@@ -997,7 +950,6 @@ public:
                 CheckSummary(mg);
             }
         }
-        mg.FlushBuffer();
         CheckSummary(mg);
         REQUIRE_GT(mg.Capacity(), capacity_before);
         // The decrements happened while the summary was still at its starting
@@ -1014,111 +966,29 @@ public:
             const double u = (rng() % 1000000) / 1000000.0;
             REQUIRE_EQ(mg.Insert(static_cast<uint64_t>(40000 * u * u * u)), 0);
         }
-        mg.FlushBuffer();
         CheckSummary(mg);
     }
 
-    /** @returns How many stored fingerprints a query for `key` sums up. */
-    template <bool E>
-    static uint64_t MatchCount(const SublimeMG<E>& mg, uint64_t key, uint8_t flags = 0) {
-        return mg.table_.SumMatchingCounters(key, flags).count;
-    }
-
     /**
-     * The sum a query ought to return, worked out entry by entry from the
-     * table's contents rather than by scanning a run: every entry in the key's
-     * bucket whose fingerprint bits agree with the key's, over the length that
-     * entry actually stores, less the lazy decrement once. The matching is
-     * spelled out here from the stored length, so it does not lean on the same
-     * bit tricks the query does.
+     * The count a query ought to return, worked out from the table's contents
+     * rather than by scanning a run, so that it does not lean on the same
+     * lookup the query does.
      */
-    template <bool E>
-    static uint64_t ExpectedQuery(const SublimeMG<E>& mg, uint64_t key, uint8_t flags = 0) {
-        const FingerprintTable& table = mg.table_;
+    template <typename MGT>
+    static uint64_t ExpectedQuery(const MGT& mg, uint64_t key, uint8_t flags = 0) {
+        const auto& table = mg.table_;
         const uint64_t hash = table.hash_key(key, flags);
         const uint64_t bucket = table.bucket_from_hash(hash);
-        const uint64_t target = table.fingerprint_from_hash(hash, table.GetNumFingerprintBits());
+        const uint64_t target = table.fingerprint_from_hash(hash);
 
-        uint64_t sum = 0, matches = 0;
-        for (auto it = table.begin(); it != table.end(); ++it) {
-            if (it.bucket() != bucket)
-                continue;
-            const uint64_t stored = it.fingerprint();
-            uint32_t length = 0;
-            while ((stored >> (length + 1)) != 0)
-                length++;
-            const uint64_t mask = (1ULL << length) - 1;
-            if ((stored & mask) == (target & mask)) {
-                sum += mg.Counters().Get(it.slot());
-                matches++;
-            }
-        }
-        // The decrement is the key's, once over, not each entry's.
-        return matches == 0 ? 0 : sum - mg.lazy_decrement_;
-    }
-
-    /**
-     * A query adds up every match in the key's run, of whatever length, and
-     * leaves the entries that merely share the bucket out of it.
-     */
-    static void QuerySumsEveryMatch() {
-        SublimeMG<> mg(256, 20, hashmode::Default, 3);
-        FingerprintTable& table = mg.table_;
-        const uint32_t full_length = table.GetNumFingerprintBits();
-        REQUIRE_GE(full_length, 4);
-
-        const uint64_t key = 0xBEEF;
-        REQUIRE_EQ(mg.Query(key), 0);           // Nothing stored yet.
-
-        // One matching fingerprint of every length the table can hold, planted
-        // directly, so that the run carries the whole spread at once.
-        const uint64_t hash = table.hash_key(key, 0);
-        for (uint32_t length = 0; length <= full_length; length++)
-            REQUIRE_GE(table.insert_hash_at(hash, length), 0);
-        // And entries sharing the bucket without matching: the bucket comes
-        // out of the low bits of the hash and the fingerprint out of the ones
-        // just above them, so flipping the lowest fingerprint bit keeps the
-        // bucket and spoils the match for every length but zero.
-        const uint64_t other = hash ^ (1ULL << table.GetBucketIndexHashSize());
-        REQUIRE_EQ(table.bucket_from_hash(other), table.bucket_from_hash(hash));
-        for (uint32_t length = 1; length <= full_length; length++)
-            REQUIRE_GE(table.insert_hash_at(other, length), 0);
-
-        // Give every entry a distinct count, matching or not.
-        uint64_t next = 1;
+        // Every fingerprint is of the same length, so at most one entry of the
+        // key's run can equal its own, and that entry's counter is the answer.
+        // Worked out here by walking the table, independently of the lookup
+        // the sketch itself performs.
         for (auto it = table.begin(); it != table.end(); ++it)
-            table.GetCounters()->Set(it.slot(), next++);
-        REQUIRE_EQ(table.CountFingerprints(), 2 * full_length + 1);
-
-        // Only the matches are summed -- one per length, so `full_length + 1`
-        // of the `2 * full_length + 1` entries in the bucket.
-        const uint64_t expected = ExpectedQuery(mg, key);
-        REQUIRE_GT(expected, 0);
-        REQUIRE_EQ(mg.Query(key), expected);
-        REQUIRE_EQ(MatchCount(mg, key), full_length + 1);
-        // The sum really is a sum: it stands above every one of its own terms.
-        for (auto it = table.begin(); it != table.end(); ++it)
-            REQUIRE_GT(mg.Query(key), table.GetCounters()->Get(it.slot()));
-
-        // The lazy decrement is owed by the key, once, not by each of the
-        // counters its count is spread over. So it comes off the sum once:
-        // raising just the first entry of the chain by it changes nothing,
-        // while raising every entry by it raises the answer.
-        const uint64_t owed = 5;
-        const uint64_t root = table.run_start(table.bucket_from_hash(hash));
-        table.GetCounters()->Set(root, table.GetCounters()->Get(root) + owed);
-        mg.lazy_decrement_ = owed;
-        REQUIRE_EQ(mg.Query(key), expected);
-        for (auto it = table.begin(); it != table.end(); ++it)
-            if (it.slot() != root)
-                table.GetCounters()->Set(it.slot(), table.GetCounters()->Get(it.slot()) + owed);
-        REQUIRE_EQ(mg.Query(key), expected + full_length * owed);
-
-        // A key whose bucket holds nothing at all.
-        uint64_t elsewhere = 0;
-        while (table.is_occupied(table.bucket_from_hash(table.hash_key(elsewhere, 0))))
-            elsewhere++;
-        REQUIRE_EQ(mg.Query(elsewhere), 0);
+            if (it.bucket() == bucket && it.fingerprint() == target)
+                return mg.Counters().Get(it.slot());
+        return 0;
     }
 
     /**
@@ -1132,7 +1002,7 @@ public:
      * decided on the same number of bits of hash.
      */
     static void QueryAgreesWithCountWhenMatchesAreUnique() {
-        SublimeMG<> mg(1024, 34, hashmode::Default, 45, 1, 32);
+        SublimeMG<> mg(1024, 34, hashmode::Default, 45);
         std::mt19937_64 rng(46);
         std::vector<uint64_t> stream;
         for (int32_t i = 0; i < 100000; i++) {
@@ -1141,7 +1011,6 @@ public:
             stream.push_back(key);
             REQUIRE_EQ(mg.Insert(key), 0);
         }
-        mg.FlushBuffer();
         CheckSummary(mg);
 
         const auto truth = Frequencies(stream);
@@ -1164,398 +1033,11 @@ public:
         }
     }
 
-    /**
-     * A summary that fills up and expands, over and over, ends up holding
-     * fingerprints of every length at once: an expansion takes a bit off the
-     * entries already stored, while the ones admitted afterwards come in at
-     * full length. The short ones stand for whole families of keys, so a run
-     * holds several matches for one key, and adding all of them up is what
-     * keeps the answer an over-estimate. Entries that have run out of
-     * fingerprint entirely match everything, and are duplicated into both of
-     * their candidate buckets besides -- but the two copies land in different
-     * buckets, so a query still sees only one of them.
-     */
-    static void QuerySumsMatchesOfEveryLength() {
-        SublimeMG<> mg(64, 12, hashmode::Default, 49);
-        REQUIRE_EQ(mg.Table().GetNumFingerprintBits(), 6);
-
-        // Six rounds of filling to capacity and expanding, which is one round
-        // for every bit of fingerprint the oldest entries have to give up.
-        std::mt19937_64 rng(50);
-        std::vector<uint64_t> keys;
-        for (uint32_t e = 0; e <= 6; e++) {
-            while (mg.CountMonitored() < mg.Capacity()) {
-                const uint64_t key = rng();
-                REQUIRE_EQ(mg.StartMonitoring(key), 0);
-                keys.push_back(key);
-                // Its own entry is the longest match right now, so these land
-                // on it rather than on anything else sharing the bucket.
-                for (uint32_t k = 0; k < 3; k++)
-                    REQUIRE_EQ(mg.Insert(key), 0);
-            }
-            if (e < 6)
-                REQUIRE_GE(mg.Expand(), 0);
-            CheckSummary(mg);
-        }
-
-        // Every length from spent to full is in there.
-        std::set<uint32_t> lengths;
-        for (auto it = mg.Table().begin(); it != mg.Table().end(); ++it)
-            lengths.insert(it.fingerprint_length());
-        REQUIRE_EQ(lengths, std::set<uint32_t>({0, 1, 2, 3, 4, 5, 6}));
-
-        uint64_t summed_more_than_one = 0;
-        for (const uint64_t key : keys) {
-            const uint64_t query = mg.Query(key);
-            REQUIRE_EQ(query, ExpectedQuery(mg, key));
-            REQUIRE_GE(query, 4);       // Its own count, at the very least.
-            summed_more_than_one += MatchCount(mg, key) > 1;
-        }
-        REQUIRE_GT(summed_more_than_one, 0);
-
-        // And it answers for keys it never saw, by whatever their bucket holds.
-        for (uint64_t key = 0; key < 64; key++)
-            REQUIRE_EQ(mg.Query(key), ExpectedQuery(mg, key));
-    }
-
-    /**
-     * @returns A key whose bucket holds nothing at all, so that a chain can be
-     * planted in it without anything else of the table's running through it.
-     */
-    template <bool E>
-    static uint64_t KeyInAnEmptyBucket(const SublimeMG<E>& mg, uint64_t from = 0) {
-        const FingerprintTable& table = mg.table_;
-        while (table.is_occupied(table.bucket_from_hash(table.hash_key(from, 0))))
-            from++;
-        return from;
-    }
-
-    /**
-     * @returns A key sharing `like`'s bucket whose full-length fingerprint is
-     * none of `apart_from`. Found by search, which is cheap: a bucket is one
-     * of a few hundred here.
-     */
-    template <bool E>
-    static uint64_t KeyInTheSameBucket(const SublimeMG<E>& mg, uint64_t like,
-                                       const std::vector<uint64_t>& apart_from) {
-        const FingerprintTable& table = mg.table_;
-        const uint64_t bucket = table.bucket_from_hash(table.hash_key(like, 0));
-        const uint64_t length = table.GetNumFingerprintBits();
-        for (uint64_t key = like + 1;; key++) {
-            const uint64_t hash = table.hash_key(key, 0);
-            if (table.bucket_from_hash(hash) != bucket)
-                continue;
-            const uint64_t fingerprint = table.fingerprint_from_hash(hash, length);
-            if (std::find(apart_from.begin(), apart_from.end(), fingerprint) == apart_from.end())
-                return key;
-        }
-    }
-
-    /**
-     * Planted directly: a void entry holding `root_count`, and two
-     * full-length extensions of it holding `a_count` and `b_count`. Chains do
-     * not arise until the table has expanded, and building one by hand is a
-     * good deal clearer than expanding until one turns up.
-     *
-     * @returns The key of the first extension, the key of the second, and a
-     * third key of the same bucket that only the void entry matches.
-     */
-    template <bool E>
-    static std::array<uint64_t, 3> PlantAChain(SublimeMG<E>& mg, uint64_t root_count,
-                                               uint64_t a_count, uint64_t b_count) {
-        FingerprintTable& table = mg.table_;
-        const uint64_t length = table.GetNumFingerprintBits();
-
-        const uint64_t a = KeyInAnEmptyBucket(mg);
-        const uint64_t hash_a = table.hash_key(a, 0);
-        const uint64_t fingerprint_a = table.fingerprint_from_hash(hash_a, length);
-        const uint64_t b = KeyInTheSameBucket(mg, a, {fingerprint_a});
-        const uint64_t hash_b = table.hash_key(b, 0);
-        const uint64_t fingerprint_b = table.fingerprint_from_hash(hash_b, length);
-        const uint64_t c = KeyInTheSameBucket(mg, a, {fingerprint_a, fingerprint_b});
-
-        // The void entry first, so that it is the bottom of both chains.
-        const int64_t root = table.insert_hash_at(hash_a, 0);
-        REQUIRE_GE(root, 0);
-        table.GetCounters()->Set(root, root_count);
-        const int64_t at_a = table.insert_hash_at(hash_a, length);
-        REQUIRE_GE(at_a, 0);
-        table.GetCounters()->Set(at_a, a_count);
-        const int64_t at_b = table.insert_hash_at(hash_b, length);
-        REQUIRE_GE(at_b, 0);
-        table.GetCounters()->Set(at_b, b_count);
-
-        mg.recount();
-        return {a, b, c};
-    }
-
-    /**
-     * Removing an entry takes its counter out of the chain sums of the longer
-     * entries that matched it. The repair hands it to the entries left at the
-     * bottom of those chains, so every key's count comes through untouched --
-     * and a key that the removed entry was the only match for reads zero,
-     * which is what removing it was supposed to mean.
-     */
-    static void ChainSumsSurviveEviction() {
-        SublimeMG<> mg(128, 26, hashmode::Default, 63);
-        FingerprintTable& table = mg.table_;
-        const auto [a, b, c] = PlantAChain(mg, 7, 11, 13);
-
-        // Chain sums 7, 18 and 20: the void entry's own, and one for each
-        // extension reaching down through it.
-        REQUIRE_EQ(mg.Query(a), 18);
-        REQUIRE_EQ(mg.Query(b), 20);
-        REQUIRE_EQ(mg.Query(c), 7);
-        CheckSummary(mg);
-
-        const uint64_t bucket = table.bucket_from_hash(table.hash_key(a, 0));
-        std::vector<std::pair<uint64_t, uint64_t>> victims{{bucket, table.run_start(bucket)}};
-        const int64_t delta = table.DeleteEntriesPreservingChainSums(victims);
-        mg.recount();
-
-        // Seven came out of one entry and went into each of the two above it:
-        // the only case where a removal leaves the counters holding more than
-        // they did, and the price of two chains sharing one entry.
-        REQUIRE_EQ(delta, 7);
-        REQUIRE_EQ(mg.CountMonitored(), 2);
-        REQUIRE_EQ(mg.Query(a), 18);
-        REQUIRE_EQ(mg.Query(b), 20);
-        REQUIRE_EQ(mg.Query(c), 0);     // Nothing matches it any more.
-        CheckSummary(mg);
-    }
-
-    /**
-     * The repair hands what was removed to the entry left at the *bottom* of
-     * each chain, and to that entry only. Every entry above it reaches the
-     * removed counters through it, so its sum is repaired along with theirs --
-     * and giving them a share of their own would count the same counter twice.
-     *
-     * That only shows up in a chain at least three deep, where an entry can
-     * lose its prefix and still have one left underneath.
-     */
-    static void RepairStopsAtTheFirstSurvivor() {
-        SublimeMG<> mg(128, 26, hashmode::Default, 66);
-        FingerprintTable& table = mg.table_;
-        const uint64_t length = table.GetNumFingerprintBits();
-        REQUIRE_GT(length, 3);
-
-        // Void, three bits, and full length -- each one a prefix of the next,
-        // since all three are fingerprints of the same hash.
-        const uint64_t key = KeyInAnEmptyBucket(mg);
-        const uint64_t hash = table.hash_key(key, 0);
-        for (const auto& [len, count] : std::vector<std::pair<uint64_t, uint64_t>>{
-                    {0, 4}, {3, 6}, {length, 10}}) {
-            const int64_t at = table.insert_hash_at(hash, len);
-            REQUIRE_GE(at, 0);
-            table.GetCounters()->Set(at, count);
-        }
-        mg.recount();
-        REQUIRE_EQ(mg.Query(key), 20);      // 4 + 6 + 10.
-        CheckSummary(mg);
-
-        const uint64_t bucket = table.bucket_from_hash(hash);
-        std::vector<std::pair<uint64_t, uint64_t>> victims{{bucket, table.run_start(bucket)}};
-        const int64_t delta = table.DeleteEntriesPreservingChainSums(victims);
-        mg.recount();
-
-        // The four went to the three-bit entry and stopped there: the counters
-        // still add up to what they did, and the key still reads twenty.
-        REQUIRE_EQ(delta, 0);
-        REQUIRE_EQ(mg.Query(key), 20);
-        const uint64_t at = table.run_start(bucket);
-        REQUIRE_EQ(mg.Counters().Get(at), 10);
-        REQUIRE_EQ(mg.Counters().Get(at + 1), 10);
-        CheckSummary(mg);
-    }
-
-    /**
-     * Eviction is driven by chain sums, so a short fingerprint goes before the
-     * longer ones extending it: its chain sum is the smaller of the two by
-     * construction, whatever the two counters say. The extension keeps its
-     * count exactly, having been handed what was removed from under it.
-     */
-    static void EvictionTakesThePrefixAndKeepsTheExtension() {
-        SublimeMG<> mg(128, 26, hashmode::Default, 61, 1, /*buffer_capacity=*/1);
-        FingerprintTable& table = mg.table_;
-
-        // A summary of well-counted keys, so that nothing else is anywhere
-        // near being evicted, and then the chain, two slots from full.
-        const auto keys = DistinctKeys(mg, mg.Capacity() - 3, 62);
-        for (const uint64_t key : keys) {
-            REQUIRE_EQ(mg.StartMonitoring(key), 0);
-            for (uint32_t k = 1; k < 1000; k++)
-                REQUIRE_EQ(mg.Insert(key), 0);
-        }
-        const auto [a, b, c] = PlantAChain(mg, 3, 500, 800);
-        REQUIRE_EQ(mg.CountMonitored(), mg.Capacity());
-        REQUIRE_EQ(mg.Query(a), 503);
-        REQUIRE_EQ(mg.Query(b), 803);
-        REQUIRE_EQ(mg.Query(c), 3);
-
-        // Three occurrences of keys it has never seen, one decrement each --
-        // the buffer holds one at a time here. The void entry's chain sum of
-        // three is the smallest in the table, so the third decrement is the
-        // one that catches up with it.
-        for (uint32_t i = 0; i < 3; i++)
-            REQUIRE_EQ(mg.Insert(KeyInAnEmptyBucket(mg, 1000 + i)), 0);
-        REQUIRE_EQ(mg.CountDecrements(), 3);
-        REQUIRE_EQ(mg.GetLazyDecrement(), 3);
-        CheckSummary(mg);
-
-        // The void entry went, both extensions stayed, and their keys are down
-        // by exactly the three decrements -- not by the counter that came out
-        // from under them, which each of them was handed instead.
-        REQUIRE_EQ(mg.Query(c), 0);
-        REQUIRE_EQ(mg.Query(a), 500);
-        REQUIRE_EQ(mg.Query(b), 800);
-        const uint64_t bucket = table.bucket_from_hash(table.hash_key(a, 0));
-        const uint64_t at = table.run_start(bucket);
-        REQUIRE_EQ(mg.Counters().Get(at) + mg.Counters().Get(at + 1), 503 + 803);
-        for (const uint64_t key : keys)
-            REQUIRE_EQ(mg.Query(key), 997);
-    }
-
-    /**
-     * What decides whether an entry can free a slot is its chain sum, not its
-     * own counter. An entry sitting on a well-counted prefix holds very little
-     * itself and is nowhere near being evicted, because the key family ending
-     * there is as large as the whole chain says. Judging it by its own counter
-     * would free a slot that had not emptied, and let the batch admit a key
-     * over capacity against it.
-     */
-    static void ChainedEntriesAreJudgedByTheirChainSum() {
-        SublimeMG<> mg(128, 26, hashmode::Default, 67, 1, /*buffer_capacity=*/1);
-
-        const auto keys = DistinctKeys(mg, mg.Capacity() - 3, 68);
-        for (const uint64_t key : keys) {
-            REQUIRE_EQ(mg.StartMonitoring(key), 0);
-            for (uint32_t k = 1; k < 1000; k++)
-                REQUIRE_EQ(mg.Insert(key), 0);
-        }
-        // A thousand at the bottom of the chain, one in each entry above it.
-        const auto [a, b, c] = PlantAChain(mg, 1000, 1, 1);
-        REQUIRE_EQ(mg.CountMonitored(), mg.Capacity());
-        REQUIRE_EQ(mg.Query(a), 1001);
-        REQUIRE_EQ(mg.Query(b), 1001);
-        REQUIRE_EQ(mg.Query(c), 1000);
-        CheckSummary(mg);
-
-        // One occurrence of a key it has never seen. Nothing in the table is
-        // within a thousand of empty, so the decrement frees nothing and the
-        // occurrence is lost -- the entries holding one apiece included.
-        const uint64_t unseen = KeyInAnEmptyBucket(mg, 2000);
-        REQUIRE_EQ(mg.Insert(unseen), 0);
-        REQUIRE_EQ(mg.CountDecrements(), 1);
-        REQUIRE_EQ(mg.CountMonitored(), mg.Capacity());
-        REQUIRE_EQ(mg.Query(unseen), 0);
-        REQUIRE_EQ(mg.Query(a), 1000);
-        REQUIRE_EQ(mg.Query(b), 1000);
-        REQUIRE_EQ(mg.Query(c), 999);
-        for (const uint64_t key : keys)
-            REQUIRE_EQ(mg.Query(key), 999);
-        CheckSummary(mg);
-    }
-
-    /**
-     * A chain carries the lazy decrement in one place, its first entry, so
-     * that is the one place merging takes it off. Every count reads exactly
-     * what it read before.
-     */
-    static void MergeSubtractsOncePerChain() {
-        SublimeMG<> mg(128, 26, hashmode::Default, 64);
-        FingerprintTable& table = mg.table_;
-        const auto [a, b, c] = PlantAChain(mg, 7, 11, 13);
-
-        mg.lazy_decrement_ = 5;
-        REQUIRE_EQ(mg.Query(a), 13);
-        REQUIRE_EQ(mg.Query(b), 15);
-        REQUIRE_EQ(mg.Query(c), 2);
-        CheckSummary(mg);
-
-        mg.MergeLazyDecrement();
-        REQUIRE_EQ(mg.GetLazyDecrement(), 0);
-        REQUIRE_EQ(mg.Query(a), 13);
-        REQUIRE_EQ(mg.Query(b), 15);
-        REQUIRE_EQ(mg.Query(c), 2);
-        CheckSummary(mg);
-
-        // It came off the void entry alone. Taking it off all three would have
-        // cut both extensions' keys by another five apiece.
-        const uint64_t bucket = table.bucket_from_hash(table.hash_key(a, 0));
-        uint64_t pos = table.run_start(bucket);
-        REQUIRE_EQ(mg.Counters().Get(pos), 2);
-        REQUIRE_EQ(mg.Counters().Get(pos + 1) + mg.Counters().Get(pos + 2), 11 + 13);
-
-        // And merging again changes nothing.
-        mg.MergeLazyDecrement();
-        REQUIRE_EQ(mg.Query(a), 13);
-        REQUIRE_EQ(mg.Query(b), 15);
-    }
-
-    /**
-     * The lazy decrement is carried by the first entry of a chain, so a key
-     * admitted onto a chain that already has one must not carry it again: its
-     * entry holds just its own count. Paying it twice would credit the new key
-     * with the whole decrement on top of the chain it landed on.
-     */
-    static void AdmittingOntoAChainDoesNotPayTheDecrementTwice() {
-        SublimeMG<> mg(128, 26, hashmode::Default, 69);
-        const auto [a, b, c] = PlantAChain(mg, 7, 11, 13);
-        mg.lazy_decrement_ = 5;
-        REQUIRE_EQ(mg.Query(c), 2);
-        CheckSummary(mg);
-
-        // `c` matches the void entry at the bottom of the chain, so admitting
-        // it counts it up by one from what it already read.
-        REQUIRE_EQ(mg.StartMonitoring(c), 0);
-        REQUIRE_EQ(mg.Query(c), 3);
-        REQUIRE_EQ(mg.Query(a), 13);        // The others are untouched.
-        REQUIRE_EQ(mg.Query(b), 15);
-        CheckSummary(mg);
-
-        // A key with nothing matching it starts a chain of its own, and that
-        // entry does have to carry the decrement.
-        const uint64_t fresh = KeyInAnEmptyBucket(mg, 5000);
-        REQUIRE_EQ(mg.StartMonitoring(fresh), 0);
-        REQUIRE_EQ(mg.Query(fresh), 1);
-        REQUIRE_EQ(mg.Counters().Get(mg.table_.FindLongestMatch(fresh)), 6);
-        CheckSummary(mg);
-    }
-
-    /**
-     * Two keys of one batch that the table cannot tell apart are one key as
-     * far as the summary goes: they share a slot, and the second counts the
-     * first up rather than spending a second one.
-     */
-    static void BatchMergesKeysItCannotTellApart() {
-        SublimeMG<> mg(128, 26, hashmode::Default, 65, 1, /*buffer_capacity=*/4);
-        const uint64_t key_bits = mg.Table().GetNumKeyBits();
-
-        // Two hashes agreeing on every bit the table keeps, and differing
-        // above them, so they are distinct keys with one entry between them.
-        const uint8_t flags = SublimeMG<>::flag_key_is_hash;
-        const uint64_t first = 0x123456;
-        const uint64_t second = first | (1ULL << key_bits);
-        REQUIRE_NE(first, second);
-        REQUIRE_EQ(mg.Table().EntryIdentity(first, flags),
-                   mg.Table().EntryIdentity(second, flags));
-
-        mg.buffer_.push_back({first, flags});
-        mg.buffer_.push_back({second, flags});
-        REQUIRE_EQ(mg.FlushBuffer(), 0);
-
-        REQUIRE_EQ(mg.CountMonitored(), 1);
-        REQUIRE_EQ(mg.CountDecrements(), 0);
-        REQUIRE_EQ(mg.Query(first, flags), 2);
-        REQUIRE_EQ(mg.Query(second, flags), 2);
-        CheckSummary(mg);
-    }
-
     /** Stretching changes the table's shape, and the counters follow it. */
     static void WorksUnderStretching() {
         SublimeMG<> mg(300, 26, hashmode::Default, 1, /*growth_coefficient=*/3);
-        REQUIRE_EQ(mg.Table().GetGrowthCoefficient(), 3);
-        REQUIRE_EQ(mg.Counters().CountCounters(), mg.Table().GetSlotCapacity());
+        REQUIRE_EQ(mg.GetTable().GetGrowthCoefficient(), 3);
+        REQUIRE_EQ(mg.Counters().CountCounters(), mg.GetTable().GetSlotCapacity());
 
         const auto keys = DistinctKeys(mg, 200, 19);
         std::map<std::pair<uint64_t, uint64_t>, uint64_t> ref;
@@ -1582,7 +1064,7 @@ public:
         // W(N) = N / 4, so a summary of C keys is outgrown at N = 4C. Counting
         // every insertion, so that the threshold is a plain stream length.
         auto f = [](double size) { return static_cast<uint64_t>(4 * size); };
-        SublimeMG<false> mg(256, 30, hashmode::Default, 71, 1, 32, f);
+        SublimeMG<false> mg(256, 30, hashmode::Default, 71, 1, f);
 
         const uint64_t capacity = mg.Capacity();
         REQUIRE_EQ(mg.GetExpansionLimit(), 4 * capacity);
@@ -1601,7 +1083,6 @@ public:
         REQUIRE_GT(mg.Capacity(), capacity);
         REQUIRE_EQ(mg.GetExpansionLimit(), 4 * mg.Capacity());
 
-        mg.FlushBuffer();
         CheckSummary(mg);
         // The counts came across the expansion with their keys.
         REQUIRE_EQ(mg.GetStreamLength(), 4 * capacity + 1);
@@ -1613,13 +1094,12 @@ public:
 
     /** No size function means a summary of a fixed size: plain Misra-Gries. */
     static void WithoutASizeFunctionItNeverExpands() {
-        SublimeMG<> mg(256, 30, hashmode::Default, 73, 1, 32);
+        SublimeMG<> mg(256, 30, hashmode::Default, 73);
         REQUIRE_EQ(mg.GetExpansionLimit(), std::numeric_limits<uint64_t>::max());
 
         const uint64_t capacity = mg.Capacity();
         for (uint64_t i = 0; i < 20000; i++)
             REQUIRE_EQ(mg.Insert(i % 5000), 0);
-        mg.FlushBuffer();
 
         REQUIRE_EQ(mg.CountExpansions(), 0);
         REQUIRE_EQ(mg.Capacity(), capacity);
@@ -1637,7 +1117,7 @@ public:
         // W jumps from "the size it started at" to 4000 keys at N = 5000.
         auto f = [](double size) { return size < 4000 ? uint64_t{5000}
                                         : std::numeric_limits<uint64_t>::max(); };
-        SublimeMG<false> mg(256, 30, hashmode::Default, 75, 1, 32, f);
+        SublimeMG<false> mg(256, 30, hashmode::Default, 75, 1, f);
         REQUIRE_EQ(mg.GetExpansionLimit(), 5000);
 
         for (uint64_t i = 0; i < 5000; i++)
@@ -1650,7 +1130,6 @@ public:
         REQUIRE_GE(mg.Capacity(), 4000);
         REQUIRE_EQ(mg.GetExpansionLimit(), std::numeric_limits<uint64_t>::max());
 
-        mg.FlushBuffer();
         REQUIRE_EQ(mg.GetStreamLength(), 5001);
         CheckSummary(mg);
     }
@@ -1663,7 +1142,7 @@ public:
      */
     static void NeverGrowsPastTheStream() {
         auto f = [](double) { return uint64_t{0}; };   // Always too small.
-        SublimeMG<false> mg(64, 30, hashmode::Default, 83, 1, 8, f);
+        SublimeMG<false> mg(64, 30, hashmode::Default, 83, 1, f);
         REQUIRE_EQ(mg.GetExpansionLimit(), 0);
         const uint64_t capacity_before = mg.Capacity();
 
@@ -1674,30 +1153,28 @@ public:
             // twice the stream however loudly the size function asks.
             REQUIRE_LE(mg.Capacity(), std::max(capacity_before, 2 * (i + 1)));
         }
-        mg.FlushBuffer();
         REQUIRE_GT(mg.CountExpansions(), 0);
         REQUIRE_LT(mg.Capacity(), 4000);
         CheckSummary(mg);
     }
 
     /**
-     * A table with no hash bits left to spend cannot expand however loudly the
-     * size function asks, so the threshold is retired rather than tested once
-     * per insertion for the rest of the stream.
+     * A table whose fingerprints are down to their last bit cannot expand
+     * however loudly the size function asks -- expanding would spend a bit it
+     * does not have -- so the threshold is retired rather than tested once per
+     * insertion for the rest of the stream.
      */
     static void StopsTestingWhenItCannotGrow() {
         auto f = [](double) { return uint64_t{1}; };
-        // 63 key bits over 256 slots is a 55-bit fingerprint, the widest slot
-        // the table allows; expanding would take a 65th bit of the hash, and
-        // there is none.
-        SublimeMG<> mg(256, 63, hashmode::Default, 77, 1, 8, f);
-        REQUIRE_EQ(mg.Table().GetNumFingerprintBits(), 55);
-        REQUIRE_EQ(mg.Table().CountSlotsAfterExpansion(), mg.Table().CountSlots());
+        // 9 key bits over 256 slots leaves a 1-bit fingerprint, and expanding
+        // would take that bit for the bucket index.
+        SublimeMG<> mg(256, 9, hashmode::Default, 77, 1, f);
+        REQUIRE_EQ(mg.GetTable().GetNumFingerprintBits(), 1);
+        REQUIRE_EQ(mg.GetTable().CountSlotsAfterExpansion(), mg.GetTable().CountSlots());
         REQUIRE_EQ(mg.GetExpansionLimit(), std::numeric_limits<uint64_t>::max());
 
         for (uint64_t i = 0; i < 500; i++)
             REQUIRE_EQ(mg.Insert(i % 200), 0);
-        mg.FlushBuffer();
         REQUIRE_EQ(mg.CountExpansions(), 0);
         CheckSummary(mg);
     }
@@ -1710,7 +1187,7 @@ public:
     static void KeepsTheGuaranteeWhileTheSizeFunctionDrivesIt() {
         // W(N) = sqrt(N) / 2, whose inverse is `expansion_f(C) = (2C)^2`.
         auto f = [](double size) { return static_cast<uint64_t>(4 * size * size); };
-        SublimeMG<> mg(128, 34, hashmode::Default, 79, /*growth_coefficient=*/2, 32, f);
+        SublimeMG<> mg(128, 34, hashmode::Default, 79, /*growth_coefficient=*/2, f);
         const uint64_t capacity_before = mg.Capacity();
 
         std::mt19937_64 rng(79);
@@ -1721,7 +1198,6 @@ public:
             stream.push_back(key);
             REQUIRE_EQ(mg.Insert(key), 0);
         }
-        mg.FlushBuffer();
         CheckSummary(mg);
 
         REQUIRE_GT(mg.CountExpansions(), 1);
@@ -1741,7 +1217,7 @@ public:
      * would have handled it.
      */
     static void CountsOnlyTheInsertionsThatMissed() {
-        SublimeMG<> mg(256, 30, hashmode::Default, 85, 1, 32);
+        SublimeMG<> mg(256, 30, hashmode::Default, 85);
         REQUIRE_EQ(mg.CountErrorInducingInsertions(), 0);
 
         // Only the first occurrence of a key misses; the other 99 land on it.
@@ -1775,14 +1251,13 @@ public:
      */
     static void AnExactSummaryNeverExpands() {
         auto f = [](double) { return uint64_t{10}; };   // Always asks to grow.
-        SublimeMG<> mg(256, 30, hashmode::Default, 87, 1, 32, f);
+        SublimeMG<> mg(256, 30, hashmode::Default, 87, 1, f);
         REQUIRE_EQ(mg.GetExpansionLimit(), 10);
 
         const auto keys = DistinctKeys(mg, 50, 87);
         for (uint64_t round = 0; round < 400; round++)
             for (const uint64_t key : keys)
                 REQUIRE_EQ(mg.Insert(key), 0);
-        mg.FlushBuffer();
 
         // The threshold really is exceeded -- it is the cap that holds it.
         REQUIRE_GE(mg.SizeMeasure(), mg.GetExpansionLimit());
@@ -1803,8 +1278,8 @@ public:
      */
     static void TheTwoMeasuresDisagreeOnASkewedStream() {
         auto f = [](double size) { return static_cast<uint64_t>(4 * size); };
-        SublimeMG<> selective(256, 34, hashmode::Default, 89, 1, 32, f);
-        SublimeMG<false> everything(256, 34, hashmode::Default, 89, 1, 32, f);
+        SublimeMG<> selective(256, 34, hashmode::Default, 89, 1, f);
+        SublimeMG<false> everything(256, 34, hashmode::Default, 89, 1, f);
 
         std::mt19937_64 rng(89);
         std::vector<uint64_t> stream;
@@ -1815,8 +1290,6 @@ public:
             REQUIRE_EQ(selective.Insert(key), 0);
             REQUIRE_EQ(everything.Insert(key), 0);
         }
-        selective.FlushBuffer();
-        everything.FlushBuffer();
         CheckSummary(selective);
         CheckSummary(everything);
 
@@ -1842,7 +1315,7 @@ public:
     /** `Reset` puts the stream length back to zero along with the counts. */
     static void ResetRestartsTheStream() {
         auto f = [](double size) { return static_cast<uint64_t>(4 * size); };
-        SublimeMG<false> mg(256, 30, hashmode::Default, 81, 1, 32, f);
+        SublimeMG<false> mg(256, 30, hashmode::Default, 81, 1, f);
         for (uint64_t i = 0; i < 4000; i++)
             REQUIRE_EQ(mg.Insert(i % 64), 0);
         REQUIRE_GT(mg.CountExpansions(), 0);
@@ -1863,8 +1336,8 @@ public:
 using sublime::SublimeMGTest;
 
 TEST_SUITE("SublimeMG") {
-    TEST_CASE("insert increments the longest match") {
-        SublimeMGTest::InsertIncrementsTheLongestMatch();
+    TEST_CASE("insert increments the match") {
+        SublimeMGTest::InsertIncrementsTheMatch();
     }
 
     TEST_CASE("counts follow their fingerprints") {
@@ -1887,10 +1360,6 @@ TEST_SUITE("SublimeMG") {
         SublimeMGTest::ExpansionCarriesCounts();
     }
 
-    TEST_CASE("void entries keep the whole count twice") {
-        SublimeMGTest::VoidEntriesKeepTheWholeCountTwice();
-    }
-
     TEST_CASE("contraction restores counts") {
         SublimeMGTest::ContractionRestoresCounts();
     }
@@ -1903,44 +1372,8 @@ TEST_SUITE("SublimeMG") {
         SublimeMGTest::CopyMoveAndReset();
     }
 
-    TEST_CASE("query sums every match") {
-        SublimeMGTest::QuerySumsEveryMatch();
-    }
-
     TEST_CASE("query agrees with count when matches are unique") {
         SublimeMGTest::QueryAgreesWithCountWhenMatchesAreUnique();
-    }
-
-    TEST_CASE("query sums matches of every length") {
-        SublimeMGTest::QuerySumsMatchesOfEveryLength();
-    }
-
-    TEST_CASE("chain sums survive eviction") {
-        SublimeMGTest::ChainSumsSurviveEviction();
-    }
-
-    TEST_CASE("repair stops at the first survivor") {
-        SublimeMGTest::RepairStopsAtTheFirstSurvivor();
-    }
-
-    TEST_CASE("eviction takes the prefix and keeps the extension") {
-        SublimeMGTest::EvictionTakesThePrefixAndKeepsTheExtension();
-    }
-
-    TEST_CASE("chained entries are judged by their chain sum") {
-        SublimeMGTest::ChainedEntriesAreJudgedByTheirChainSum();
-    }
-
-    TEST_CASE("merge subtracts once per chain") {
-        SublimeMGTest::MergeSubtractsOncePerChain();
-    }
-
-    TEST_CASE("admitting onto a chain does not pay the decrement twice") {
-        SublimeMGTest::AdmittingOntoAChainDoesNotPayTheDecrementTwice();
-    }
-
-    TEST_CASE("batch merges keys it cannot tell apart") {
-        SublimeMGTest::BatchMergesKeysItCannotTellApart();
     }
 
     TEST_CASE("works under stretching") {
@@ -1991,10 +1424,6 @@ TEST_SUITE("SublimeMG") {
         SublimeMGTest::AdmitsWhileThereIsRoom();
     }
 
-    TEST_CASE("buffers when full") {
-        SublimeMGTest::BuffersWhenFull();
-    }
-
     TEST_CASE("evicts the smallest counters") {
         SublimeMGTest::EvictsTheSmallestCounters();
     }
@@ -2003,24 +1432,51 @@ TEST_SUITE("SublimeMG") {
         SublimeMGTest::ManyTiedCountersEmptyAtOnce();
     }
 
-    TEST_CASE("lazy decrement and merging") {
-        SublimeMGTest::LazyDecrementAndMerging();
-    }
-
-    TEST_CASE("merges on its own") {
-        SublimeMGTest::MergesOnItsOwn();
-    }
-
-    TEST_CASE("retuning applies the lazy decrement") {
-        SublimeMGTest::RetuningAppliesTheLazyDecrement();
-    }
-
     TEST_CASE("keeps the misra-gries guarantee") {
         SublimeMGTest::KeepsTheMisraGriesGuarantee();
     }
 
+    TEST_CASE("min tree monte carlo") {
+        SublimeMGTest::TreeMonteCarlo(/*nslots=*/256, /*universe=*/20000, /*steps=*/200000, 21);
+        SublimeMGTest::TreeMonteCarlo(1024, 50000, 200000, 22);
+        SublimeMGTest::TreeMonteCarlo(64, 4000, 100000, 23);
+    }
+
+    TEST_CASE("cuckoo table, sweep and tree") {
+        // The same streams, over a cuckoo filter instead of a quotient filter.
+        // Neither sketch knows which table it has, so every invariant the
+        // suite checks has to hold over both.
+        using Sweep = sublime::SublimeMG<true, false, sublime::CuckooTable>;
+        using Tree = sublime::SublimeMG<true, true, sublime::CuckooTable>;
+        SublimeMGTest::TreeMonteCarlo<Sweep>(/*nslots=*/256, /*universe=*/20000,
+                                             /*steps=*/200000, 31);
+        SublimeMGTest::TreeMonteCarlo<Tree>(256, 20000, 200000, 32);
+        SublimeMGTest::TreeMonteCarlo<Sweep>(1024, 50000, 200000, 33);
+        SublimeMGTest::TreeMonteCarlo<Tree>(1024, 50000, 200000, 34);
+    }
+
+    TEST_CASE("min tree evicts every emptied key at once") {
+        SublimeMGTest::TreeEvictsEveryEmptiedKeyAtOnce();
+    }
+
+    TEST_CASE("min tree drops an arrival that frees nothing") {
+        SublimeMGTest::TreeDropsAnArrivalThatFreesNothing();
+    }
+
+    TEST_CASE("min tree merges the lazy decrement") {
+        SublimeMGTest::TreeMergesTheLazyDecrement();
+    }
+
+    TEST_CASE("min tree expands") {
+        SublimeMGTest::TreeExpands();
+    }
+
     TEST_CASE("survives a stream with no heavy hitters") {
         SublimeMGTest::SurvivesAStreamWithNoHeavyHitters();
+    }
+
+    TEST_CASE("agrees with plain Misra-Gries exactly") {
+        SublimeMGTest::AgreesWithPlainMisraGries();
     }
 
     TEST_CASE("keeps the guarantee across resizes") {

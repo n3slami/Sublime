@@ -82,10 +82,15 @@ target_include_directories(SublimeMGLib PUBLIC ./include)
 target_compile_options(SublimeMGLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
 
-add_library(MGHeapLib STATIC ./include/MGHeap.hpp)
-set_target_properties(MGHeapLib PROPERTIES LINKER_LANGUAGE CXX)
-target_include_directories(MGHeapLib PUBLIC ./include)
-target_compile_options(MGHeapLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+add_library(CuckooTableLib STATIC ./include/CuckooTable.hpp)
+set_target_properties(CuckooTableLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(CuckooTableLib PUBLIC ./include)
+target_compile_options(CuckooTableLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+
+add_library(MGLib STATIC ./include/MG.hpp)
+set_target_properties(MGLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(MGLib PUBLIC ./include)
+target_compile_options(MGLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
 
 add_library(SpaceSavingLib STATIC ./include/SpaceSaving.hpp)

@@ -23,7 +23,7 @@
  * find, increment (move to the next bucket), and evict-the-minimum (the head
  * bucket) -- is then O(1). It is included here as a baseline precisely because
  * all those links make it pay a great deal of memory in pointers, which is the
- * cost `MGHeap` and `SublimeMG` avoid by packing their state.
+ * cost `MG` and `SublimeMG` avoid by packing their state.
  *
  * Full 64-bit keys are stored, with no fingerprinting.
  */

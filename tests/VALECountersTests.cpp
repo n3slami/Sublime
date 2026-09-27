@@ -183,6 +183,213 @@ public:
      * ------------------------------------------------------------------
      */
 
+    /*
+     * ------------------------------------------------------------------
+     * The extension pool's own shifts.
+     * ------------------------------------------------------------------
+     */
+
+    /** Re-shapes `t` to a tuning of our choosing, for a white-box test. */
+    static void Reshape(VALECounters& t, uint64_t counters, uint32_t cpc, uint32_t stub) {
+        t.free_tails();
+        delete[] t.chunks_;
+        t.allocate_with(counters, cpc, stub);
+    }
+
+    /**
+     * Shifting a chunk's extension pool down from `pos` must leave everything
+     * *below* `pos` exactly as it was. It is a bit-level operation on a pool
+     * that can span three 64-bit words, and the bits carried in from the next
+     * word land `shamt` below the top -- which reaches under `pos` as soon as
+     * `pos % 64 + shamt` passes 64. Getting that wrong corrupts a neighbouring
+     * extension and leaves the pool holding one more extension than the
+     * overflow bitmap admits to, which is a heap overflow later on, when the
+     * chunk spills into a tails array and walks the bitmap to place them.
+     */
+    static void PoolShiftKeepsWhatIsBelowIt() {
+        VALECounters t(64);
+        // A tuning whose pool needs three words: 512 - 1 - 76 * 5 = 131 bits.
+        Reshape(t, 4096, 76, 4);
+        REQUIRE_EQ(t.num_extension_words_, 3);
+        const uint32_t words = t.num_extension_words_;
+
+        std::mt19937_64 rng(4242);
+        for (uint32_t trial = 0; trial < 2000; trial++) {
+            uint64_t pool[VALECounters::max_extension_words] = {};
+            uint64_t ref[VALECounters::max_extension_words] = {};
+            for (uint32_t i = 0; i < words; i++)
+                pool[i] = ref[i] = rng();
+
+            const uint32_t pos = rng() % (words * 64 - 2);
+            const uint32_t shamt = 2 + 2 * (rng() % 20);        // A whole number of fragments.
+            t.shift_extensions_right_from_pos(pool, pos, shamt);
+
+            // The reference: bit `b` of the result is bit `b + shamt` of the
+            // original for `b >= pos`, and bit `b` of it below that.
+            const auto bit_of = [&](const uint64_t *w, uint32_t b) {
+                return b >= words * 64 ? 0ULL : (w[b / 64] >> (b % 64)) & 1ULL;
+            };
+            for (uint32_t b = 0; b < words * 64; b++) {
+                const uint64_t want = b < pos ? bit_of(ref, b) : bit_of(ref, b + shamt);
+                REQUIRE_EQ(bit_of(pool, b), want);
+            }
+        }
+    }
+
+    /** The same, for the shift that opens a gap rather than closing one. */
+    static void PoolShiftUpKeepsWhatIsBelowIt() {
+        VALECounters t(64);
+        Reshape(t, 4096, 76, 4);
+        const uint32_t words = t.num_extension_words_;
+
+        std::mt19937_64 rng(4243);
+        for (uint32_t trial = 0; trial < 2000; trial++) {
+            uint64_t pool[VALECounters::max_extension_words] = {};
+            uint64_t ref[VALECounters::max_extension_words] = {};
+            for (uint32_t i = 0; i < words; i++)
+                pool[i] = ref[i] = rng();
+
+            const uint32_t pos = rng() % (words * 64 - 2);
+            const uint32_t shamt = 2 + 2 * (rng() % 20);
+            t.shift_extensions_left_from_pos(pool, pos, shamt);
+
+            const auto bit_of = [&](const uint64_t *w, uint32_t b) {
+                return (w[b / 64] >> (b % 64)) & 1ULL;
+            };
+            for (uint32_t b = 0; b < words * 64; b++) {
+                uint64_t want;
+                if (b < pos)
+                    want = bit_of(ref, b);
+                else if (b < pos + shamt)
+                    want = 0;
+                else
+                    want = bit_of(ref, b - shamt);
+                REQUIRE_EQ(bit_of(pool, b), want);
+            }
+        }
+    }
+
+    /*
+     * ------------------------------------------------------------------
+     * The min segment tree.
+     * ------------------------------------------------------------------
+     */
+
+    /** @returns The smallest non-zero value of `ref`, or 0 if there is none. */
+    static uint64_t SmallestNonZero(const std::vector<uint64_t>& ref) {
+        uint64_t res = 0;
+        for (const uint64_t v : ref)
+            if (v != 0 && (res == 0 || v < res))
+                res = v;
+        return res;
+    }
+
+    /** The tree's root is that minimum, and its candidate is a leaf holding it. */
+    static void CheckMinTree(const VALECounters& t, const std::vector<uint64_t>& ref) {
+        const uint64_t smallest = SmallestNonZero(ref);
+        REQUIRE_EQ(t.MinValue(), smallest);
+        if (smallest != 0)
+            REQUIRE_EQ(ref[t.MinSlot()], smallest);
+        for (uint64_t i = 0; i < ref.size(); i++)
+            REQUIRE_EQ(t.Get(i), ref[i]);
+    }
+
+    /**
+     * Every operation, against a brute-force minimum. The leaf count is not a
+     * power of two in most of these, which is the case the bottom-up layout
+     * has to get right.
+     */
+    static void MinTreeMonteCarlo(uint64_t n, uint64_t steps, uint64_t ceiling, uint32_t seed) {
+        VALECounters t(n, /*with_min_tree=*/true);
+        REQUIRE(t.HasMinTree());
+        REQUIRE_EQ(t.CountCounters(), n);
+        // The leaf count is rounded up to even, so that no node has one leaf
+        // child and one internal one; an odd count gets a spare, empty leaf.
+        REQUIRE_EQ(t.CountStoredCounters(), 2 * (n + (n & 1)));
+        std::vector<uint64_t> ref(n, 0);
+        std::mt19937_64 rng(seed);
+        CheckMinTree(t, ref);
+
+        for (uint64_t step = 0; step < steps; step++) {
+            const uint64_t i = rng() % n;
+            switch (rng() % 5) {
+                case 0: { const uint64_t v = 1 + rng() % ceiling; t.Set(i, v); ref[i] = v; break; }
+                case 1: t.Set(i, 0); ref[i] = 0; break;
+                case 2: t.Increment(i); ref[i]++; break;
+                case 3: if (ref[i] > 0) { t.Decrement(i); ref[i]--; } break;
+                case 4: {
+                    const uint64_t j = rng() % n;
+                    const uint64_t lo = std::min(i, j), hi = std::max(i, j);
+                    if (rng() % 2) {
+                        t.ShiftRightAndClear(lo, hi);
+                        ShiftRightRef(ref, lo, hi);
+                    }
+                    else {
+                        t.ShiftLeftAndClear(lo, hi);
+                        ShiftLeftRef(ref, lo, hi);
+                    }
+                    break;
+                }
+            }
+            CheckMinTree(t, ref);
+        }
+    }
+
+    /** A shift moves the candidate's index, and nothing else about it. */
+    static void MinTreeCandidateFollowsItsLeaf() {
+        VALECounters t(500, true);
+        std::vector<uint64_t> ref(500, 0);
+        for (uint64_t i = 100; i < 200; i++) {
+            ref[i] = 500 - (i - 100);           // Descending, so the minimum is at 199.
+            t.Set(i, ref[i]);
+        }
+        REQUIRE_EQ(t.MinSlot(), 199);
+        REQUIRE_EQ(t.MinValue(), 401);
+
+        t.ShiftRightAndClear(150, 300);         // The candidate is inside the range.
+        ShiftRightRef(ref, 150, 300);
+        REQUIRE_EQ(t.MinSlot(), 200);           // It moved with its leaf.
+        REQUIRE_EQ(t.MinValue(), 401);
+        CheckMinTree(t, ref);
+
+        t.ShiftLeftAndClear(120, 250);
+        ShiftLeftRef(ref, 120, 250);
+        REQUIRE_EQ(t.MinSlot(), 199);
+        CheckMinTree(t, ref);
+
+        // Discarding the candidate itself is the one case that has to search.
+        const uint64_t at = t.MinSlot();
+        t.ShiftLeftAndClear(at, at + 10);
+        ShiftLeftRef(ref, at, at + 10);
+        CheckMinTree(t, ref);
+    }
+
+    /** The tree survives the rebuilds that re-tune the array. */
+    static void MinTreeSurvivesRetuning() {
+        VALECounters t(2000, true);
+        std::vector<uint64_t> ref(2000, 0);
+        std::mt19937_64 rng(77);
+        for (uint64_t i = 0; i < 2000; i++)
+            if (rng() % 3) {
+                ref[i] = 100000 + rng() % 400000;
+                t.Set(i, ref[i]);
+            }
+        CheckMinTree(t, ref);
+
+        REQUIRE(t.Retune());                    // A plain re-tuning.
+        CheckMinTree(t, ref);
+
+        const uint64_t offset = SmallestNonZero(ref) - 1;
+        REQUIRE(t.Retune(offset));              // And one that subtracts an offset.
+        for (auto& v : ref)
+            if (v != 0)
+                v -= offset;
+        CheckMinTree(t, ref);
+
+        const VALECounters copy(t);             // A copy carries the tree over.
+        CheckMinTree(copy, ref);
+    }
+
     static void ShiftRightRef(std::vector<uint64_t>& ref, uint64_t hole, uint64_t last) {
         for (uint64_t i = last; i > hole; i--)
             ref[i] = ref[i - 1];
@@ -421,44 +628,50 @@ public:
     }
 
     /**
-     * A retune reads and rewrites every counter anyway, so it can take a
-     * constant off all of them on the way for free -- which is how the lazy
-     * decrement counter of a Misra-Gries summary gets applied.
+     * `MaybeRetune` only fires when counters outgrow their chunk, so something
+     * else has to notice when they shrink -- which is what a Misra-Gries
+     * decrement sweep does to all of them at once. `RetuneIfNarrower` is that
+     * direction, and it only pays out when the stub really can get narrower.
      */
-    static void RetuneAppliesAnOffset() {
+    static void RetunesWhenCountersShrink() {
         VALECounters t(20000);
         std::vector<uint64_t> ref(20000, 0);
         std::mt19937_64 rng(13);
-        const uint64_t offset = 90000;
         for (uint64_t i = 0; i < 20000; i++) {
-            // Every non-zero counter stands above the offset, and a fair few
-            // are barely above it, so the values left behind are small.
-            ref[i] = (i % 4 == 0) ? 0 : offset + 1 + rng() % 3000;
+            ref[i] = (i % 4 == 0) ? 0 : 90000 + rng() % 3000;
             t.Set(i, ref[i]);
         }
-        REQUIRE(t.ShouldRetune());
+        REQUIRE(t.Retune());
+        const uint32_t wide_stub = t.GetStubLength();
+        const uint32_t wide_per_chunk = t.GetCountersPerChunk();
+        const uint64_t wide_bytes = t.SizeInBytes();
 
-        // The same array, re-tuned without subtracting anything, is the
-        // comparison that matters.
-        VALECounters untouched(t);
-        REQUIRE(untouched.Retune(0));
+        // Tuned to what it holds, there is nothing to win by asking again.
+        REQUIRE_FALSE(t.RetuneIfNarrower());
+        REQUIRE_EQ(t.GetStubLength(), wide_stub);
 
-        REQUIRE(t.Retune(offset));
-        for (uint64_t i = 0; i < 20000; i++)
-            ref[i] = ref[i] ? ref[i] - offset : 0;
+        // Now bring every counter down, as a run of decrement sweeps would.
+        for (uint64_t i = 0; i < 20000; i++) {
+            if (ref[i] == 0)
+                continue;
+            const uint64_t left = 1 + rng() % 7;
+            for (uint64_t k = ref[i]; k > left; k--)
+                t.Decrement(i);
+            ref[i] = left;
+        }
         CheckAgainst(t, ref);
-        REQUIRE_EQ(t.CountChunksWithTails(), 0);
-        // The tuning follows the values it is left with. Those are far shorter
-        // than the ones it started from, so it settles on a shorter stub and
-        // fits more of them per chunk than the retune that kept the offset.
-        REQUIRE_LT(t.GetStubLength(), untouched.GetStubLength());
-        REQUIRE_GT(t.GetCountersPerChunk(), untouched.GetCountersPerChunk());
-        REQUIRE_LT(t.SizeInBytes(), untouched.SizeInBytes());
 
-        // A zero offset leaves the values alone, as before.
-        const auto counts = ref;
-        t.Retune(0);
-        CheckAgainst(t, counts);
+        // The tuning follows them down: a shorter stub, more counters per
+        // chunk, and a smaller array, with every value intact.
+        REQUIRE(t.RetuneIfNarrower());
+        CheckAgainst(t, ref);
+        REQUIRE_LT(t.GetStubLength(), wide_stub);
+        REQUIRE_GT(t.GetCountersPerChunk(), wide_per_chunk);
+        REQUIRE_LT(t.SizeInBytes(), wide_bytes);
+        REQUIRE_EQ(t.CountChunksWithTails(), 0);
+
+        // And once it has followed them, asking again wins nothing.
+        REQUIRE_FALSE(t.RetuneIfNarrower());
 
         // The array works normally afterwards.
         t.Increment(7);
@@ -590,8 +803,8 @@ TEST_SUITE("VALECounters") {
         VALECountersTest::RetunesAwayFromTailsArrays();
     }
 
-    TEST_CASE("retuning applies an offset") {
-        VALECountersTest::RetuneAppliesAnOffset();
+    TEST_CASE("retunes when counters shrink") {
+        VALECountersTest::RetunesWhenCountersShrink();
     }
 
     TEST_CASE("retuning terminates") {
@@ -600,6 +813,28 @@ TEST_SUITE("VALECounters") {
 
     TEST_CASE("copy, move, and reset") {
         VALECountersTest::CopyMoveAndReset();
+    }
+
+    TEST_CASE("pool shifts keep what is below them") {
+        VALECountersTest::PoolShiftKeepsWhatIsBelowIt();
+        VALECountersTest::PoolShiftUpKeepsWhatIsBelowIt();
+    }
+
+    TEST_CASE("min tree monte carlo") {
+        VALECountersTest::MinTreeMonteCarlo(/*n=*/1, /*steps=*/200, /*ceiling=*/50, 1);
+        VALECountersTest::MinTreeMonteCarlo(2, 2000, 50, 2);
+        VALECountersTest::MinTreeMonteCarlo(7, 20000, 5000, 3);
+        VALECountersTest::MinTreeMonteCarlo(64, 20000, 5000, 4);
+        VALECountersTest::MinTreeMonteCarlo(777, 20000, 4000000000ULL, 5);
+        VALECountersTest::MinTreeMonteCarlo(1000, 20000, 5000, 6);
+    }
+
+    TEST_CASE("min tree candidate follows its leaf") {
+        VALECountersTest::MinTreeCandidateFollowsItsLeaf();
+    }
+
+    TEST_CASE("min tree survives retuning") {
+        VALECountersTest::MinTreeSurvivesRetuning();
     }
 
     TEST_CASE("partial last chunk") {

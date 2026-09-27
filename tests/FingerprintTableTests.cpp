@@ -37,6 +37,7 @@ public:
         REQUIRE_EQ(occupied_buckets, runend_count);
 
         int64_t previous_end = -1;
+        std::vector<bool> in_run(t.xnslots_, false);
         for (uint64_t b = 0; b < t.xnslots_; b++) {
             if (!t.is_occupied(b))
                 continue;
@@ -52,23 +53,25 @@ public:
             uint64_t previous_slot = 0;
             for (uint64_t i = start; i <= end; i++) {
                 const uint64_t slot = t.get_slot(i);
-                // Every stored slot carries a void bit, so it is never zero,
-                // and runs are kept sorted.
-                REQUIRE_NE(slot, 0);
+                // Runs are kept sorted. Note a stored fingerprint may well be
+                // zero -- there is no void bit to rule that out any more, so
+                // what is stored says nothing about whether a slot is in use.
                 REQUIRE_GE(slot, previous_slot);
+                REQUIRE_LT(slot, 1ULL << t.GetNumFingerprintBits());
                 REQUIRE_EQ(t.is_runend(i), i == end);
                 previous_slot = slot;
+                in_run[i] = true;
                 slots_in_runs++;
             }
             previous_end = end;
         }
         REQUIRE_EQ(slots_in_runs, t.noccupied_slots_);
 
-        // Nothing outside a run may hold anything.
-        uint64_t nonzero_slots = 0;
+        // Nothing outside a run may hold anything: a slot a shift or a
+        // deletion vacated is left cleared, not merely unreachable.
         for (uint64_t i = 0; i < t.xnslots_; i++)
-            nonzero_slots += (t.get_slot(i) != 0);
-        REQUIRE_EQ(nonzero_slots, t.noccupied_slots_);
+            if (!in_run[i])
+                REQUIRE_EQ(t.get_slot(i), 0);
     }
 
     /** @returns The multiset of (bucket, raw slot) pairs the table holds. */
@@ -84,7 +87,7 @@ public:
         // and word boundaries.
         FingerprintTable t(1024, 24, hashmode::Default, 1);
         REQUIRE_EQ(t.GetNumFingerprintBits(), 14);
-        REQUIRE_EQ(t.GetBitsPerSlot(), 15);
+        REQUIRE_EQ(t.GetBitsPerSlot(), 14);
 
         std::mt19937_64 rng(1);
         std::vector<uint64_t> ref(t.xnslots_);
@@ -122,15 +125,12 @@ public:
             // The fast reduction of the original quotient keeps every bucket
             // inside a table whose size is not a power of two.
             REQUIRE_LT(bucket, nslots);
-            const uint64_t fingerprint = t.fingerprint_from_hash(hash, t.GetNumFingerprintBits());
-            REQUIRE_EQ(fpt::highbit_position(fingerprint), t.GetNumFingerprintBits());
-            // Prefixes of a fingerprint match it, and nothing longer does.
-            for (uint32_t len = 0; len <= t.GetNumFingerprintBits(); len++) {
-                const uint64_t prefix = t.fingerprint_from_hash(hash, len);
-                REQUIRE(FingerprintTable::fingerprints_match(prefix, fingerprint));
-            }
-            const uint64_t flipped = fingerprint ^ 1ULL;
-            REQUIRE_FALSE(FingerprintTable::fingerprints_match(flipped, fingerprint));
+            const uint64_t fingerprint = t.fingerprint_from_hash(hash);
+            // A fingerprint is exactly the hash bits above the bucket index,
+            // and nothing wider: bucket and fingerprint partition the hash.
+            REQUIRE_LT(fingerprint, 1ULL << t.GetNumFingerprintBits());
+            REQUIRE_EQ(fingerprint, (hash >> t.GetBucketIndexHashSize())
+                                            & fpt::bitmask(t.GetNumFingerprintBits()));
         }
     }
 
@@ -154,8 +154,10 @@ public:
             // The table is a multiset that never undercounts.
             REQUIRE_GE(t.Count(key), count);
             REQUIRE(t.Contains(key));
-            // A freshly inserted fingerprint is of full length.
-            REQUIRE_EQ(t.MatchLength(key), t.GetNumFingerprintBits());
+            // The match holds exactly the key's fingerprint.
+            const int64_t at = t.FindMatch(key);
+            REQUIRE_GE(at, 0);
+            REQUIRE_EQ(t.get_slot(at), t.fingerprint_from_hash(t.hash_key(key, 0)));
         }
 
         // The iterator sees exactly the stored fingerprints, and the hash it
@@ -164,48 +166,45 @@ public:
         for (auto it = t.begin(); it != t.end(); ++it) {
             const uint64_t hash = it.hash();
             REQUIRE_EQ(t.bucket_from_hash(hash), it.bucket());
-            REQUIRE_EQ(t.fingerprint_from_hash(hash, it.fingerprint_length()), it.fingerprint());
+            REQUIRE_EQ(t.fingerprint_from_hash(hash), it.fingerprint());
             seen++;
         }
         REQUIRE_EQ(seen, t.CountFingerprints());
     }
 
-    static void DeleteRemovesLongestMatch() {
+    static void DeleteRemovesMatch() {
         FingerprintTable t(256, 20, hashmode::Default, 1);
         const uint64_t key = 0xABCDEF;
         const uint64_t hash = t.hash_key(key, 0);
         const uint64_t bucket = t.bucket_from_hash(hash);
-        const uint32_t full_length = t.GetNumFingerprintBits();
 
-        // Plant one matching fingerprint of every length in the key's run, in
-        // an order that does not match the sorted order of the run.
-        for (uint32_t len : {3u, 0u, full_length, 1u, 2u})
-            REQUIRE_EQ(t.insert_hash(hash, len), 0);
+        // The table is a multiset: the same fingerprint can be stored more
+        // than once, and each deletion peels one copy off.
+        for (int32_t i = 0; i < 5; i++)
+            REQUIRE_EQ(t.insert_hash(hash), 0);
         CheckStructure(t);
         REQUIRE_EQ(t.CountFingerprints(), 5);
+        REQUIRE_EQ(t.Count(key), 5);
 
-        // Deleting peels off the matches longest-first.
-        for (uint32_t len : {full_length, 3u, 2u, 1u, 0u}) {
-            REQUIRE_EQ(t.MatchLength(key), len);
+        for (int32_t left = 4; left >= 0; left--) {
             REQUIRE_EQ(t.Delete(key), 0);
             CheckStructure(t);
+            REQUIRE_EQ(t.Count(key), static_cast<uint64_t>(left));
         }
         REQUIRE_EQ(t.CountFingerprints(), 0);
         REQUIRE_FALSE(t.Contains(key));
-        REQUIRE_EQ(t.MatchLength(key), -1);
+        REQUIRE_EQ(t.FindMatch(key), -1);
         REQUIRE_EQ(t.Delete(key), FingerprintTable::err_doesnt_exist);
 
-        // A fingerprint that disagrees with the key is not a match, however
-        // short it is, as long as it is not void.
+        // A fingerprint that disagrees with the key is not a match, even in
+        // the key's own run: every fingerprint is of the same length, so
+        // matching is equality and nothing is a weaker witness than anything
+        // else.
         const uint64_t other_hash = hash ^ (1ULL << t.GetBucketIndexHashSize());
-        REQUIRE_EQ(t.insert_hash(other_hash, 1), 0);
+        REQUIRE_EQ(t.insert_hash(other_hash), 0);
         REQUIRE_EQ(t.bucket_from_hash(other_hash), bucket);
         REQUIRE_FALSE(t.Contains(key));
         REQUIRE_EQ(t.Delete(key), FingerprintTable::err_doesnt_exist);
-        // ... but a void fingerprint matches anything in the run.
-        REQUIRE_EQ(t.insert_hash(other_hash, 0), 0);
-        REQUIRE_EQ(t.MatchLength(key), 0);
-        REQUIRE_EQ(t.Delete(key), 0);
         REQUIRE_EQ(t.CountFingerprints(), 1);
     }
 
@@ -316,84 +315,79 @@ public:
         }
         const uint64_t full_length = t.GetNumFingerprintBits();
         const uint64_t original_slots = t.CountSlots();
+        const uint64_t original_key_bits = t.GetNumKeyBits();
 
         for (uint32_t e = 1; e <= 5; e++) {
             REQUIRE_EQ(t.Expand(), 150);
             CheckStructure(t);
             REQUIRE_EQ(t.CountSlots(), original_slots << e);
             REQUIRE_EQ(t.GetExpansionCount(), e);
-            // The table keeps hashing keys the same way, so a slot is still
-            // just as wide as it was.
-            REQUIRE_EQ(t.GetNumFingerprintBits(), full_length);
+            // The bucket index took a bit off every fingerprint, stored and
+            // fresh alike, so the slots got one bit narrower with it.
+            REQUIRE_EQ(t.GetNumFingerprintBits(), full_length - e);
+            REQUIRE_EQ(t.GetBitsPerSlot(), full_length - e);
+            REQUIRE_EQ(t.GetNumKeyBits(), original_key_bits);
             REQUIRE_EQ(t.GetOriginalQuotientBits(), 8);
 
             for (const auto& [key, count] : ref) {
                 REQUIRE_GE(t.Count(key), count);
-                REQUIRE_EQ(t.MatchLength(key), full_length - e);
+                REQUIRE(t.Contains(key));
             }
-            for (auto it = t.begin(); it != t.end(); ++it) {
+            for (auto it = t.begin(); it != t.end(); ++it)
                 REQUIRE_LT(it.bucket(), t.CountSlots());
-                REQUIRE_EQ(it.fingerprint_length(), full_length - e);
-            }
         }
     }
 
     /**
-     * A fingerprint that runs out of bits has none to donate to the bucket
-     * index, so its item goes into both buckets it could now belong to.
+     * A fingerprint cannot be shortened past its last bit, so a table that has
+     * spent them all refuses to grow -- and says so beforehand, which is what
+     * a caller driving expansion from a size function reads.
      */
-    static void VoidEntriesDuplicateOnExpansion() {
-        // A small table, so that fingerprints go void after a few expansions.
+    static void GrowthStopsWhenFingerprintsRunOut() {
+        // A small table, so that fingerprints run out after a few expansions.
         FingerprintTable t(64, 14, hashmode::Default, 3);
         const uint64_t full_length = t.GetNumFingerprintBits();
         REQUIRE_EQ(full_length, 8);
 
-        std::mt19937_64 rng(8);
+        std::mt19937_64 rng(11);
         std::vector<uint64_t> keys;
-        for (int32_t i = 0; i < 20; i++) {
+        for (int32_t i = 0; i < 30; i++) {
             const uint64_t key = rng();
             REQUIRE_EQ(t.Insert(key), 0);
             keys.push_back(key);
         }
 
-        // Expand until every fingerprint is void.
-        for (uint32_t e = 1; e <= full_length; e++)
+        // Every expansion sheds a bit, and the entry count never moves: with
+        // one length there are no ambiguous entries to duplicate.
+        for (uint32_t e = 1; e < full_length; e++) {
+            REQUIRE_GT(t.CountSlotsAfterExpansion(), t.CountSlots());
             REQUIRE_EQ(t.Expand(), keys.size());
-        CheckStructure(t);
-        for (const uint64_t key : keys)
-            REQUIRE_EQ(t.MatchLength(key), 0);
-
-        // From here on, every expansion duplicates every entry.
-        uint64_t expected = keys.size();
-        for (uint32_t e = 1; e <= 3; e++) {
-            expected *= 2;
-            REQUIRE_EQ(t.Expand(), expected);
             CheckStructure(t);
-            REQUIRE_EQ(t.CountFingerprints(), expected);
-            for (const uint64_t key : keys) {
-                // The key is found no matter which of the two buckets it
-                // hashes to now, i.e., duplication rules out false negatives.
-                REQUIRE_EQ(t.MatchLength(key), 0);
-                REQUIRE_GE(t.Count(key), 1);
-            }
-        }
-
-        // Contracting does not merge the copies of a void entry back into one,
-        // so the entry count stays put on the way down, and the table
-        // eventually cannot hold what it holds now.
-        while (t.CountSlots() > expected) {
-            REQUIRE_EQ(t.Contract(), expected);
-            CheckStructure(t);
+            REQUIRE_EQ(t.GetNumFingerprintBits(), full_length - e);
+            REQUIRE_EQ(t.CountFingerprints(), keys.size());
             for (const uint64_t key : keys)
                 REQUIRE(t.Contains(key));
         }
+
+        // One bit left: the table is done growing, and predicts as much.
+        REQUIRE_EQ(t.GetNumFingerprintBits(), 1);
         const auto contents = Contents(t);
         const uint64_t slots = t.CountSlots();
-        REQUIRE_EQ(t.Contract(), FingerprintTable::err_no_space);
-        // A failed contraction leaves the table exactly as it was.
+        REQUIRE_EQ(t.CountSlotsAfterExpansion(), slots);
+        REQUIRE_EQ(t.Expand(), FingerprintTable::err_no_space);
+        // A refused expansion leaves the table exactly as it was.
         REQUIRE_EQ(t.CountSlots(), slots);
         REQUIRE(Contents(t) == contents);
-        CheckStructure(t);
+        for (const uint64_t key : keys)
+            REQUIRE(t.Contains(key));
+
+        // And it contracts all the way back, exactly.
+        while (t.GetExpansionCount() > 0)
+            REQUIRE_EQ(t.Contract(), keys.size());
+        REQUIRE_EQ(t.GetNumFingerprintBits(), full_length);
+        REQUIRE_EQ(t.CountFingerprints(), keys.size());
+        for (const uint64_t key : keys)
+            REQUIRE(t.Contains(key));
     }
 
     /** Contraction is the exact inverse of expansion. */
@@ -423,8 +417,10 @@ public:
             REQUIRE_EQ(t.GetExpansionCount(), e - 1);
             for (const auto& [key, count] : ref) {
                 REQUIRE_GE(t.Count(key), count);
-                REQUIRE_EQ(t.MatchLength(key), std::min<uint64_t>(full_length, full_length - e + 1));
+                REQUIRE(t.Contains(key));
             }
+            // Contraction hands the bit back, exactly.
+            REQUIRE_EQ(t.GetNumFingerprintBits(), full_length - e + 1);
         }
         // Back at the original size, the table holds exactly what it did
         // before, down to the slot.
@@ -443,7 +439,7 @@ public:
 
         for (int32_t step = 0; step < 3000; step++) {
             const uint32_t action = rng() % 100;
-            if (action < 5 && t.GetNumKeyBits() < 40) {
+            if (action < 5 && t.GetNumFingerprintBits() > 1) {
                 REQUIRE_GE(t.Expand(), 0);
                 CheckStructure(t);
             }
@@ -596,12 +592,12 @@ public:
         // power of two and every fingerprint gives up a bit.
         const uint64_t full_length = t.GetNumFingerprintBits();
         REQUIRE_EQ(t.Expand(), 0);
+        REQUIRE_EQ(t.GetNumFingerprintBits(), full_length - 1);
         REQUIRE_EQ(t.GetEpoch(), 0);
         REQUIRE_EQ(t.GetPeriodCount(), 1);
         REQUIRE_EQ(t.GetExpansionCount(), 2);
         REQUIRE_EQ(t.CountSlots(), 8);
         REQUIRE_EQ(t.GetBaseSlotCount(), 8);
-        REQUIRE_EQ(t.GetNumFingerprintBits(), full_length);
     }
 
     /**
@@ -713,19 +709,18 @@ public:
                 if (i % r == 0)
                     REQUIRE_EQ(t.CountSlots(), original_slots << (i / r));
 
-                // A fingerprint bit is spent per period, not per expansion, so
-                // the hash the table reads is that much wider ...
-                REQUIRE_EQ(t.GetNumKeyBits(), original_key_bits + i / r);
-                // ... and a stored fingerprint is that much shorter.
-                REQUIRE_EQ(t.GetNumFingerprintBits(), full_length);
+                // A fingerprint bit is spent per period, not per expansion,
+                // and it comes out of the fingerprint rather than out of a
+                // wider hash: `key_bits` never moves.
+                REQUIRE_EQ(t.GetNumKeyBits(), original_key_bits);
+                REQUIRE_EQ(t.GetNumFingerprintBits(), full_length - i / r);
+                REQUIRE_EQ(t.GetBitsPerSlot(), full_length - i / r);
                 for (const auto& [key, count] : ref) {
                     REQUIRE_GE(t.Count(key), count);
-                    REQUIRE_EQ(t.MatchLength(key), full_length - i / r);
+                    REQUIRE(t.Contains(key));
                 }
-                for (auto it = t.begin(); it != t.end(); ++it) {
+                for (auto it = t.begin(); it != t.end(); ++it)
                     REQUIRE_LT(it.bucket(), t.CountSlots());
-                    REQUIRE_EQ(it.fingerprint_length(), full_length - i / r);
-                }
             }
         }
     }
@@ -813,45 +808,32 @@ public:
     }
 
     /**
-     * A void entry is duplicated when a period ends, and only then: a
-     * Stretching step hands out no bit for it to be ambiguous about.
+     * A fingerprint bit is spent when a period ends, and only then: a
+     * Stretching step hands out no bucket-index bit to pay for one.
      */
-    static void StretchingDuplicatesVoidEntriesOncePerPeriod() {
+    static void StretchingSpendsABitOncePerPeriod() {
         const uint32_t r = 3;
         FingerprintTable t(64, 14, hashmode::Default, 3, r);
         const uint64_t full_length = t.GetNumFingerprintBits();
         REQUIRE_EQ(full_length, 8);
 
-        std::mt19937_64 rng(50);
+        std::mt19937_64 rng(31);
         std::vector<uint64_t> keys;
-        for (int32_t i = 0; i < 20; i++) {
+        for (int32_t i = 0; i < 30; i++) {
             const uint64_t key = rng();
             REQUIRE_EQ(t.Insert(key), 0);
             keys.push_back(key);
         }
 
-        // Expand until every fingerprint has been spent, which takes one
-        // period per bit.
-        for (uint32_t i = 0; i < full_length * r; i++)
+        for (uint32_t i = 1; i < full_length * r; i++) {
             REQUIRE_EQ(t.Expand(), keys.size());
-        CheckStructure(t);
-        REQUIRE_EQ(t.GetPeriodCount(), full_length);
-        for (const uint64_t key : keys)
-            REQUIRE_EQ(t.MatchLength(key), 0);
-
-        // From here on the count only doubles on the expansion that ends a
-        // period; the other `r - 1` leave it alone.
-        uint64_t expected = keys.size();
-        for (uint32_t i = 1; i <= 2 * r; i++) {
-            if (i % r == 0)
-                expected *= 2;
-            REQUIRE_EQ(t.Expand(), expected);
             CheckStructure(t);
-            REQUIRE_EQ(t.CountFingerprints(), expected);
-            for (const uint64_t key : keys) {
-                REQUIRE_EQ(t.MatchLength(key), 0);
-                REQUIRE_GE(t.Count(key), 1);
-            }
+            REQUIRE_EQ(t.GetPeriodCount(), i / r);
+            // The length follows the periods, not the expansions.
+            REQUIRE_EQ(t.GetNumFingerprintBits(), full_length - i / r);
+            REQUIRE_EQ(t.CountFingerprints(), keys.size());
+            for (const uint64_t key : keys)
+                REQUIRE(t.Contains(key));
         }
     }
 
@@ -865,7 +847,7 @@ public:
 
             for (int32_t step = 0; step < 4000; step++) {
                 const uint32_t action = rng() % 100;
-                if (action < 5 && t.GetNumKeyBits() < 44) {
+                if (action < 5 && t.GetNumFingerprintBits() > 1) {
                     REQUIRE_GE(t.Expand(), 0);
                     CheckStructure(t);
                 }
@@ -1037,8 +1019,8 @@ TEST_SUITE("FingerprintTable") {
         FingerprintTableTest::InsertAndCount();
     }
 
-    TEST_CASE("delete removes the longest match") {
-        FingerprintTableTest::DeleteRemovesLongestMatch();
+    TEST_CASE("delete removes the match") {
+        FingerprintTableTest::DeleteRemovesMatch();
     }
 
     TEST_CASE("insert and delete monte carlo") {
@@ -1057,8 +1039,8 @@ TEST_SUITE("FingerprintTable") {
         FingerprintTableTest::Expansion();
     }
 
-    TEST_CASE("void entries duplicate on expansion") {
-        FingerprintTableTest::VoidEntriesDuplicateOnExpansion();
+    TEST_CASE("growth stops when fingerprints run out") {
+        FingerprintTableTest::GrowthStopsWhenFingerprintsRunOut();
     }
 
     TEST_CASE("contraction inverts expansion") {
@@ -1105,8 +1087,8 @@ TEST_SUITE("FingerprintTable") {
         FingerprintTableTest::StretchingCurbsSpaceAmplification();
     }
 
-    TEST_CASE("stretching duplicates void entries once per period") {
-        FingerprintTableTest::StretchingDuplicatesVoidEntriesOncePerPeriod();
+    TEST_CASE("stretching spends a fingerprint bit once per period") {
+        FingerprintTableTest::StretchingSpendsABitOncePerPeriod();
     }
 
     TEST_CASE("stretched resize monte carlo") {

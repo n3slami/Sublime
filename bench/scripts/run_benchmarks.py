@@ -15,19 +15,23 @@ SKETCHES_WITH_EXPANSION_RATE_FUNCTION = {"SublimeCMS",
                                          "SublimeCSl2",
                                          "SublimeCSNoTuning"}
 
-def execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, bpk, size_function_power=None, size_function_mult=None, force_counter_count=None, override_size=None, extra_args=""):
+def execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, bpk, size_function_power=None, size_function_mult=None, force_counter_count=None, override_size=None, extra_args="", label=None):
+    # `label` names the result file when one binary is run in several
+    # configurations -- `SublimeMG --cuckoo --min-tree` is still bench_SublimeMG,
+    # but its results have to land somewhere the plotter can tell apart.
     file_to_execute = f"bench/bench_{sketch}"
     size_function_power_option = f"--size-function-power {size_function_power}" if size_function_power != None else ""
     size_function_mult_option = f"--size-function-mult {size_function_mult}" if size_function_mult != None else ""
     counter_count_option = f"--counter-count {force_counter_count}" if force_counter_count != None else ""
     options = f"{size_function_power_option} {size_function_mult_option} {counter_count_option} {extra_args}"
+    name = sketch if label is None else label
     if type(bpk) is tuple:
         bpk = [str(i) for i in bpk]
-        command = f"{build_dir}/{file_to_execute} {' '.join(bpk)} -w {workload} {options} | tee {output_base}/{sketch}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
-        cli_message_command = f"<build_dir>/{file_to_execute} {' '.join(bpk)} -w <workload_dir>/{workload_subdir}/{workload.name} {options} | tee <output_dir>/{workload_subdir}/{sketch}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
+        command = f"{build_dir}/{file_to_execute} {' '.join(bpk)} -w {workload} {options} | tee {output_base}/{name}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
+        cli_message_command = f"<build_dir>/{file_to_execute} {' '.join(bpk)} -w <workload_dir>/{workload_subdir}/{workload.name} {options} | tee <output_dir>/{workload_subdir}/{name}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
     else:
-        command = f"{build_dir}/{file_to_execute} {bpk} -w {workload} {options} | tee {output_base}/{sketch}_{bpk if override_size == None else override_size}_{workload.name}.json"
-        cli_message_command = f"<build_dir>/{file_to_execute} {bpk} -w <workload_dir>/{workload_subdir}/{workload.name} {options} | tee <output_dir>/{workload_subdir}/{sketch}_{bpk if override_size == None else override_size}_{workload.name}.json"
+        command = f"{build_dir}/{file_to_execute} {bpk} -w {workload} {options} | tee {output_base}/{name}_{bpk if override_size == None else override_size}_{workload.name}.json"
+        cli_message_command = f"<build_dir>/{file_to_execute} {bpk} -w <workload_dir>/{workload_subdir}/{workload.name} {options} | tee <output_dir>/{workload_subdir}/{name}_{bpk if override_size == None else override_size}_{workload.name}.json"
 
     print(f"[ Executing: {cli_message_command} ]")
     subprocess.run(command, shell=True)
@@ -237,8 +241,19 @@ def join_size_bench():
             
 
 def mg_accuracy_bench():
-    sketches = ["SublimeMG", "MGHeap", "SpaceSaving", "Waving"]
     SEED = 12345                            # Fixed for the sketches that support it (reproducibility).
+    # (binary, result label, extra flags). Sublime_MG runs in all four of its
+    # configurations and `MG` over both tables, so the figure reads the min tree
+    # against the decrement sweep and the cuckoo filter against the quotient
+    # filter, at the same budgets as the baselines.
+    configurations = [("SublimeMG", "SublimeMG", f"--seed {SEED}"),
+                      ("SublimeMG", "SublimeMG_tree", f"--seed {SEED} --min-tree"),
+                      ("SublimeMG", "SublimeMG_cuckoo", f"--seed {SEED} --cuckoo"),
+                      ("SublimeMG", "SublimeMG_cuckoo_tree", f"--seed {SEED} --cuckoo --min-tree"),
+                      ("MG", "MG", f"--seed {SEED}"),
+                      ("MG", "MG_cuckoo", f"--seed {SEED} --cuckoo"),
+                      ("SpaceSaving", "SpaceSaving", ""),
+                      ("Waving", "Waving", "")]
     memory_footprints = {"caida": [2 ** i for i in range(17, 23)],
                          "kosarak": [2 ** i for i in range(14, 19)],
                          "webdocs": [2 ** i for i in range(17, 23)]}
@@ -250,16 +265,16 @@ def mg_accuracy_bench():
     for workload in workload_path.iterdir():
         if workload.name not in memory_footprints:
             continue
-        for sketch, memory_footprint in itertools.product(sketches, memory_footprints[workload.name]):
-            extra_args = f"--seed {SEED}" if sketch in ("SublimeMG", "MGHeap") else ""
+        for (sketch, label, extra_args), memory_footprint in \
+                itertools.product(configurations, memory_footprints[workload.name]):
             execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint,
-                              extra_args=extra_args)
+                              extra_args=extra_args, label=label)
 
 
 def mg_expansion_bench():
-    # SublimeMG starts here and grows; MGHeap holds this size for the whole stream.
+    # SublimeMG starts here and grows; MG holds this size for the whole stream.
     START_MEMORY = 2 ** 15
-    MGHEAP_MEMORY = 2 ** 15
+    MG_MEMORY = 2 ** 15
     FINGERPRINT_LENGTH = 32                 # The sketches' default; long fingerprints cut collision over-estimation.
     SEED = 12345                            # Fixed so error and total are the same run bar the measure.
     size_function_powers = [0.5, 0.75, 1.0]
@@ -288,7 +303,7 @@ def mg_expansion_bench():
                                   power, mult, override_size=f"{START_MEMORY}_{measure}_{power:.2f}",
                                   extra_args=f"--expand-measure {measure} --growth-coefficient 4 "
                                              f"--fingerprint-length {FINGERPRINT_LENGTH} --seed {SEED}")
-        execute_benchmark(build_dir, output_base, workload_subdir, workload, "MGHeap", MGHEAP_MEMORY,
+        execute_benchmark(build_dir, output_base, workload_subdir, workload, "MG", MG_MEMORY,
                           extra_args=f"--fingerprint-length {FINGERPRINT_LENGTH} --seed {SEED}")
 
 

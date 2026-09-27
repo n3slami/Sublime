@@ -30,6 +30,84 @@ inline timer::time_point time_points[std::numeric_limits<uint8_t>::max()], decom
 inline uint64_t timer_results[std::numeric_limits<uint8_t>::max()];
 inline uint32_t top_aae_are_count = std::numeric_limits<uint32_t>::max();
 
+/**
+ * Times every single insertion, rather than a whole checkpoint's worth at
+ * once, and reports the distribution's tail.
+ *
+ * Two clock reads per insertion cost about as much as a cuckoo-table insertion
+ * itself, so a run with this on says nothing about *average* latency and must
+ * not be used for it -- which is why it is opt-in and why the tail numbers come
+ * from runs of their own. The tail is untouched by the overhead: what is being
+ * measured there is microseconds of eviction sweep, against tens of nanoseconds
+ * of instrumentation.
+ */
+inline bool measure_insert_latency = false;
+
+/**
+ * The insertion latencies of a run, as a histogram with 16 buckets per octave
+ * (so any percentile it reports is within ~4.5%) plus an exact maximum. It is
+ * never reset, so the last checkpoint of a run carries the whole run's tail.
+ */
+struct InsertLatencyProfile {
+    static constexpr uint32_t mantissa_bits = 4;
+    static constexpr uint32_t bucket_count = 64 << mantissa_bits;
+
+    uint64_t max_ns = 0;
+    uint64_t total = 0;
+    std::vector<uint64_t> buckets = std::vector<uint64_t>(bucket_count, 0);
+
+    void Add(uint64_t ns) {
+        max_ns = std::max(max_ns, ns);
+        total++;
+        buckets[bucket_of(ns)]++;
+    }
+
+    /** @returns The smallest latency at or below which `fraction` of the insertions fell. */
+    uint64_t Percentile(double fraction) const {
+        if (total == 0)
+            return 0;
+        const uint64_t target = static_cast<uint64_t>(fraction * total);
+        uint64_t seen = 0;
+        for (uint32_t i = 0; i < bucket_count; i++) {
+            seen += buckets[i];
+            if (seen > target)
+                return upper_bound_of(i);
+        }
+        return max_ns;
+    }
+
+private:
+    static uint32_t bucket_of(uint64_t ns) {
+        if (ns < (1ULL << mantissa_bits))
+            return static_cast<uint32_t>(ns);
+        const uint32_t octave = 63 - __builtin_clzll(ns);
+        const uint32_t mantissa = (ns >> (octave - mantissa_bits)) & ((1U << mantissa_bits) - 1);
+        return ((octave - mantissa_bits + 1) << mantissa_bits) | mantissa;
+    }
+
+    /** The largest latency landing in bucket `i`, which is what a percentile reports. */
+    static uint64_t upper_bound_of(uint32_t i) {
+        if (i < (1U << mantissa_bits))
+            return i;
+        const uint32_t octave = (i >> mantissa_bits) + mantissa_bits - 1;
+        const uint64_t mantissa = i & ((1U << mantissa_bits) - 1);
+        return (((1ULL << mantissa_bits) | mantissa) << (octave - mantissa_bits))
+                    + (1ULL << (octave - mantissa_bits)) - 1;
+    }
+};
+
+inline InsertLatencyProfile insert_latency;
+
+/** Emits the insertion tail, if this run is one of the ones measuring it. */
+inline void add_insert_latency_measures() {
+    if (!measure_insert_latency)
+        return;
+    test_out.AddMeasure("max_i", insert_latency.max_ns);
+    test_out.AddMeasure("p99_i", insert_latency.Percentile(0.99));
+    test_out.AddMeasure("p999_i", insert_latency.Percentile(0.999));
+    test_out.AddMeasure("p9999_i", insert_latency.Percentile(0.9999));
+}
+
 
 template <typename Sketch, typename InsertFun, typename DeleteFun, typename QueryFun, typename SizeFun> 
 void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun query_f, SizeFun size_f, void *aux_f=nullptr) {
@@ -75,7 +153,15 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
         WorkloadIO::opcode opcode = wio.GetOpcode();
         switch (opcode) {
             case WorkloadIO::opcode::Insert: {
-                insert_f(sketch, wio.ReadValue<uint64_t>());
+                const uint64_t value = wio.ReadValue<uint64_t>();
+                if (measure_insert_latency) {
+                    const timer::time_point start = timer::now();
+                    insert_f(sketch, value);
+                    insert_latency.Add(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                            timer::now() - start).count());
+                }
+                else
+                    insert_f(sketch, value);
                 n_keys++;
                 break;
             }
@@ -193,6 +279,7 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
                     for (auto [key, value] : aux_data)
                         test_out.AddMeasure(key, value);
                 }
+                add_insert_latency_measures();
 
                 for (int32_t i = 0; i < std::numeric_limits<uint8_t>::max(); i++) {
                     if (timer_results[i] > 0) {
@@ -274,7 +361,14 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
             case WorkloadIO::opcode::Insert: {
                 wio.GetStringKey(buf_len, buf);
                 const std::string key(buf, buf + buf_len);
-                insert_f(sketch, key);
+                if (measure_insert_latency) {
+                    const timer::time_point start = timer::now();
+                    insert_f(sketch, key);
+                    insert_latency.Add(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                            timer::now() - start).count());
+                }
+                else
+                    insert_f(sketch, key);
                 n_keys++;
                 break;
             }
@@ -394,6 +488,7 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
                     for (auto [key, value] : aux_data)
                         test_out.AddMeasure(key, value);
                 }
+                add_insert_latency_measures();
 
                 for (int32_t i = 0; i < std::numeric_limits<uint8_t>::max(); i++) {
                     if (timer_results[i] > 0) {

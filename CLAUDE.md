@@ -43,14 +43,15 @@ lives in the top-level `CMakeLists.txt`, so `CTestTestfile.cmake` is generated t
 
 ```bash
 ctest -VV                 # all suites
-ctest -R sublime_cms      # one suite: cms | sublime_cms | cs | sublime_cs |
-                          #            fingerprint_table | vale_counters | sublime_mg | all
+ctest -R sublime_cms      # one suite: cms | sublime_cms | cs | sublime_cs | fingerprint_table |
+                          #            vale_counters | sublime_mg | mg | space_saving | all
 ./tests/SublimeCMSTests --test-case="monte carlo"        # one doctest case
 ```
 
 `ctest` builds Release, which defines `NDEBUG` — so every `assert` in the headers is compiled
-out and the suites never check the internal invariants (`bits_per_slot_ <= 56` in
-`FingerprintTable::allocate`, `chain_sum > lazy_decrement_` in `SublimeMG`, ...). Worth a
+out and the suites never check the internal invariants (`bits_per_slot_ <= 56` and
+`fingerprint_bits_ >= 1` in `FingerprintTable::allocate`, the agreement between
+`DecrementIsZero`'s fast test and `Get(pos) == 0` in `VALECounters`, ...). Worth a
 separate assert-enabled build when adding tests, since an invalid configuration otherwise
 passes quietly:
 
@@ -72,76 +73,183 @@ new white-box checks as static methods on that friend class and wire them into a
 The `journal_extension` branch adds Sublime_MG — Sublime applied to Misra-Gries. It is
 `FingerprintTable` (the monitored-key set), `VALECounters` (the counts), and the wiring between
 them in `SublimeMG`. The table mirrors every slot it shifts into the counter array it owns
-(`EnableCounters`), which is also what makes the counter prefetch in `FindLongestMatch`
-possible. The algorithm, its tests, both benchmark experiments, and their figures are all done
-(see "State of play").
+(`EnableCounters`), which is also what makes the counter prefetch in `FindMatch` possible. The
+algorithm, its tests, both benchmark experiments, and their figures are all done (see "State of
+play").
 
 The table *owns* its counters (`EnableCounters`, not an attach-a-pointer arrangement), because
 the two must be resized in lockstep and only the table knows when that happens. `Expand` and
-`Contract` carry every count across with its fingerprint; when a period-ending expansion
-duplicates a void entry into two buckets, **both copies keep the whole count** — neither has a
-fingerprint left to tell it from the other, so a query may land on either and only the full
-count keeps the answer an over-estimate. Contraction does not merge those copies back.
+`Contract` carry every count across with its fingerprint, and neither ever duplicates or drops
+an entry: a resize is a pure re-hash.
 
-### Chains — the one idea the rest follows from
+### Fixed-length fingerprints — the one idea the rest follows from
 
-A key's count is **not one counter but a sum**: every fingerprint of its run that matches it,
-of whatever length, holds a share of it. Runs are held in ascending slot value and the void bit
-outweighs the fingerprint, so a run is in ascending order of *length*, and an earlier entry of
-a run is a prefix of a later one exactly when `fingerprints_match` says the two match. The
-entries matching a key therefore form a **chain**, and the count of the key family ending at
-entry `e` is its **chain sum** — `e`'s counter plus the counters of the earlier matching
-entries of its run. `FingerprintTable::ForEachEntryWithChainSum` is the one-sweep-per-run pass
-that produces them.
+**Every fingerprint in the table is of the same length**, so a key corresponds to exactly one
+entry and its count is that entry's counter. `key_bits` is fixed for the life of the table;
+what a period-ending expansion does is widen the bucket index by one bit and shorten *every*
+fingerprint — stored and freshly inserted alike — by one. `bucket + fingerprint` therefore
+always covers exactly `key_bits` bits of hash, however often the table has been resized.
 
-- `Query(k)` = chain sum of `k`'s longest match, less `lazy_decrement_` **once**. The decrement
-  is owed by the *key*, not by each entry its count is spread over — subtracting it per match
-  would underflow. `Count` no longer exists; `Query` is the only estimator.
-- **Admitting** stores `L + count` when nothing matched the key (its entry is the whole chain,
-  so it carries the decrement), and just `count` when something did (the chain already carries
-  it further down).
-- **Merging** `lazy_decrement_` subtracts it from the *first entry of each chain only* —
-  the entries whose `chain_sum == count`. Subtracting it from every counter, as a uniform
-  `Retune(offset)` would, takes it off once per entry instead of once per chain.
-- **Deleting** an entry takes its counter out of the chain sums of the longer entries that
-  matched it, which would silently cut their keys' counts.
-  `FingerprintTable::DeleteEntriesPreservingChainSums` repairs that by handing what was
-  removed to the entries left at the *bottom* of each chain, and to those only — everything
-  above reaches the removed counters through them. It is purely additive, so no counter can go
-  negative. Its victims must be downward-closed per run, which anything chosen by chain sum is.
-- Note `GetNumFingerprintBits()` does *not* shrink on expansion — it is the length of a
-  *freshly inserted* fingerprint, and `key_bits` grows alongside the bucket index; it is the
-  stored entries that lose a bit (`rebuild_op::sacrifice`). That is how fingerprints of
-  different lengths, and so chains, come to exist at all.
+Three things fall out of that, and they are why the code is as small as it is:
 
-### Insertion, the buffer, and the flush
+- **A slot holds a fingerprint and nothing else.** There is no void bit, so `bits_per_slot ==
+  fingerprint_bits`, and a slot gets one bit *narrower* per period: a table that has grown is
+  cheaper per slot than it was. A run is held in ascending fingerprint order, and matching is
+  plain equality (`find_in_run`).
+- **A resize is a pure re-hash.** `const_iterator::hash()` is lossless, so `rebuild_into` just
+  hands each entry's hash to the destination, which splits it by its own shape. That one line
+  serves a stretch, an expansion and a contraction alike — there is no `rebuild_op` — and
+  contraction is an exact inverse, with no copies to fail to merge.
+- **Growth is bounded by the fingerprint, not by the hash.** `Expand` refuses once the length
+  is down to 1 (a zero-width slot cannot tell keys apart, and the packing cannot represent it),
+  and `CountSlotsAfterExpansion` says so beforehand.
 
-- **Only `Insert`, `Query`, `FlushBuffer`, `Reset`, `Expand`/`Contract` and the read-only
-  accessors are public.** `StartMonitoring`/`StopMonitoring`/`MergeLazyDecrement` are private
-  bare primitives (the tests are a `friend`): each can leave the summary in a state the
-  algorithm would never produce. They flush the buffer first, which is what keeps the flush's
-  own assumption true — a buffered key matched nothing when it was buffered, and still matches
-  nothing when it is applied.
-- **Buffered insertions are not visible until `FlushBuffer()`** (or until the buffer fills),
-  the same convention the other Sublime sketches use for their prefetch queues. Tests and
-  benchmarks must flush before querying.
-- **`FlushBuffer` is one replay plus one sweep, never a loop.** Pass one takes the `B` smallest
-  chain sums. The replay works the batch out without touching the table: a key already pending
-  under the same `EntryIdentity` counts that one up, a key with a slot free takes it, and
-  otherwise `dec` goes up, everything the decrement has caught up with makes way — table
-  entries *and* pending keys of this very batch, which are admitted at a count of one and so
-  can be decremented back out before the batch ends, exactly as Misra-Gries has it — and the
-  occurrence that paid takes one of the slots it freed. It never runs out of room first:
-  `free = initial + died - a`, so with all `B` candidates dead and a key still waiting,
-  `a <= B - 1` and `free >= 1`. Then `L += dec`, and pass two evicts every entry with
-  `chain_sum <= L`, which subsumes the candidates and sweeps up the ties the first pass never
-  looked at.
-- **The counter array is rebuilt in exactly one place**, `SublimeMG::rebuild()`. VALE wants a
-  new tuning when chunks spill into tails arrays; the lazy decrement wants subtracting out once
-  it is dead weight. The subtraction is its own pass now (chain roots only, over the entries),
-  and `Retune(0, shrank=true)` follows: `shrank` tells VALE the counters really did get smaller,
-  which lifts the forced decrease of `counters_per_chunk` that a plain zero-offset retune
-  applies to stop a tails-driven retune landing back where it started.
+Shortening is what a resize costs in accuracy: a shorter fingerprint stands for a larger family
+of keys, so entries the table could once tell apart merge into one, which only ever
+over-estimates. `Query(k)` is the counter of `k`'s matching entry, or 0.
+
+### Two tables, and two decrements
+
+`SublimeMG<expand_on_error_inducing_insertions, use_min_tree, Table>` and `MG<Table>` both take
+the monitored-key set as a **template parameter**: `FingerprintTable` (the RSQF, the default) or
+`CuckooTable`. The two present the same ~20-method surface, and neither sketch knows which it
+has. `bench_SublimeMG --cuckoo` picks at run time, beside `--min-tree`.
+
+The cuckoo table is there because the RSQF's cost is *shifting*: an insert or delete slides a
+whole cluster, which at a 0.95 load factor is hundreds of slots, each dragging its counter and
+the min tree's repair with it. A cuckoo filter relocates one entry per kick and never shifts.
+Measured on kosarak at 16 KB, insert latency: RSQF sweep 794 ms, RSQF + tree 5220 ms, **cuckoo
+451 ms, cuckoo + tree 1132 ms** — the tree configuration costs 4.6x less on the cuckoo table,
+which is the whole reason the two changes landed together. It also monitors **~17% more keys per
+byte** in both configurations, a cuckoo slot carrying none of the RSQF's 2.1 bits of block
+metadata: 2279 keys in 16008 bytes against 2215 in 18725 (sweep), 1716 in 15816 against 1834 in
+19721 (tree). Compare the AAEs at those budgets with that in mind — 100.0 against 99.0 and 108.8
+against 107.0 — because the RSQF's shape arithmetic *overshoots* the 16 KB asked for while the
+cuckoo table lands under it. `MG` gains most of all, having been the one paying for the old
+round-up: 1612 keys in 15240 bytes against 1054 in 16383, AAE 112.9 against 116.5, and half the
+insert time. See the `CuckooTable.hpp` row in the architecture table.
+
+**Both buckets are prefetched before either is read.** A lookup's two candidate buckets are
+known from the hash, and reading one and then the other puts two independent cache misses in
+series; prefetching both slot regions up front is worth **5-7% of insert and query time** once
+the table outgrows the last-level cache (1M slots: `MG` insert 723 -> 677 ms, Sublime_MG sweep
+797 -> 744, tree 1581 -> 1509; queries 617 -> 593, 878 -> 813, 845 -> 816), and is inside the
+noise at 64k slots where everything fits. Two things were tried and are *not* in the code, with
+the measurements in the headers: prefetching **both** buckets' counters (slightly worse than
+prefetching neither — only one bucket can hold the entry, so one of the two is always wasted),
+and the same trick for the RSQF's own blocks (no effect, because a slot's address does not exist
+until the block metadata has arrived, so there is no second miss to overlap).
+
+**A cuckoo filter can lose an entry, and the RSQF cannot.** When a kick path runs out of
+patience (`max_kicks`) the entry it is carrying has nowhere to go: if that is the arrival,
+`InsertAt` returns `err_no_space` and the occurrence is dropped, and if it is an older tenant
+the arrival is stored and the tenant is dropped, count and all, which `CountLostEntries()`
+reports. Both happen at the 0.95 load factor Misra-Gries runs the table at — a few hundred over
+a 300k-insertion stream — and both are *silent* accuracy loss, so the bench's extras carry the
+count. It is also why the cuckoo test cases cannot be held to an exact oracle: a loss leaves the
+summary with room the oracle does not have, so the two decrement at different times and diverge
+from there. `MGTest::CuckooMonteCarlo` follows the oracle in lockstep up to the first loss and
+falls back to the invariants no loss can break, and
+`SublimeMGTest::CheckMisraGriesGuarantee` drops the understatement half of the guarantee once
+`LostEntries(mg) > 0`, keeping the over-estimation half, which losing counts cannot violate.
+
+`use_min_tree` is the **second template parameter**, default `false`. It picks between two ways of applying the
+Misra-Gries decrement, and every place they differ is an `if constexpr`. `SublimeMG<>` /
+`SublimeMG<false>` still mean what they did. `bench_SublimeMG --min-tree` selects the tree at
+run time, the way `--expand-measure` selects the measure.
+
+### Insertion: the decrement sweep (`use_min_tree = false`, the default)
+
+- **Only `Insert`, `Query`, `Reset`, `Expand`/`Contract` and the read-only accessors are
+  public.** `StartMonitoring`/`StopMonitoring` are private bare primitives (the tests are a
+  `friend`): each can leave the summary in a state the algorithm would never produce.
+- **There is no buffer and no lazy decrement.** Case 3 — an unmonitored key arriving at a full
+  summary — is applied on the spot: one sweep of the entries takes one off every count, and the
+  entries it empties are evicted. The occurrence that paid for the sweep takes one of the slots
+  it freed; if it freed none, the occurrence is dropped. `CountDecrements()` counts *sweeps*,
+  which is the classic Misra-Gries parameter: no key's count is understated by more than that.
+- **The evictions wait for the sweep to finish.** Removing an entry slides the rest of its
+  cluster down over the hole, which would move the slots the sweep has yet to reach, so the
+  sweep collects `(bucket, slot)` pairs and `FingerprintTable::DeleteSlots` removes them
+  afterwards, highest slot first.
+- **`VALECounters::DecrementIsZero` is why the sweep is affordable.** A VALE counter holds zero
+  exactly when its overflow bit is clear and its stub reads zero, so finding the entries to
+  evict costs nothing beyond the decrement that was happening anyway — no extension, and no
+  tails array, is ever decoded for it. This is the one place the eager decrement is *better*
+  than the lazy one it replaced.
+- **VALE is tuned from the same histogram `SublimeCMS` uses**, in both directions. Upwards:
+  `MaybeRetune` after a counter grows, the tails-fraction trigger, exactly as in `SublimeCMS`.
+  Downwards: `RetuneIfNarrower`, because counts here *shrink* and shrinking never spills a
+  chunk. That one costs a pass of its own, so the sweep asks for it only every
+  `ShrinkRetuneInterval()` (`2^(stub-1)`) sweeps — the point at which every counter can have
+  lost a whole bit.
+
+### Insertion: the min segment tree (`use_min_tree = true`)
+
+The sweep is `O(w)` in the monitored keys. The tree replaces it with a **lazy decrement `L`**
+and an eviction that costs `O(log w)`: a decrement is `L++`, and a key's count is its counter
+less `L`, so a count reaches zero exactly when the smallest counter catches up with `L`.
+
+- **The tree lives in the counter array**, which doubles: `2n` counters for `n` slots, leaves in
+  `[n, 2n)`, internal nodes in `[1, n)`, `parent(i) = i / 2`, index 0 unused. That is the
+  bottom-up layout, whose root aggregates every leaf for *any* `n` — which matters, since a
+  quotient filter's slot capacity is never a power of two. `VALECounters`' public API stays
+  slot-indexed and adds `n` internally, so `FingerprintTable` needed no change.
+- **A zero counter means "no entry here", not a count of zero**, so the combine is `min` over
+  the *non-zero* children. A monitored key's counter is always at least `L + 1 >= 1`, so zero is
+  unambiguous — and it leaves an empty slot costing a zero stub and nothing else, where a
+  `+inf` sentinel would give every one of them an extension or a tails entry.
+- **The tree is difference-encoded**: a leaf holds its key's count outright, and an internal
+  node holds `excess + 1`, where the excess is how much larger its subtree's minimum is than its
+  parent's. So the root holds the global minimum and the sum along a root-to-leaf path is that
+  leaf's count. Two consequences. At least one child of every node has an excess of zero — else
+  both could be decremented and the parent incremented — so **an increment is a climb of `== 1`
+  tests and `Increment`/`Decrement` calls**, with nothing decoded: bump the leaf, read the
+  sibling leaf once to learn whether this leaf was the pair's whole minimum, and if it was,
+  climb, renormalising by taking one off the sibling and giving it to the parent, stopping the
+  moment a sibling reads 1. And the internal nodes now hold *small* numbers, which is what VALE
+  is good at: the doubled array costs about 23% more than the leaves alone, not 100%.
+- **The `+ 1` is what keeps empty slots out of the minimum.** A plain difference encoding would
+  need an excess of infinity for an entirely empty subtree; shifting by one frees the value 0 to
+  mean "nothing here" while leaving every test as cheap.
+- **A general write** — an admission or an eviction, which can move a minimum anywhere — is told
+  what the leaf held before, so it derives the minima the differences are relative to on the way
+  *up* (a node's parent's minimum is its own less its difference) and stops at the first node
+  that does not move. Only a node that was empty has nothing to derive from, and that falls back
+  to a walk from the root.
+- **A leaf count is rounded up to even**, so that no node has one leaf child and one internal
+  one and a climb never has to ask which kind a sibling is. An odd count gets a spare, empty leaf.
+- **`repair_range`, which the RSQF's shifts need, is a loop of the general update** — one per
+  shifted leaf. It has to be the walking form: the derived form reads the tree to learn what a
+  minimum *was*, and after the range's first leaf is applied that reading no longer describes the
+  state the rest of the range was measured against. This is why RSQF + tree is the slow corner of
+  the four configurations, and why the cuckoo table, which never shifts, is the answer to it.
+- **The eviction candidate is tracked, not searched for.** `MinSlot()` is a leaf holding the
+  root's value, maintained on every write: a write that attains the root becomes the candidate
+  (which is how an admission becomes the next eviction), and a write that lifts the candidate
+  off the minimum descends from *the node the climb stopped at* — whose other child holds the
+  minimum — rather than from the root. A slot shift only moves the candidate's index.
+- **`FingerprintTable::BucketOfSlot`** is what turns the tree's answer back into something the
+  table can delete: the tree hands back a slot, `DeleteSlot` needs the run's canonical bucket,
+  and that is recovered by walking back to the start of the slot's cluster and pairing runs with
+  occupied buckets forward. The same `O(cluster)` walk `remove_slot` already makes.
+- **Case 3 pays for a decrement only when nothing is already at zero** (`MinValue() > L`), and
+  then evicts **everything** the decrement emptied, not just the one entry the arrival needs.
+  Both halves matter. The first keeps `stored >= L` an invariant, which is what makes the merge
+  below safe — it is unreachable while the batch is unbounded, but `eviction_batch` is a
+  constant and a finite one would need it. The second is a performance cliff, not a nicety:
+  capping the batch leaves the table hovering at its 0.95 load factor, where every insertion and
+  deletion walks a long cluster, and on kosarak at 16 KB the same ~2.2M evictions cost **24.5 s
+  in batches of 256 against 3.3 s unbounded**, for identical answers.
+- **The lazy decrement is merged out** once it passes half of what a stub can hold, as VALE's
+  rebuild offset — free, since the rebuild reads and rewrites every counter anyway. What comes
+  off is `L - 1`, leaving `L = 1`: an entry whose count has reached zero sits at exactly `L`,
+  and taking the whole of `L` off it would store zero, which the tree reads as an empty slot.
+- **What it costs.** The counters double, so at a fixed budget the summary monitors fewer keys
+  (kosarak at 16 KB: 2052 against 2486) and is correspondingly less accurate (AAE 107 against
+  99). Insertion is still ~4x slower than the sweep there (3.3 s against 0.83 s), because the
+  sweep's bulk eviction leaves the table slack that the tree has to work harder for. What the
+  tree buys is the *worst case*: `O(log w)` to find and evict, against `O(w)`.
 
 ### When it grows: the size function
 
@@ -186,8 +294,8 @@ the measure reached the threshold, which is also what `SublimeCMS` does.
 
 - `FingerprintTable::CountSlotsAfterExpansion` / `CountSlotsAfterContraction` predict a resize
   from the shape arithmetic alone, without building the table. `SublimeMG` uses the first to
-  retire the threshold when the table has no hash bits left to spend, so a summary that cannot
-  grow stops testing rather than failing an expansion per insertion.
+  retire the threshold when the table's fingerprints are down to their last bit, so a summary
+  that cannot grow stops testing rather than failing an expansion per insertion.
 - Whether an expansion is a stretch inside the period or the doubling that ends it is
   `FingerprintTable`'s business; the policy only reads what it left behind.
 - The catch-up loop is **capped at one slot per unit of the measure** (`Capacity() <
@@ -209,66 +317,69 @@ not `(const char *, length)`:
 |---|---|---|
 | update | `Insert(uint64_t key, uint8_t flags = 0)` | `Insert(const char *, uint32_t)` |
 | query | `Query(uint64_t key, uint8_t flags = 0)` | `Query(const char *, uint32_t)` |
-| make pending updates visible | `FlushBuffer()` | `FlushPrefetchQueue()` |
+| make pending updates visible | *(none — an insertion is applied at once)* | `FlushPrefetchQueue()` |
 | space | `SizeInBytes()` | `Size(bool include_all_sketches)` |
 | delete | *(none — Misra-Gries has no deletions)* | `Delete(...)` |
 
 Constructor: `SublimeMG<E>(nslots, key_bits, hash_mode, seed, growth_coefficient = 1,
-buffer_capacity = 64, expansion_f = {})`. `Capacity()` is `nslots * max_load_factor` (0.95).
+expansion_f = {})`. `Capacity()` is `nslots * max_load_factor` (0.95).
 `flags` takes `flag_key_is_hash` when the caller has already hashed the key, so a string
 workload has to be hashed to a `uint64_t` first. `hashmode` is `Default` (Murmur),
 `Invertible` (hash as wide as the key), or `None` (key used as its own hash — skew in the
 input becomes skew in the load). `Insert` returns 0 or a negative status (`err_no_space`,
-`err_not_monitored`). Copy and move both work, unlike `MGHeap`/`SpaceSaving`, which delete them
+`err_not_monitored`). Copy and move both work, unlike `MG`/`SpaceSaving`, which delete them
 (their sub-objects hold back-pointers). `Reset`
 empties the summary but **keeps the size it grew to**, and re-derives the threshold from it.
 
 Two shape constraints, both `assert`-only and therefore **silent in the Release/NDEBUG build**:
 
-- `key_bits - log2(nslots) + 1 <= 56` — a slot has to be readable by one 64-bit word — i.e.
-  `key_bits <= 55 + log2(nslots)`. Overshooting it passes `ctest` and trips in the
-  assert-enabled build; that is exactly how the one bad test configuration was caught.
-- A period-ending expansion needs one more hash bit, so growth stops once `key_bits` reaches
-  63. `CountSlotsAfterExpansion() == CountSlots()` is how the summary notices and retires its
-  threshold.
+- `key_bits - log2(nslots) <= 56` — a slot has to be readable by one 64-bit word — i.e. the
+  fingerprint is at most 56 bits. Overshooting it passes `ctest` and trips in the assert-enabled
+  build; that is exactly how the one bad test configuration was caught.
+- `key_bits - log2(nslots) >= 1` — the fingerprint always keeps at least one bit. Since a
+  period-ending expansion spends one, growth stops once the length reaches 1, and
+  `CountSlotsAfterExpansion() == CountSlots()` is how the summary notices and retires its
+  threshold. Note `key_bits` itself never moves.
 
 ### Benchmarking Sublime_MG
 
 The glue and two experiments are implemented: `bench/sketches_benchmark/bench_SublimeMG.cpp`,
-`bench_MGHeap.cpp`, `bench_SpaceSaving.cpp`, all in `bench/CMakeLists.txt`'s `Targets` list and
+`bench_MG.cpp`, `bench_SpaceSaving.cpp`, all in `bench/CMakeLists.txt`'s `Targets` list and
 `compile_bench` branches. **`MGDummy` was removed** in favour of the two fair baselines below.
 
-**Baselines** (`mg_accuracy`, Fig. 17): `MGHeap` — a classic heap-based Misra-Gries whose
-monitored set is a fixed-size RSQF `FingerprintTable` (32-bit fingerprints by default) with a
-plain 32-bit counter array and a packed per-slot `heap_offset` array, plus an accurate
-`(count, home_bucket)` min-heap; and `SpaceSaving` — a textbook Stream-Summary storing full
-64-bit keys, deliberately pointer-heavy. Plus `Waving`. All fixed-size. See the `MGHeap` /
-`SpaceSaving` rows in the architecture table. Both figures run at the sketches' default
-fingerprint length, 32 bits (`MGHeap::default_fingerprint_length`, which `bench_SublimeMG`'s own
+**Baselines** (`mg_accuracy`, Fig. 17): `MG` — textbook Misra-Gries, whose monitored set is a
+fixed-size RSQF `FingerprintTable` (32-bit fingerprints by default) with a plain 32-bit counter
+array, and whose decrement is the same sweep Sublime_MG does, with no heap or bucket list
+anywhere; and `SpaceSaving` — a textbook Stream-Summary storing full 64-bit keys, deliberately
+pointer-heavy. Plus `Waving`. All fixed-size. See the `MG` / `SpaceSaving` rows in the
+architecture table. **`MG` and `SublimeMG` are the same algorithm over the same monitored set**
+at a fixed size — same table, same fingerprint length, same seed — so their answers agree
+key for key, and the only difference is VALE against a `uint32_t` array. The `sublime_mg` suite
+asserts exactly that ("agrees with plain Misra-Gries exactly"), which makes the accuracy figure
+a clean read of what the counters alone buy. Both figures run at the sketches' default
+fingerprint length, 32 bits (`MG::default_fingerprint_length`, which `bench_SublimeMG`'s own
 default matches); `--seed` is fixed for both. Note what the length costs: a wider slot roughly
 halves capacity per byte (Sublime_MG at 128 KB monitors 21.7k keys against 45.7k at 10 bits, and
-its capacity lead over `MGHeap` falls from ~6x to ~3.3x), which on these datasets outweighs the
+its capacity lead over `MG` falls from ~6x to ~3.3x), which on these datasets outweighs the
 collision over-estimation the longer fingerprint removes -- Sublime_MG's AAE is worse at 32 bits
 than at 10 nearly everywhere, though still well ahead of every baseline.
 
-The **`FingerprintTable::SlotMirror`** hook (`AttachMirror`) is what lets `MGHeap` keep its
-plain counter + packed-offset arrays aligned as RSQF slots shift: the table calls the sidecar
-beside its own `counters_` at the two shift sites and in `Reset`. `HomeBucket` and
-`ForEachSlotInRun` are the two accessors `MGHeap` added for its heap↔slot resolution. None of
-this touches Sublime_MG's path (it sets no sidecar).
+The **`FingerprintTable::SlotMirror`** hook (`AttachMirror`) is what lets `MG` keep its plain
+counter array aligned as RSQF slots shift: the table calls the sidecar beside its own
+`counters_` at the two shift sites and in `Reset`. None of this touches Sublime_MG's path (it
+sets no sidecar).
 
 Glue rules that bite (all handled in the committed benches):
 
-- **`query_sketch` flushes first, guarded by `CountBuffered() > 0`.** The harness never flushes
-  the sketch, so up to `B` buffered insertions would be invisible; the guard keeps the flush off
-  the query path once the buffer is empty. This is the one mistake that yields plausible-but-wrong
-  numbers.
+- **`query_sketch` does not flush anything.** It used to: case-3 insertions were buffered, and a
+  query that did not flush first missed up to `B` of them. Insertions are applied on the spot
+  now, so there is nothing pending and nothing to guard.
 - **`top_aae_are_count = Capacity()`** in every MG-family `init` (and `Waving`), so the per-sketch
   top-k AAE/ARE are emitted. The plots use the *all-distinct-key* metrics; the top-k numbers ride
   along for free.
 - **No `Delete`** — `delete_sketch` throws.
 - **Memory budget → `nslots`** is a binary search over a fresh sketch's `SizeInBytes()` (not a
-  one-liner: it is fingerprints + counters + offsets/heap + buffer, and the fingerprint width
+  one-liner: it is fingerprints plus counters, and the fingerprint width
   depends on `key_bits` = `log2(nslots) + fingerprint_length`). `SpaceSaving` inverts a
   per-monitor estimate instead. Memories only need to match to ±5%; the plots are (actual size,
   error) curves.
@@ -276,20 +387,21 @@ Glue rules that bite (all handled in the committed benches):
   `flag_key_is_hash`; int workloads (kosarak, webdocs) go in raw under `hashmode::Default`.
 - New flags on `bench_SublimeMG`: `--fingerprint-length` (default 32), `--growth-coefficient`
   (`r`), `--expand-measure error|total` (picks `SublimeMG<true>`/`<false>` at runtime), and
-  `--seed` (0 = time-based; `bench_MGHeap` also takes `--fingerprint-length`/`--seed`). The
+  `--seed` (0 = time-based; `bench_MG` also takes `--fingerprint-length`/`--seed`). The
   benches also report their final VALE tuning (`counters_per_chunk`, `stub_length`) as extra
   parameters, which is what the Fig. 17 VALE table is built from.
 
 **`mg_expansion` (Fig. 18)** shows Sublime_MG improving accuracy across expansions and the memory
 win of the error-inducing measure. It plots `SublimeMG<error>` and `SublimeMG<total>` (both
 expanding from a small budget with the default **32-bit fingerprints**, `r = 4`, a fixed
-`--seed`) against a fixed-size `MGHeap` that just ingests to the end of the stream. The
+`--seed`) against a fixed-size `MG` that just ingests to the end of the stream. The
 size-function **power is swept** (0.5 solid, 0.75 dashed, 1.0 dotted, as in the CMS expansion
-figure) for both measures, each labelled with its power. **The mult is shared between the two measures at each power** --
-`W(N) = (N/mult)^power` -- which is what guarantees `error <= total`: error-inducing insertions
+figure) for both measures, each labelled with its power. **The mult is shared between the two
+measures at each power** -- `W(N) = (N/mult)^power` -- which is what guarantees `error <= total`: error-inducing insertions
 are a subset of all insertions, so the same size function never expands error more than total.
-(Per-measure mults break that.) On WebDocs at power 1.0, `<error>` reaches AAE 3.3 at 8.4 MB
-while `<total>` needs 217 MB for AAE 0.017 -- ~26x less memory. Panels are AAE and
+(Per-measure mults break that, and with it shared the two power-0.5 lines come out identical.)
+On WebDocs at power 1.0, `<error>` reaches AAE 3.2 at 7.1 MB while `<total>` needs 155 MB for
+AAE 0.011 -- ~22x less memory. Panels are AAE and
 Memory[B/key] vs number of keys.
 
 **Dense-start expand workloads.** Because the harness snapshots the whole ground-truth map at every
@@ -326,26 +438,39 @@ column count, Sublime_MG a monitored-key `Capacity()`. The shared `--size-functi
 
 ### State of play
 
-Everything above is implemented and tested: 41 `sublime_mg` cases, 24 `fingerprint_table`, 13
-`vale_counters`, all green under `ctest`, under an assert-enabled build, and under valgrind
-(no leaks, no errors). `CheckSummary` re-derives every chain sum independently of the
-table's own sweep, so the tests do not trust the code they check.
+Everything above is implemented and tested: 34 `sublime_mg` cases, 24 `fingerprint_table`, 17
+`vale_counters`, 10 `mg`, 6 `cuckoo_table`, all green under `ctest` and under an assert-enabled
+build. The `sublime_mg` and `mg` suites each run their monte carlos over both tables.
+
+Building the min tree turned up a **latent bug in `VALECounters`**, fixed here and worth knowing
+about: `shift_extensions_right_from_pos`, closing the gap a removed extension leaves in a
+chunk's pool, did not mask the bits it carried in from the next word, so it corrupted the
+extension *below* the one being removed whenever `pos % 64 + shamt` passed 64. That orphans an
+extension in the pool, and the chunk's next spill into a tails array then walks the overflow
+bitmap past its end — a heap overflow. It needs a pool spanning three 64-bit words
+(`counters_per_chunk * (stub_size + 1) < 383`), which no tuning in the committed results
+reaches, so nothing measured so far is affected. `PoolShiftKeepsWhatIsBelowIt` covers it.
+`ExpectedQuery` re-derives an answer by walking the table itself, and `MGTest`'s `ReferenceMG`
+is an independent exact Misra-Gries keyed by `EntryIdentity`, so the tests do not trust the
+code they check.
 
 The suites were built by injecting deliberate mutations and requiring each to fail something —
-worth continuing, because two real bugs (the eviction repair applied to every survivor rather
-than the newly rootless ones, and the candidate pass reading raw counters instead of chain
-sums) survived the first round of tests and were only caught that way. **Restore the file
+worth continuing, because two real bugs survived the first round of tests and were only caught
+that way. **Restore the file
 through a shell trap when doing this.** A mutation left live by a crashed run — `retarget()`
 deleted from `Expand`, so the threshold never advanced — made `grow_to_fit` double the table
 until the machine ran out of memory. That is what the `Capacity() < SizeMeasure()` cap now
 prevents, but the harness should not depend on it: run the mutant under `ulimit -v` too.
 
-The benchmark glue and both experiments are implemented (see "Benchmarking Sublime_MG"): `MGHeap`
-(7 `mg_heap` cases) and `SpaceSaving` (3 `space_saving` cases) are green under `ctest` and
-ASan-clean, built the same mutation-injection way. Both figures have been run on the real datasets
-and tuned (32-bit fingerprints, `r = 4`, per-power mults shared across the two measures, fixed
-seed), and the final Fig. 17/18 PDFs and their `.tex` tables generated. Nothing in the algorithm
-or the pipeline is left open.
+The benchmark glue and both experiments are implemented (see "Benchmarking Sublime_MG"): `MG`
+(10 `mg` cases) and `SpaceSaving` (3 `space_saving` cases) are green under `ctest` and
+ASan-clean, built the same mutation-injection way. Both figures have been rerun on the real
+datasets under the rewrite (results `2026-09-25.12:19:25`). What it changed, against the same
+32-bit-fingerprint runs of the old design: Sublime_MG is slightly *better* everywhere (the void
+bit's removal buys ~3% more capacity per byte) and 20-25% faster to insert, while `MG` improves
+sharply (kosarak at 256 KB: AAE 22.1 -> 4.1) and inserts 2.5-3x faster, because it lost the
+heap and gained the admit-into-a-freed-slot rule that `MGHeap` never had. So the accuracy gap
+between the two narrowed, and what is left of it is VALE's counters alone.
 
 ## Compile-time tuning knobs
 
@@ -370,11 +495,16 @@ per data point to sweep them — expect benchmark runs to rebuild the tree repea
 | `SublimeCS.hpp` | Sublime over Count Sketch. `template <bool l2_size_function>`; when `true`, an AVX-512 AMS sketch estimates the stream's ℓ2 norm (every `ams_sketch_query_period` ops) and drives expansion instead of the key count. |
 | `SublimeCMSNoTuning.hpp.in`, `SublimeCMSNoTuningMorris.hpp.in`, `SublimeCSNoTuning.hpp.in` | Fixed-tuning clones of the above for performance measurements. **They are near-duplicates, not includes** — an algorithmic fix in `SublimeCMS.hpp` must usually be mirrored into all of them by hand. |
 | `CMS.hpp`, `CS.hpp` | Plain Count-Min / Count Sketch baselines. |
-| `MGHeap.hpp` | Classic heap-based Misra-Gries baseline: a fixed-size RSQF `FingerprintTable` (fixed-length fingerprints, no expansion, so single-match lookups and no chains) with a plain 32-bit counter array and a packed per-slot `heap_offset`, both mirrored through slot shifts by a `FingerprintTable::SlotMirror` sidecar, plus an accurate `(count, home_bucket)` min-heap. Heap→slot resolution scans the (short) run for the matching offset, so heap addresses survive shifts without patching. |
+| `MG.hpp` | Textbook Misra-Gries baseline: a fixed-size RSQF `FingerprintTable` (no expansion) with a plain 32-bit counter array mirrored through slot shifts by a `FingerprintTable::SlotMirror` sidecar. Case 3 is the same sweep `SublimeMG` does — decrement every entry, evict what reaches zero, admit into a slot it freed — with no heap and no bucket list. At a fixed size it is `SublimeMG` minus VALE, and the two agree key for key. |
 | `SpaceSaving.hpp` | Space-Saving baseline over the Stream-Summary structure (sorted doubly-linked bucket list + per-bucket monitor lists + hash map), storing full 64-bit keys. Pointer-heavy by design. |
-| `VALECounters.hpp` | A flat VALE counter array (chunk = cache line: overflows bitmap + stubs + extension pool, spilling to a heap tails array), extracted from `SublimeCMS`'s sketch layout. `ShiftLeft/RightAndClear` move a range by one slot touching only stubs, the bitmap, and any tails array — the pool is ordered by counter position, so a shift by one leaves it bit-identical and only the counters *crossing a chunk boundary* need their extensions moved. `MaybeRetune` mirrors `SublimeCMS`'s tails-fraction trigger. `Retune(offset, shrank)` subtracts a uniform `offset` as it rebuilds; `shrank` says the caller already made the counters smaller itself, which frees the tuning the same way a non-zero offset does. A counter tops out at `2^(32+stub_size)` (tails are `uint32_t`). |
-| `SublimeMG.hpp` | Sublime_MG: a `FingerprintTable` with counters enabled, so counter `i` is the count of the fingerprint in slot `i`. `Insert` applies all three Misra-Gries cases; `Query` sums the *chain* of matching fingerprints and takes `lazy_decrement_` off once. Case-3 insertions batch into a `B`-entry buffer; a flush takes one pass for the `B` smallest chain sums, replays the batch against them, and sweeps up everything the decrement emptied. Expansion is driven by the size function `expansion_f` handed to the constructor, as in the other Sublime sketches; `template <bool expand_on_error_inducing_insertions = true>` picks whether that size function is read against the insertions that matched nothing or against every insertion — the two Sublime_MG "versions". See the Sublime_MG section above. |
-| `FingerprintTable.hpp` | Compact hash table for Sublime_MG (and, fixed-size, for `MGHeap`): an RSQF with Memento filter's hashing, Aleph filter's variable-length fingerprints, and Zeno filter's Stretching; mementos removed. Carries an optional `SlotMirror` sidecar (`AttachMirror`) plus `HomeBucket`/`ForEachSlotInRun`, all used only by `MGHeap`. One fingerprint per slot. With growth coefficient `r` (ctor arg, default 1 = plain doubling) `Expand` grows by `2^(1/r)`, mapping base bucket `i` to `floor(i * 2^(epoch/r))`; only the `r`-th expansion of a *period* trades a fingerprint bit for a bucket-index bit. `CountSlotsAfterExpansion`/`CountSlotsAfterContraction` predict either without building the table, for callers that decide on a resize before making it. |
+| `VALECounters.hpp` | A flat VALE counter array (chunk = cache line: overflows bitmap + stubs + extension pool, spilling to a heap tails array), extracted from `SublimeCMS`'s sketch layout. `ShiftLeft/RightAndClear` move a range by one slot touching only stubs, the bitmap, and any tails array — the pool is ordered by counter position, so a shift by one leaves it bit-identical and only the counters *crossing a chunk boundary* need their extensions moved. Optionally carries a **min segment tree** over the counters (`VALECounters(n, with_min_tree)`), which doubles the array and lays a bottom-up tree over it — leaves in `[n, 2n)`, `parent(i) = i / 2` — so `MinValue()` is the smallest non-zero counter and `MinSlot()` a leaf holding it, both maintained through writes and slot shifts; a zero counter means *empty*, not a count of zero. `MaybeRetune` mirrors `SublimeCMS`'s tails-fraction trigger, `Retune(offset)` subtracts a uniform offset as it rebuilds (Misra-Gries' lazy decrement, applied for free), and `RetuneIfNarrower` is the other direction, for counters that have *shrunk* — which spills no chunk and so fires no tails trigger; `ShrinkRetuneInterval()` says how often asking is worth the pass it costs. `DecrementIsZero` decrements and reports emptiness from the overflow bit and the stub alone, without decoding an extension, which is what makes a Misra-Gries decrement sweep affordable. A counter tops out at `2^(32+stub_size)` (tails are `uint32_t`). |
+| `SublimeMG.hpp` | Sublime_MG: a `FingerprintTable` with counters enabled, so counter `i` is the count of the fingerprint in slot `i`. `Insert` applies all three Misra-Gries cases and `Query` is the matching entry's counter — one entry per key, since every fingerprint is of the same length. `template <bool expand_on_error_inducing_insertions, bool use_min_tree>`: with the tree off (the default), case 3 is one sweep that decrements every entry and evicts what it empties; with it on, a lazy decrement `L` and a min tree over the counters make an eviction `O(log w)`. Expansion is driven by the size function `expansion_f` handed to the constructor, as in the other Sublime sketches; `template <bool expand_on_error_inducing_insertions = true>` picks whether that size function is read against the insertions that matched nothing or against every insertion — the two Sublime_MG "versions". See the Sublime_MG section above. |
+| `FingerprintTable.hpp` | Compact hash table for Sublime_MG (and, fixed-size, for `MG`): an RSQF with Memento filter's hashing and Zeno filter's Stretching; mementos removed. Carries an optional `SlotMirror` sidecar (`AttachMirror`), used only by `MG`, and `BucketOfSlot`, which recovers a run's canonical bucket from a slot found by some other route (the min tree's). One fixed-length fingerprint per slot, and a slot holds nothing else. With growth coefficient `r` (ctor arg, default 1 = plain doubling) `Expand` grows by `2^(1/r)`, mapping base bucket `i` to `floor(i * 2^(epoch/r))`; only the `r`-th expansion of a *period* trades a fingerprint bit for a bucket-index bit, shortening every fingerprint and narrowing every slot by one. `key_bits` never changes, so a resize is a pure re-hash and `Contract` inverts `Expand` exactly. `CountSlotsAfterExpansion`/`CountSlotsAfterContraction` predict either without building the table, for callers that decide on a resize before making it. |
+| `CuckooTable.hpp` | The other monitored-key set, offering the same surface as `FingerprintTable` so `SublimeMG`/`MG` take either as a template parameter. A cuckoo filter with partial-key hashing: `bucket_count` (a power of two) x `depth` slots, slot `b * depth + j`, and `i2 = i1 ^ mix(fingerprint)`. Fingerprint 0 marks an empty slot, so a hash whose fingerprint would be zero uses 1. **Each slot carries a flag bit** saying whether its entry sits in its primary bucket or its alternate, which is the one bit partial-key hashing is short of: with it `hash_of` recovers the whole `key_bits` hash, and a resize is the same pure re-hash the RSQF does. **Stretching is depth**: an expansion inside a period gives every bucket `base_depth / r` more slots, and reaching `2 * base_depth` doubles the buckets, halves the depth back and sheds a fingerprint bit. An insertion that finds both buckets full **kicks**, carrying the entry it is displacing *in hand* and swapping it with each slot it passes through — which moves one entry and one counter per kick where the RSQF moved a cluster, and makes a kick path that loops back on itself harmless. The constructor takes the largest power-of-two bucket count that *fits* in the `nslots` asked
+for and spends what is left on the depth, so a table never overshoots its budget; rounding the
+bucket count up instead would make one up to twice the size, which a caller sizing a summary to
+a byte budget can only answer by asking for half of it (and did, costing `MG` a third of its
+capacity before this was fixed). `BucketOfSlot` is `slot / depth`. `EntryIdentity` is the fingerprint plus the *smaller* of the two candidate buckets, which is exactly the class `FindMatch` can distinguish. |
 | `util.hpp`, `MurmurHash.hpp` | `BITMASK`/`MAX_VALUE`, `bit_rank`/`bit_select`, `fast_reduce`, extension-length lookup table. |
 
 Public API on every Sublime variant: `Insert`, `Delete`, `Query`, `Size`, `FlushPrefetchQueue`.
