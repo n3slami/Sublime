@@ -18,10 +18,9 @@ static inline uint64_t hash_string(const std::string& key) {
 }
 
 /** The largest `nslots` whose empty summary fits inside `budget` bytes. */
-template <typename Tab>
 static uint64_t nslots_for_budget(uint64_t budget) {
     const auto size_at = [&](uint64_t nslots) {
-        MG<Tab> probe(nslots, MG<Tab>::hashmode::Default, 1, g_fingerprint_length);
+        MG<> probe(nslots, MG<>::hashmode::Default, 1, g_fingerprint_length);
         return probe.SizeInBytes();
     };
     uint64_t lo = 16, hi = 16;
@@ -43,74 +42,63 @@ static uint64_t nslots_for_budget(uint64_t budget) {
     return best;
 }
 
-template <typename Tab>
-inline void insert_sketch(MG<Tab> *sketch, const std::string& key) {
-    sketch->Insert(hash_string(key), MG<Tab>::flag_key_is_hash);
+inline void insert_sketch(MG<> *sketch, const std::string& key) {
+    sketch->Insert(hash_string(key), MG<>::flag_key_is_hash);
 }
-template <typename Tab, typename T>
-inline void insert_sketch(MG<Tab> *sketch, T key) {
+template <typename T>
+inline void insert_sketch(MG<> *sketch, T key) {
     sketch->Insert(static_cast<uint64_t>(key));
 }
 
-template <typename Tab>
-inline void delete_sketch(MG<Tab> *, const std::string&) {
+inline void delete_sketch(MG<> *, const std::string&) {
     throw std::runtime_error("Deletes not implemented");
 }
-template <typename Tab, typename T>
-inline void delete_sketch(MG<Tab> *, T) {
+template <typename T>
+inline void delete_sketch(MG<> *, T) {
     throw std::runtime_error("Deletes not implemented");
 }
 
-template <typename Tab>
-inline int32_t query_sketch(MG<Tab> *sketch, const std::string& key) {
-    return sketch->Query(hash_string(key), MG<Tab>::flag_key_is_hash);
+inline int32_t query_sketch(MG<> *sketch, const std::string& key) {
+    return sketch->Query(hash_string(key), MG<>::flag_key_is_hash);
 }
-template <typename Tab, typename T>
-inline int32_t query_sketch(MG<Tab> *sketch, T key) {
+template <typename T>
+inline int32_t query_sketch(MG<> *sketch, T key) {
     return sketch->Query(static_cast<uint64_t>(key));
 }
 
-template <typename Tab>
-inline uint32_t size_of_sketch(MG<Tab> *sketch) {
+inline uint32_t size_of_sketch(MG<> *sketch) {
     return sketch->SizeInBytes();
 }
 
 
-template <typename Tab>
-inline std::unordered_map<std::string, uint32_t> get_extra_parameters(MG<Tab> *sketch) {
+inline std::unordered_map<std::string, uint32_t> get_extra_parameters(MG<> *sketch) {
     std::unordered_map<std::string, uint32_t> res;
     res["monitored"] = sketch->CountMonitored();
     res["capacity"] = sketch->Capacity();
     res["decrements"] = sketch->CountDecrements();
-    res["cuckoo"] = std::is_same<Tab, sublime::CuckooTable>::value ? 1 : 0;
     // See `bench_SublimeMG`: a cuckoo filter can drop an entry on a kick path.
-    if constexpr (std::is_same<Tab, sublime::CuckooTable>::value)
-        res["lost_entries"] = sketch->GetTable().CountLostEntries();
+    res["lost_entries"] = sketch->GetTable().CountLostEntries();
     return res;
 }
 
-template <typename Tab>
 static void run(uint64_t budget) {
-    const uint64_t nslots = nslots_for_budget<Tab>(budget);
-    auto *sketch = new MG<Tab>(nslots, MG<Tab>::hashmode::Default, g_seed, g_fingerprint_length);
+    const uint64_t nslots = nslots_for_budget(budget);
+    auto *sketch = new MG<>(nslots, MG<>::hashmode::Default, g_seed, g_fingerprint_length);
     top_aae_are_count = sketch->Capacity();
 
     if (wio.StringKeys())
         experiment_string(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch),
                            pass_fun(query_sketch), pass_fun(size_of_sketch),
-                           reinterpret_cast<void *>(get_extra_parameters<Tab>));
+                           reinterpret_cast<void *>(get_extra_parameters));
     else
         experiment(sketch, pass_fun(insert_sketch), pass_fun(delete_sketch),
                    pass_fun(query_sketch), pass_fun(size_of_sketch),
-                   reinterpret_cast<void *>(get_extra_parameters<Tab>));
+                   reinterpret_cast<void *>(get_extra_parameters));
 }
 
 
 int main(int argc, char const *argv[]) {
     auto parser = init_parser("bench-MG");
-    parser.add_argument("--cuckoo")
-            .help("keep the monitored keys in a cuckoo filter rather than a quotient filter")
-            .default_value(false).implicit_value(true);
     parser.add_argument("--fingerprint-length")
             .help("the length, in bits, of a stored fingerprint")
             .nargs(1).default_value(static_cast<uint32_t>(MG<>::default_fingerprint_length))
@@ -141,8 +129,5 @@ int main(int argc, char const *argv[]) {
         g_seed = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::system_clock::now())
                     .time_since_epoch().count();
 
-    if (parser.get<bool>("--cuckoo"))
-        run<sublime::CuckooTable>(memory_budgets[0]);
-    else
-        run<sublime::FingerprintTable>(memory_budgets[0]);
+    run(memory_budgets[0]);
 }

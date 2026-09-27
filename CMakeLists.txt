@@ -66,10 +66,6 @@ target_compile_options(SublimeCSNoTuningLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
 
 
-add_library(FingerprintTableLib STATIC ./include/FingerprintTable.hpp)
-set_target_properties(FingerprintTableLib PROPERTIES LINKER_LANGUAGE CXX)
-target_include_directories(FingerprintTableLib PUBLIC ./include)
-target_compile_options(FingerprintTableLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
 add_library(VALECountersLib STATIC ./include/VALECounters.hpp)
 set_target_properties(VALECountersLib PROPERTIES LINKER_LANGUAGE CXX)

@@ -49,13 +49,10 @@ SKETCHES_STYLE_KWARGS = {"SublimeCMS": {"marker": 'v', "color": "fuchsia", "zord
                          "SublimeMG_total_0.50": {"marker": '^', "color": "purple", "zorder": 11, "label": "Sublime\\textsubscript{MG} (Stream Length)", "linestyle": "-"},
                          "SublimeMG_total_0.75": {"marker": '^', "color": "purple", "zorder": 11, "linestyle": "--"},
                          "SublimeMG_total_1.00": {"marker": '^', "color": "purple", "zorder": 11, "linestyle": ":"},
-                         # The four Sublime_MG configurations and the two tables MG can be
-                         # built on: the table is the colour, the decrement is the line style.
-                         "SublimeMG_tree": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{MG} (Tree)", "linestyle": "--"},
-                         "SublimeMG_cuckoo": {"marker": '^', "color": "purple", "zorder": 11, "label": "Sublime\\textsubscript{MG} (Cuckoo)"},
-                         "SublimeMG_cuckoo_tree": {"marker": '^', "color": "purple", "zorder": 11, "label": "Sublime\\textsubscript{MG} (Cuckoo + Tree)", "linestyle": "--"},
+                         # Sublime_MG's two ways of applying the decrement: the sweep solid,
+                         # the min tree dashed.
+                         "SublimeMG_tree": {"marker": '^', "color": "purple", "zorder": 11, "label": "Sublime\\textsubscript{MG} (Min Tree)", "linestyle": "--"},
                          "MG": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "MG"},
-                         "MG_cuckoo": {"marker": '+', "color": "black", "zorder": 10, "label": "MG (Cuckoo)", "linestyle": "--"},
                          "SpaceSaving": {"marker": 's', "color": "C2", "zorder": 9, "label": "Space-Saving"},
                          "CMS": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CMS"},
                          "CMS_Over": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CMS (Overestimated)", "linestyle": ":"},
@@ -796,12 +793,9 @@ def plot_mg_accuracy(result_dir, output_dir):
 
     workloads = ["kosarak", "webdocs", "caida"]
     workload_subdir = Path("mg_accuracy_bench")
-    # Sublime_MG's four configurations, MG's two, and the two baselines. The
-    # table is the colour (quotient filter fuchsia, cuckoo purple) and the
-    # decrement is the line style (sweep solid, min tree dashed), so the figure
-    # reads tree-against-sweep down a colour and table-against-table across.
-    sketches = ["SublimeMG", "SublimeMG_tree", "SublimeMG_cuckoo", "SublimeMG_cuckoo_tree",
-                "MG", "MG_cuckoo", "SpaceSaving", "Waving"]
+    # Sublime_MG's two configurations and the three baselines. The min tree is
+    # the same sketch with a different decrement, so it rides beside it.
+    sketches = ["SublimeMG", "SublimeMG_tree", "MG", "SpaceSaving", "Waving"]
     memory_powers = {"caida": range(17, 23), "kosarak": range(14, 19), "webdocs": range(17, 23)}
     memory_footprints = {w: [2 ** i for i in memory_powers[w]] for w in workloads}
 

@@ -15,8 +15,8 @@
  * which is also what finds the ones to evict -- no auxiliary heap, no
  * bucket list, nothing but the counts themselves.
  *
- * The only twist is where the monitored set lives -- in a fixed-size RSQF
- * `FingerprintTable` storing one fingerprint per key, rather than a hash map of
+ * The only twist is where the monitored set lives -- in a fixed-size
+ * `CuckooTable` storing one fingerprint per key, rather than a hash map of
  * full keys -- so its per-key footprint is comparable to `SublimeMG`'s. That is
  * what makes it the fair baseline: same monitored set, same algorithm, and the
  * difference in the numbers is Sublime's.
@@ -36,15 +36,16 @@
 #include <utility>
 #include <vector>
 
-#include "FingerprintTable.hpp"
+#include "CuckooTable.hpp"
 
 namespace sublime {
 
 /**
- * @tparam Table The monitored-key set: `FingerprintTable` or `CuckooTable`.
- * The baseline is built on whichever `SublimeMG` is being compared against.
+ * @tparam Table The monitored-key set, which is `CuckooTable` -- the same one
+ * `SublimeMG` uses, since the whole point of this baseline is that the only
+ * difference between the two is where the counts live.
  */
-template <typename Table = FingerprintTable>
+template <typename Table = CuckooTable>
 class MG {
     friend class MGTest;
 
@@ -63,7 +64,7 @@ public:
     /**
      * @param nslots The number of slots the fingerprint table holds. `Capacity`
      * is a shade under this.
-     * @param hash_mode The hashing mode, see `FingerprintTable::hashmode`.
+     * @param hash_mode The hashing mode, see `CuckooTable::hashmode`.
      * @param seed The seed of the hash function.
      * @param fingerprint_length The length, in bits, of each stored fingerprint.
      */
@@ -167,7 +168,7 @@ public:
 private:
     /**
      * The per-slot counts, which the table keeps aligned to its fingerprints:
-     * each one follows its fingerprint through every slot shift.
+     * each one follows its fingerprint through every relocation a kick makes.
      */
     struct Sidecar : Table::SlotMirror {
         std::vector<uint32_t> counts;
@@ -176,23 +177,7 @@ private:
 
         explicit Sidecar(uint64_t nslots_alloc): counts(nslots_alloc, 0) {}
 
-        // Net effect of the RSQF closing a hole: [hole, last) take their right
-        // neighbour, and `last` is cleared.
-        void ShiftLeftAndClear(uint64_t hole, uint64_t last) override {
-            for (uint64_t i = hole; i < last; i++)
-                counts[i] = counts[i + 1];
-            counts[last] = 0;
-        }
-
-        // Net effect of the RSQF opening a hole: (hole, last] take their left
-        // neighbour, and `hole` is cleared.
-        void ShiftRightAndClear(uint64_t hole, uint64_t last) override {
-            for (uint64_t i = last; i > hole; i--)
-                counts[i] = counts[i - 1];
-            counts[hole] = 0;
-        }
-
-        // What the cuckoo table does instead of shifting: one entry moves.
+        /** One entry moves, which is all the table ever does to a slot. */
         void MoveSlot(uint64_t from, uint64_t to) override {
             counts[to] = counts[from];
             counts[from] = 0;
@@ -222,33 +207,32 @@ private:
 
     /** The `key_bits` that make a freshly stored fingerprint `fp_len` bits long. */
     static uint64_t key_bits_for(uint64_t nslots, uint32_t fp_len) {
-        uint64_t quotient_bits = 0;
-        for (uint64_t n = nslots; n > 1; n >>= 1)
-            quotient_bits++;
-        quotient_bits += (__builtin_popcountll(nslots) > 1);   // Not a power of two.
-        return quotient_bits + fp_len;
+        return Table::KeyBitsFor(nslots, fp_len);
     }
 
     /**
-     * Takes one off every count in one sweep of the entries, and evicts the
-     * ones that reach zero.
+     * Takes one off every count in one sweep of the entries, evicting the ones
+     * that reach zero as it meets them.
      *
-     * The evictions wait for the sweep to finish: removing an entry slides the
-     * rest of its cluster down over the hole, which would move the slots the
-     * sweep has yet to reach.
+     * Evicting mid-sweep is safe because the table never moves an entry that
+     * was not the one being removed: a deletion clears its slot and stops, and
+     * the iterator has already passed that slot. (A quotient filter would have
+     * slid the rest of the cluster down over the hole, moving slots the sweep
+     * had yet to reach, which is why this used to collect its victims first.)
      *
      * @returns The number of entries evicted, i.e. the slots this freed.
      */
     uint64_t decrement_pass() {
-        std::vector<std::pair<uint64_t, uint64_t>> victims;
+        uint64_t evicted = 0;
         for (auto it = table_.begin(); it != table_.end(); ++it) {
             assert(sidecar_.counts[it.slot()] > 0);
-            if (--sidecar_.counts[it.slot()] == 0)
-                victims.push_back({it.bucket(), it.slot()});
+            if (--sidecar_.counts[it.slot()] == 0) {
+                table_.DeleteSlot(it.bucket(), it.slot());
+                evicted++;
+            }
         }
         total_decrements_++;
-        table_.DeleteSlots(victims);
-        return victims.size();
+        return evicted;
     }
 
     /** Puts `key` in at a count of one. */

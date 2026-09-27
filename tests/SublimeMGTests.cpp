@@ -34,7 +34,7 @@ public:
      */
     template <typename MGT>
     static void CheckMirrored(const MGT& mg,
-                              const std::map<std::pair<uint64_t, uint64_t>, uint64_t>& ref) {
+                              const std::map<uint64_t, uint64_t>& ref) {
         const auto& table = mg.table_;
         const VALECounters& counters = mg.Counters();
         REQUIRE_EQ(counters.CountCounters(), table.GetSlotCapacity());
@@ -44,7 +44,10 @@ public:
         for (auto it = table.begin(); it != table.end(); ++it) {
             const uint64_t slot = it.slot();
             occupied[slot] = true;
-            const auto entry = ref.find({it.bucket(), it.fingerprint()});
+            // Keyed by the entry's *identity*, not the bucket it sits in: a
+            // kick moves an entry between its two candidate buckets, so where
+            // it is now says nothing about which key it belongs to.
+            const auto entry = ref.find(table.EntryIdentity(it.hash(), MGT::flag_key_is_hash));
             REQUIRE(entry != ref.end());
             REQUIRE_EQ(counters.Get(slot), entry->second);
             seen++;
@@ -60,9 +63,8 @@ public:
 
     /** The reference key for the entry a key maps to. */
     template <typename MGT>
-    static std::pair<uint64_t, uint64_t> RefKey(const MGT& mg, uint64_t key) {
-        const uint64_t hash = mg.table_.hash_key(key, 0);
-        return {mg.table_.bucket_from_hash(hash), mg.table_.fingerprint_from_hash(hash)};
+    static uint64_t RefKey(const MGT& mg, uint64_t key) {
+        return mg.table_.EntryIdentity(key, 0);
     }
 
     /**
@@ -72,7 +74,7 @@ public:
     template <typename MGT>
     static std::vector<uint64_t> DistinctKeys(const MGT& mg, uint64_t count, uint64_t seed) {
         std::mt19937_64 rng(seed);
-        std::set<std::pair<uint64_t, uint64_t>> used;
+        std::set<uint64_t> used;
         std::vector<uint64_t> res;
         while (res.size() < count) {
             const uint64_t key = rng();
@@ -113,6 +115,16 @@ public:
         std::vector<uint64_t> res;
         for (auto it = mg.table_.begin(); it != mg.table_.end(); ++it)
             res.push_back(mg.Counters().Get(it.slot()));
+        return res;
+    }
+
+    /** The same, keyed by which entry holds the count rather than by slot. */
+    template <typename MGT>
+    static std::map<uint64_t, uint64_t> StoredCountsByEntry(const MGT& mg) {
+        std::map<uint64_t, uint64_t> res;
+        for (auto it = mg.table_.begin(); it != mg.table_.end(); ++it)
+            res[mg.table_.EntryIdentity(it.hash(), MGT::flag_key_is_hash)]
+                    = mg.Counters().Get(it.slot());
         return res;
     }
 
@@ -177,16 +189,28 @@ public:
      * guarantee to say anything about them.
      */
     /**
-     * How many entries the monitored set has dropped on its own -- which only
-     * a cuckoo filter does, when a kick path runs out of patience. The
-     * quotient filter never loses one, so it always answers 0.
+     * An insertion that either counted or was turned away.
+     *
+     * A cuckoo filter can run out of patience with a kick path while the table
+     * still has room, and then the arrival has nowhere to go: `err_no_space`
+     * comes back and that occurrence is dropped. It happens at the load factor
+     * Misra-Gries holds its table at, so any stream long enough to fill the
+     * summary has to allow for it. The deterministic cases below do not use
+     * this: they stay under capacity, or they check one specific admission.
+     */
+    template <typename MGT>
+    static void InsertOK(MGT& mg, uint64_t key, uint8_t flags = 0) {
+        const int32_t status = mg.Insert(key, flags);
+        REQUIRE((status == 0 || status == MGT::err_no_space));
+    }
+
+    /**
+     * How many entries the monitored set has dropped on its own, which it does
+     * when a kick path runs out of patience.
      */
     template <typename MGT>
     static uint64_t LostEntries(const MGT& mg) {
-        if constexpr (std::is_same_v<typename MGT::table_type, sublime::CuckooTable>)
-            return mg.GetTable().CountLostEntries();
-        else
-            return 0;
+        return mg.GetTable().CountLostEntries();
     }
 
     template <typename MGT>
@@ -260,7 +284,7 @@ public:
     static void CountsFollowTheirFingerprints() {
         SublimeMG<> mg(512, 26, hashmode::Default, 3);
         const auto keys = DistinctKeys(mg, 400, 11);
-        std::map<std::pair<uint64_t, uint64_t>, uint64_t> ref;
+        std::map<uint64_t, uint64_t> ref;
 
         // Monitor the keys one at a time, counting each up to a different,
         // deliberately awkward value: some stay inside a stub, some need an
@@ -308,7 +332,7 @@ public:
         // `None` hashing lets us aim keys at whatever bucket we like.
         SublimeMG<> mg(1024, 26, hashmode::None, 1);
         const uint64_t bihs = mg.table_.GetBucketIndexHashSize();
-        std::map<std::pair<uint64_t, uint64_t>, uint64_t> ref;
+        std::map<uint64_t, uint64_t> ref;
 
         // Every key here shares bucket 300 and differs only in its
         // fingerprint, so they all pile into one run.
@@ -347,7 +371,7 @@ public:
     static void MonteCarlo() {
         SublimeMG<> mg(256, 26, hashmode::Default, 7);
         const auto keys = DistinctKeys(mg, 500, 13);
-        std::map<std::pair<uint64_t, uint64_t>, uint64_t> ref;
+        std::map<uint64_t, uint64_t> ref;
         std::vector<uint64_t> monitored;
         std::mt19937_64 rng(14);
 
@@ -359,7 +383,7 @@ public:
                 const uint64_t key = keys[rng() % keys.size()];
                 if (mg.IsMonitored(key))
                     continue;
-                if (mg.CountMonitored() + 1 >= mg.GetTable().CountSlots() * FingerprintTable::max_load_factor)
+                if (mg.CountMonitored() + 1 >= mg.GetTable().CountSlots() * CuckooTable::max_load_factor)
                     continue;
                 REQUIRE_EQ(mg.StartMonitoring(key), 0);
                 ref[RefKey(mg, key)] = 1;
@@ -367,7 +391,7 @@ public:
             }
             else if (action < 95) {
                 const uint64_t key = monitored[rng() % monitored.size()];
-                REQUIRE_EQ(mg.Insert(key), 0);
+                InsertOK(mg, key);
                 ref[RefKey(mg, key)]++;
             }
             else {
@@ -399,7 +423,7 @@ public:
     static void RetunesUnderLargeCounts() {
         SublimeMG<> mg(4000, 30, hashmode::Default, 5);
         const auto keys = DistinctKeys(mg, 3000, 15);
-        std::map<std::pair<uint64_t, uint64_t>, uint64_t> ref;
+        std::map<uint64_t, uint64_t> ref;
         for (const uint64_t key : keys) {
             REQUIRE_EQ(mg.StartMonitoring(key), 0);
             ref[RefKey(mg, key)] = 1;
@@ -412,7 +436,7 @@ public:
         for (const uint64_t key : keys) {
             const uint64_t target = 20000 + rng() % 20000;
             for (uint64_t k = 1; k < target; k++)
-                REQUIRE_EQ(mg.Insert(key), 0);
+                InsertOK(mg, key);
             ref[RefKey(mg, key)] = target;
         }
 
@@ -426,7 +450,7 @@ public:
 
         // And the summary keeps working across the retune.
         for (const uint64_t key : keys) {
-            REQUIRE_EQ(mg.Insert(key), 0);
+            InsertOK(mg, key);
             ref[RefKey(mg, key)]++;
         }
         CheckMirrored(mg, ref);
@@ -459,7 +483,7 @@ public:
 
             // The summary still works afterwards, at its new size.
             for (const uint64_t key : keys) {
-                REQUIRE_EQ(mg.Insert(key), 0);
+                InsertOK(mg, key);
                 ref[key]++;
             }
             CheckNoCountIsStranded(mg);
@@ -481,7 +505,7 @@ public:
                     REQUIRE_EQ(mg.Insert(keys[i]), 0);
                 ref[keys[i]] = target;
             }
-            const auto counts_before = StoredCounts(mg);
+            const auto counts_before = StoredCountsByEntry(mg);
             const uint64_t slots_before = mg.GetTable().CountSlots();
 
             const uint32_t steps = 2 * r + 1;
@@ -494,8 +518,11 @@ public:
                     REQUIRE_EQ(mg.Query(key), count);
             }
             REQUIRE_EQ(mg.GetTable().CountSlots(), slots_before);
-            // Right down to which slot holds which count.
-            REQUIRE(StoredCounts(mg) == counts_before);
+            // Right down to which entry holds which count. Not which *slot*:
+            // rebuilding a cuckoo table re-places its entries by kicking, and
+            // the kicks are random, so a contraction undoes an expansion's
+            // content without undoing its layout.
+            REQUIRE(StoredCountsByEntry(mg) == counts_before);
         }
     }
 
@@ -515,7 +542,7 @@ public:
             }
             else if (action < 6 && mg.GetTable().GetExpansionCount() > 0
                      && mg.CountMonitored() < mg.GetTable().CountSlots() / 2
-                                                * FingerprintTable::max_load_factor) {
+                                                * CuckooTable::max_load_factor) {
                 REQUIRE_GE(mg.Contract(), 0);
                 CheckNoCountIsStranded(mg);
             }
@@ -524,7 +551,7 @@ public:
                 if (mg.IsMonitored(key))
                     continue;
                 if (mg.CountMonitored() + 1 >= mg.GetTable().CountSlots()
-                                                * FingerprintTable::max_load_factor)
+                                                * CuckooTable::max_load_factor)
                     continue;
                 REQUIRE_EQ(mg.StartMonitoring(key), 0);
                 ref[key] = 1;
@@ -532,7 +559,7 @@ public:
             }
             else if (action < 95) {
                 const uint64_t key = monitored[rng() % monitored.size()];
-                REQUIRE_EQ(mg.Insert(key), 0);
+                InsertOK(mg, key);
                 ref[key]++;
             }
             else {
@@ -555,7 +582,7 @@ public:
 
     static void CopyMoveAndReset() {
         SublimeMG<> mg(256, 24, hashmode::Default, 1);
-        std::map<std::pair<uint64_t, uint64_t>, uint64_t> ref;
+        std::map<uint64_t, uint64_t> ref;
         const auto keys = DistinctKeys(mg, 100, 17);
         for (size_t i = 0; i < keys.size(); i++) {
             REQUIRE_EQ(mg.StartMonitoring(keys[i]), 0);
@@ -607,7 +634,7 @@ public:
     static void AdmitsWhileThereIsRoom() {
         SublimeMG<> mg(128, 26, hashmode::Default, 1);
         const uint64_t capacity = mg.Capacity();
-        REQUIRE_EQ(capacity, static_cast<uint64_t>(128 * FingerprintTable::max_load_factor));
+        REQUIRE_EQ(capacity, static_cast<uint64_t>(128 * CuckooTable::max_load_factor));
 
         const auto keys = DistinctKeys(mg, capacity, 31);
         for (uint64_t i = 0; i < capacity; i++) {
@@ -620,7 +647,7 @@ public:
         CheckSummary(mg);
         // A second occurrence of a monitored key just counts up.
         for (const uint64_t key : keys)
-            REQUIRE_EQ(mg.Insert(key), 0);
+            InsertOK(mg, key);
         for (const uint64_t key : keys)
             REQUIRE_EQ(mg.Query(key), 2);
         CheckSummary(mg);
@@ -726,7 +753,7 @@ public:
                 const double u = (rng() % 1000000) / 1000000.0;
                 const uint64_t key = static_cast<uint64_t>(50000 * u * u * u * u);
                 stream.push_back(key);
-                REQUIRE_EQ(mg.Insert(key), 0);
+                InsertOK(mg, key);
             }
             CheckSummary(mg);
             REQUIRE_GT(CheckMisraGriesGuarantee(mg, stream), 0);
@@ -795,10 +822,7 @@ public:
             const double u = (rng() % 1000000) / 1000000.0;
             const uint64_t key = static_cast<uint64_t>(universe * u * u * u);
             stream.push_back(key);
-            // A cuckoo filter can turn an insertion away with room left in the
-            // table, which `SublimeMG` reports and the stream goes on past.
-            const int32_t status = mg.Insert(key);
-            REQUIRE((status == 0 || status == MGT::err_no_space));
+            InsertOK(mg, key);
             if (i % check_at == 0)
                 CheckSummary(mg);
         }
@@ -872,7 +896,7 @@ public:
             const double u = (rng() % 1000000) / 1000000.0;
             const uint64_t key = static_cast<uint64_t>(40000 * u * u * u);
             stream.push_back(key);
-            REQUIRE_EQ(mg.Insert(key), 0);
+            InsertOK(mg, key);
             // A merge is the only thing that makes the decrement fall.
             if (mg.GetLazyDecrement() < previous) {
                 merges++;
@@ -904,7 +928,7 @@ public:
             const double u = (rng() % 1000000) / 1000000.0;
             const uint64_t key = static_cast<uint64_t>(20000 * u * u * u);
             stream.push_back(key);
-            REQUIRE_EQ(mg.Insert(key), 0);
+            InsertOK(mg, key);
         }
         REQUIRE_GT(mg.CountExpansions(), 0);
         CheckSummary(mg);
@@ -921,7 +945,7 @@ public:
         for (int32_t i = 0; i < 100000; i++) {
             const uint64_t key = rng() % 50000;
             stream.push_back(key);
-            REQUIRE_EQ(mg.Insert(key), 0);
+            InsertOK(mg, key);
             if (i % 5000 == 0) {
                 CheckSummary(mg);
             }
@@ -944,7 +968,7 @@ public:
             const double u = (rng() % 1000000) / 1000000.0;
             const uint64_t key = static_cast<uint64_t>(40000 * u * u * u);
             stream.push_back(key);
-            REQUIRE_EQ(mg.Insert(key), 0);
+            InsertOK(mg, key);
             if (i > 0 && i % 40000 == 0) {
                 REQUIRE_GE(mg.Expand(), 0);
                 CheckSummary(mg);
@@ -964,7 +988,7 @@ public:
         CheckNoCountIsStranded(mg);
         for (int32_t i = 0; i < 50000; i++) {
             const double u = (rng() % 1000000) / 1000000.0;
-            REQUIRE_EQ(mg.Insert(static_cast<uint64_t>(40000 * u * u * u)), 0);
+            InsertOK(mg, static_cast<uint64_t>(40000 * u * u * u));
         }
         CheckSummary(mg);
     }
@@ -977,16 +1001,16 @@ public:
     template <typename MGT>
     static uint64_t ExpectedQuery(const MGT& mg, uint64_t key, uint8_t flags = 0) {
         const auto& table = mg.table_;
-        const uint64_t hash = table.hash_key(key, flags);
-        const uint64_t bucket = table.bucket_from_hash(hash);
-        const uint64_t target = table.fingerprint_from_hash(hash);
+        const uint64_t identity = table.EntryIdentity(key, flags);
 
-        // Every fingerprint is of the same length, so at most one entry of the
-        // key's run can equal its own, and that entry's counter is the answer.
-        // Worked out here by walking the table, independently of the lookup
-        // the sketch itself performs.
+        // Every fingerprint is of the same length, so at most one entry can
+        // carry the key's, and that entry's counter is the answer. Worked out
+        // here by walking the table and recovering each entry's identity from
+        // what is stored -- the fingerprint and the flag that says which of its
+        // two buckets it is sitting in -- independently of the lookup the
+        // sketch itself performs.
         for (auto it = table.begin(); it != table.end(); ++it)
-            if (it.bucket() == bucket && it.fingerprint() == target)
+            if (table.EntryIdentity(it.hash(), MGT::flag_key_is_hash) == identity)
                 return mg.Counters().Get(it.slot());
         return 0;
     }
@@ -1009,7 +1033,7 @@ public:
             const double u = (rng() % 1000000) / 1000000.0;
             const uint64_t key = static_cast<uint64_t>(20000 * u * u * u);
             stream.push_back(key);
-            REQUIRE_EQ(mg.Insert(key), 0);
+            InsertOK(mg, key);
         }
         CheckSummary(mg);
 
@@ -1040,7 +1064,7 @@ public:
         REQUIRE_EQ(mg.Counters().CountCounters(), mg.GetTable().GetSlotCapacity());
 
         const auto keys = DistinctKeys(mg, 200, 19);
-        std::map<std::pair<uint64_t, uint64_t>, uint64_t> ref;
+        std::map<uint64_t, uint64_t> ref;
         for (size_t i = 0; i < keys.size(); i++) {
             REQUIRE_EQ(mg.StartMonitoring(keys[i]), 0);
             for (uint64_t k = 0; k < 50 * i; k++)
@@ -1166,9 +1190,10 @@ public:
      */
     static void StopsTestingWhenItCannotGrow() {
         auto f = [](double) { return uint64_t{1}; };
-        // 9 key bits over 256 slots leaves a 1-bit fingerprint, and expanding
-        // would take that bit for the bucket index.
-        SublimeMG<> mg(256, 9, hashmode::Default, 77, 1, f);
+        // 256 slots are 64 buckets of four, so 6 bits of bucket index, and 7
+        // key bits leave a 1-bit fingerprint -- which expanding would have to
+        // spend on the bucket index.
+        SublimeMG<> mg(256, 7, hashmode::Default, 77, 1, f);
         REQUIRE_EQ(mg.GetTable().GetNumFingerprintBits(), 1);
         REQUIRE_EQ(mg.GetTable().CountSlotsAfterExpansion(), mg.GetTable().CountSlots());
         REQUIRE_EQ(mg.GetExpansionLimit(), std::numeric_limits<uint64_t>::max());
@@ -1196,7 +1221,7 @@ public:
             const double u = (rng() % 1000000) / 1000000.0;
             const uint64_t key = static_cast<uint64_t>(60000 * u * u * u);
             stream.push_back(key);
-            REQUIRE_EQ(mg.Insert(key), 0);
+            InsertOK(mg, key);
         }
         CheckSummary(mg);
 
@@ -1229,13 +1254,13 @@ public:
         // Fifty keys the table can tell apart miss once each ...
         const auto keys = DistinctKeys(mg, 50, 85);
         for (const uint64_t key : keys)
-            REQUIRE_EQ(mg.Insert(key), 0);
+            InsertOK(mg, key);
         REQUIRE_EQ(mg.CountErrorInducingInsertions(), 51);
 
         // ... and never again, however many times they come back.
         for (uint64_t round = 0; round < 20; round++)
             for (const uint64_t key : keys)
-                REQUIRE_EQ(mg.Insert(key), 0);
+                InsertOK(mg, key);
         REQUIRE_EQ(mg.GetStreamLength(), 100 + 21 * 50);
         REQUIRE_EQ(mg.CountErrorInducingInsertions(), 51);
         REQUIRE_EQ(mg.SizeMeasure(), 51);           // What the threshold reads.
@@ -1257,7 +1282,7 @@ public:
         const auto keys = DistinctKeys(mg, 50, 87);
         for (uint64_t round = 0; round < 400; round++)
             for (const uint64_t key : keys)
-                REQUIRE_EQ(mg.Insert(key), 0);
+                InsertOK(mg, key);
 
         // The threshold really is exceeded -- it is the cap that holds it.
         REQUIRE_GE(mg.SizeMeasure(), mg.GetExpansionLimit());
@@ -1442,17 +1467,13 @@ TEST_SUITE("SublimeMG") {
         SublimeMGTest::TreeMonteCarlo(64, 4000, 100000, 23);
     }
 
-    TEST_CASE("cuckoo table, sweep and tree") {
-        // The same streams, over a cuckoo filter instead of a quotient filter.
-        // Neither sketch knows which table it has, so every invariant the
-        // suite checks has to hold over both.
-        using Sweep = sublime::SublimeMG<true, false, sublime::CuckooTable>;
-        using Tree = sublime::SublimeMG<true, true, sublime::CuckooTable>;
+    TEST_CASE("the sweep, on the streams the tree runs on") {
+        // `TreeMonteCarlo` with the tree off: the same invariants, the same
+        // streams, and the sketch cannot tell which decrement it is running.
+        using Sweep = sublime::SublimeMG<true, false>;
         SublimeMGTest::TreeMonteCarlo<Sweep>(/*nslots=*/256, /*universe=*/20000,
                                              /*steps=*/200000, 31);
-        SublimeMGTest::TreeMonteCarlo<Tree>(256, 20000, 200000, 32);
         SublimeMGTest::TreeMonteCarlo<Sweep>(1024, 50000, 200000, 33);
-        SublimeMGTest::TreeMonteCarlo<Tree>(1024, 50000, 200000, 34);
     }
 
     TEST_CASE("min tree evicts every emptied key at once") {

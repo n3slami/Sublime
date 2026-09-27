@@ -4,7 +4,7 @@
 
 #include "../bench_template.hpp"
 #include "SpaceSaving.hpp"
-#include "FingerprintTable.hpp"   // for sublime::MurmurHash64A
+#include "TableHashing.hpp"   // for sublime::MurmurHash64A
 
 using sublime::SpaceSaving;
 

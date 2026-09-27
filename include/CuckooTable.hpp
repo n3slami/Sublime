@@ -5,28 +5,28 @@
  *
  *        CuckooTable
  *          A compact hash table storing fixed-length fingerprints in a
- *          cuckoo filter. Interchangeable with `FingerprintTable`, and the
- *          other half of what Sublime_MG can be built on.
+ *          cuckoo filter. The monitored-key set of Sublime_MG and of the
+ *          plain Misra-Gries baseline beside it.
  *
  * ============================================================================
  *
- * Same job as `FingerprintTable`, and the same hashing convention, so the two
- * can be swapped under `SublimeMG` and `MG` without either noticing. What
- * differs is everything about how the entries are laid out.
- *
- * An RSQF keeps its runs in order, so an insertion or a deletion slides a
+ * This replaced a rank-and-select quotient filter, and the reason is shifting.
+ * An RSQF keeps its runs in slot order, so an insertion or a deletion slides a
  * whole cluster along -- and at the load factor Misra-Gries runs its table at,
- * a cluster is hundreds of slots, each of which drags its counter with it. A
- * cuckoo filter never shifts anything. An entry lives in one of two buckets,
- * an insertion that finds both full relocates exactly *one* entry per kick,
- * and a deletion clears a slot and stops. The counter array therefore only
- * ever sees point updates, which is what makes the min segment tree over it
- * affordable.
+ * a cluster is hundreds of slots, each of which drags its counter, and the min
+ * tree's repair of that counter, with it. A cuckoo filter never shifts
+ * anything. An entry lives in one of two buckets, an insertion that finds both
+ * full relocates exactly *one* entry per kick, and a deletion clears a slot
+ * and stops. The counter array therefore only ever sees point updates, which
+ * is what makes the min segment tree over it affordable.
+ *
+ * `SublimeMG` and `MG` still take their table as a template parameter, so
+ * another one can be dropped in, but this is the only one in the tree.
  *
  * ---------------------------------------------------------------------------
  * Hashing
  * ---------------------------------------------------------------------------
- * As in `FingerprintTable`, a key is hashed to `key_bits` bits and split:
+ * A key is hashed to `key_bits` bits and split:
  *
  *      bucket_index_hash_size (BIHS) = log2(bucket_count)
  *      primary bucket = hash bits [0, BIHS)
@@ -50,9 +50,9 @@
  *      primary = flag ? bucket ^ mix(fingerprint) : bucket
  *      hash    = primary | (fingerprint << BIHS)
  *
- * and an expansion is a re-hash of every entry, exactly as it is for the RSQF.
- * The bit is cheap: a cuckoo filter has none of the RSQF's per-block occupied,
- * runend and offset metadata, which costs 2.1 bits per slot.
+ * and an expansion is a plain re-hash of every entry. The bit is cheap: a
+ * cuckoo filter has none of the quotient filter's per-block occupied, runend
+ * and offset metadata, which cost 2.1 bits per slot.
  *
  * ---------------------------------------------------------------------------
  * Growing: deeper buckets, then more of them
@@ -83,11 +83,11 @@
  * Only the *slot words* are prefetched. Asking for the counters of both
  * buckets as well was tried and is slightly worse than asking for neither:
  * at most one of the two buckets holds the entry, so one of the two counter
- * prefetches is always wasted. `FindMatch` still prefetches the primary
- * bucket's counter chunk, as `FingerprintTable` does.
+ * prefetches is always wasted. `FindMatch` does still prefetch the primary
+ * bucket's counter chunk, whose address the bucket alone fixes.
  *
  * ---------------------------------------------------------------------------
- * What the RSQF has and this does not: a guarantee of keeping what it took
+ * What this does not guarantee: keeping what it took
  * ---------------------------------------------------------------------------
  * A kick path can run out of patience with room still left in the table, and
  * then the entry it is carrying has nowhere to go. If that is the arrival,
@@ -108,7 +108,7 @@
 #include <utility>
 #include <vector>
 
-#include "FingerprintTable.hpp"     // For the hashing helpers and `fpt::`.
+#include "TableHashing.hpp"          // `MurmurHash64A`, `hash_64` and `fpt::`.
 #include "VALECounters.hpp"
 #include "util.hpp"
 
@@ -118,13 +118,25 @@ class CuckooTable {
     friend class CuckooTableTest;
 
 public:
-    /** The same three modes `FingerprintTable` offers, with the same meaning. */
-    using hashmode = FingerprintTable::hashmode;
+    /**
+     * How a key becomes the hash the table splits into a bucket and a
+     * fingerprint: `Default` hashes it with Murmur, `Invertible` with a
+     * reversible integer hash as wide as the key, and `None` uses the key as
+     * its own hash -- which makes skew in the input skew in the load.
+     */
+    enum class hashmode {
+        Default,
+        Invertible,
+        None
+    };
 
-    static constexpr uint32_t flag_key_is_hash = FingerprintTable::flag_key_is_hash;
-    static constexpr int32_t err_no_space = FingerprintTable::err_no_space;
-    static constexpr int32_t err_doesnt_exist = FingerprintTable::err_doesnt_exist;
-    static constexpr int32_t err_cannot_contract = FingerprintTable::err_cannot_contract;
+    /** Signals that the key passed in has already been hashed. */
+    static constexpr uint32_t flag_key_is_hash = 0x08;
+
+    /* Status codes. */
+    static constexpr int32_t err_no_space = -1;
+    static constexpr int32_t err_doesnt_exist = -3;
+    static constexpr int32_t err_cannot_contract = -4;
 
     /** The occupancy an insertion is expected to reach before it starts failing. */
     static constexpr double max_load_factor = 0.95;
@@ -144,19 +156,36 @@ public:
      * summary to a byte budget can only answer by asking for half of it.
      * @param key_bits The number of bits of the hash the table uses. The
      * fingerprint gets whatever is left over the bucket index.
-     * @param hash_mode See `FingerprintTable::hashmode`.
+     * @param hash_mode See `hashmode`.
      * @param seed The seed of the hash function.
-     * @param growth_coefficient `r`: how many expansions a period takes. Must
-     * divide the base depth. One is plain doubling.
-     * @param base_depth Slots per bucket at the start of a period.
+     * @param growth_coefficient `r`: how many expansions a period takes, one
+     * being plain doubling. A period adds `base_depth` slots to every bucket in
+     * `r` equal steps, so `r` has to divide the base depth -- which is why the
+     * base depth is *derived* from `r` unless one is asked for: the smallest
+     * multiple of `r` that is at least `default_base_depth`. So `r` of 1, 2 or
+     * 4 gives buckets of 4, `r` of 3 gives 6, and any `r` is usable.
+     * @param base_depth Slots per bucket at the start of a period, or 0 to
+     * derive it from `r`.
      */
-    explicit CuckooTable(uint64_t nslots, uint64_t key_bits, hashmode hash_mode, uint32_t seed,
-                         uint32_t growth_coefficient = 1,
-                         uint32_t base_depth = default_base_depth):
-            hash_mode_{hash_mode}, seed_{seed} {
-        assert(growth_coefficient >= 1 && base_depth % growth_coefficient == 0);
-        base_depth_ = base_depth;
-        growth_coefficient_ = growth_coefficient;
+    /** The bucket count, depth and base depth a `nslots` request comes out as. */
+    struct Shape {
+        uint64_t buckets;
+        uint32_t depth;
+        uint32_t base_depth;
+    };
+
+    /**
+     * Works out that shape without building anything. The bucket count has to
+     * be a power of two, so it is the largest one that fits and the slack goes
+     * into the depth; the base depth is derived from `r` unless given.
+     */
+    static Shape ShapeFor(uint64_t nslots, uint32_t growth_coefficient = 1,
+                          uint32_t base_depth = 0) {
+        assert(growth_coefficient >= 1);
+        if (base_depth == 0)
+            base_depth = growth_coefficient
+                            * ((default_base_depth + growth_coefficient - 1) / growth_coefficient);
+        assert(base_depth % growth_coefficient == 0);
         uint64_t buckets = 1;
         while (buckets * 2 * base_depth <= nslots)
             buckets <<= 1;
@@ -166,8 +195,36 @@ public:
         const uint32_t depth = buckets * base_depth <= nslots
                                     ? static_cast<uint32_t>(nslots / buckets)
                                     : base_depth;
-        allocate(buckets, depth, key_bits);
-        original_bucket_count_ = buckets;
+        return {buckets, depth, base_depth};
+    }
+
+    /**
+     * @returns The `key_bits` that make a freshly stored fingerprint
+     * `fingerprint_bits` long in a table of this shape.
+     *
+     * Not `log2(nslots) + fingerprint_bits`: only the *bucket* index is taken
+     * from the hash, and a bucket holds `base_depth` slots, so a 1024-slot
+     * table with the default depth of four hashes 8 bits, not 10. Getting this
+     * wrong does not fail, it silently stores fingerprints two bits longer than
+     * asked for, and pays for them in every slot.
+     */
+    static uint64_t KeyBitsFor(uint64_t nslots, uint32_t fingerprint_bits,
+                               uint32_t growth_coefficient = 1, uint32_t base_depth = 0) {
+        const Shape shape = ShapeFor(nslots, growth_coefficient, base_depth);
+        uint64_t bucket_bits = 0;
+        while ((1ULL << bucket_bits) < shape.buckets)
+            bucket_bits++;
+        return bucket_bits + fingerprint_bits;
+    }
+
+    explicit CuckooTable(uint64_t nslots, uint64_t key_bits, hashmode hash_mode, uint32_t seed,
+                         uint32_t growth_coefficient = 1, uint32_t base_depth = 0):
+            hash_mode_{hash_mode}, seed_{seed} {
+        const Shape shape = ShapeFor(nslots, growth_coefficient, base_depth);
+        base_depth_ = shape.base_depth;
+        growth_coefficient_ = growth_coefficient;
+        allocate(shape.buckets, shape.depth, key_bits);
+        original_bucket_count_ = shape.buckets;
         rng_state_ = seed * 6364136223846793005ULL + 1442695040888963407ULL;
     }
 
@@ -281,12 +338,6 @@ public:
             counters_->Set(slot, 0);
         if (sidecar_ != nullptr)
             sidecar_->Clear(slot);
-    }
-
-    /** Removes several entries. Order does not matter: nothing moves. */
-    void DeleteSlots(std::vector<std::pair<uint64_t, uint64_t>>& victims) {
-        for (const auto& [bucket, slot] : victims)
-            DeleteSlot(bucket, slot);
     }
 
     /** Empties the table without changing its shape. */
@@ -455,10 +506,9 @@ public:
     }
 
     /**
-     * A caller-owned per-slot array the table keeps aligned to its slots. The
-     * cuckoo table never shifts, so only `MoveSlot` and `Clear` are ever
-     * called; the shift hooks are here so that one sidecar can serve either
-     * table.
+     * A caller-owned per-slot array the table keeps aligned to its slots.
+     * Nothing here moves a range: an entry is placed, moved one slot at a time
+     * by a kick, carried in hand between two slots of a kick path, or cleared.
      */
     struct SlotMirror {
         virtual ~SlotMirror() = default;
@@ -468,8 +518,6 @@ public:
         /** Empties that hand, before a kick path starts carrying. */
         virtual void ClearHeld() = 0;
         virtual void Clear(uint64_t slot) = 0;
-        virtual void ShiftLeftAndClear(uint64_t hole, uint64_t last) = 0;
-        virtual void ShiftRightAndClear(uint64_t hole, uint64_t last) = 0;
         virtual void Reset() = 0;
     };
 
@@ -526,7 +574,7 @@ public:
         return const_iterator(*this, CountSlots());
     }
 
-    /* Hashing, exposed for the tests the way `FingerprintTable` exposes it. */
+    /* Hashing, exposed for the tests to check the splitting against. */
 
     uint64_t hash_key(uint64_t key, uint8_t flags) const {
         if ((flags & flag_key_is_hash) == 0) {

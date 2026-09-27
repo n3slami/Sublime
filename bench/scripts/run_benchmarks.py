@@ -242,16 +242,12 @@ def join_size_bench():
 
 def mg_accuracy_bench():
     SEED = 12345                            # Fixed for the sketches that support it (reproducibility).
-    # (binary, result label, extra flags). Sublime_MG runs in all four of its
-    # configurations and `MG` over both tables, so the figure reads the min tree
-    # against the decrement sweep and the cuckoo filter against the quotient
-    # filter, at the same budgets as the baselines.
+    # (binary, result label, extra flags). Sublime_MG runs in both of its
+    # configurations, so the figure reads the min tree against the decrement
+    # sweep at the same budgets as the baselines.
     configurations = [("SublimeMG", "SublimeMG", f"--seed {SEED}"),
                       ("SublimeMG", "SublimeMG_tree", f"--seed {SEED} --min-tree"),
-                      ("SublimeMG", "SublimeMG_cuckoo", f"--seed {SEED} --cuckoo"),
-                      ("SublimeMG", "SublimeMG_cuckoo_tree", f"--seed {SEED} --cuckoo --min-tree"),
                       ("MG", "MG", f"--seed {SEED}"),
-                      ("MG", "MG_cuckoo", f"--seed {SEED} --cuckoo"),
                       ("SpaceSaving", "SpaceSaving", ""),
                       ("Waving", "Waving", "")]
     memory_footprints = {"caida": [2 ** i for i in range(17, 23)],

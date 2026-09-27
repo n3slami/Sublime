@@ -28,9 +28,6 @@ add_test(NAME sublime_cs COMMAND SublimeCSTests)
 
 
 # Misra-Gries
-add_executable(FingerprintTableTests ./FingerprintTableTests.cpp)
-target_link_libraries(FingerprintTableTests FingerprintTableLib doctest)
-add_test(NAME fingerprint_table COMMAND FingerprintTableTests)
 
 add_executable(CuckooTableTests ./CuckooTableTests.cpp)
 target_link_libraries(CuckooTableTests CuckooTableLib doctest)
@@ -56,7 +53,6 @@ add_test(NAME space_saving COMMAND SpaceSavingTests)
 # All
 add_test(NAME all COMMAND CMSTests SublimeCMSTests
                           CSTests  SublimeCSTests
-                          FingerprintTableTests
                           VALECountersTests SublimeMGTests
                           MGTests SpaceSavingTests CuckooTableTests)
 

@@ -97,75 +97,10 @@ public:
             REQUIRE_EQ(mg.Query(key, flags), ref.Query(table.EntryIdentity(key, flags)));
     }
 
-    /**
-     * The same, over a cuckoo table, which the oracle can only follow until the
-     * table first drops an entry.
-     *
-     * A cuckoo filter gives up on a kick path now and then -- it does at the
-     * load factor Misra-Gries runs the table at -- and drops whichever entry
-     * the kicks happened to be carrying, or turns the arrival away. Either one
-     * leaves the summary with room the oracle does not have, so from that
-     * moment on the two take different decisions and no exact comparison means
-     * anything: the summary can hold *more* keys than the oracle, having
-     * decremented fewer times.
-     *
-     * So the oracle is checked in lockstep up to the first loss, which is
-     * thousands of insertions in, and what is checked after it are the
-     * invariants no loss can break: a key is stored once or not at all, no
-     * count is zero, and an estimate never exceeds the true frequency of the
-     * keys sharing its entry -- the one guarantee losing counts cannot violate,
-     * since a count only rises on an occurrence of a key that matches it.
-     */
-    static void CuckooMonteCarlo(uint64_t nslots, uint32_t fingerprint_length, uint32_t seed,
-                                 uint64_t universe_size, uint64_t stream_length) {
-        MG<CuckooTable> mg(nslots, hashmode::Default, seed, fingerprint_length);
-        ReferenceMG ref{mg.Capacity()};
-
-        std::vector<uint64_t> universe(universe_size);
-        for (uint64_t i = 0; i < universe_size; i++)
-            universe[i] = i;
-
-        std::mt19937_64 rng(seed * 2654435761ULL + 1);
-        const auto draw = [&]() {
-            uint64_t m = rng() % universe_size;
-            for (int i = 0; i < 4; i++)
-                m = std::min(m, rng() % universe_size);
-            return m;
-        };
-
-        std::map<uint64_t, uint64_t> exact;         // Identity -> true frequency.
-        bool oracle_follows = true;
-        uint64_t checks = 0;
-        // Fine, because the window the oracle is good for is not the whole
-        // stream: the first loss lands 4% of the way into the smallest of these
-        // configurations, and a coarse period would leave the comparison
-        // happening once, at the empty summary.
-        const uint64_t check_at = 500;
-        for (uint64_t t = 0; t < stream_length; t++) {
-            const uint64_t key = draw();
-            const int32_t status = mg.Insert(key);
-            const uint64_t identity = mg.GetTable().EntryIdentity(key);
-            ref.Insert(identity);
-            exact[identity]++;
-            if (!oracle_follows)
-                continue;
-            // Either kind of loss -- an entry the kicks dropped, or an arrival
-            // they had no room for -- leaves the summary ahead of the oracle.
-            oracle_follows = status == 0 && mg.GetTable().CountLostEntries() == 0;
-            if (oracle_follows && t % check_at == 0) {
-                CheckSummary(mg, ref, universe, 0);
-                checks++;
-            }
-        }
-        REQUIRE_GT(checks, 8);                      // The window was not vacuous.
-        REQUIRE_GT(mg.CountDecrements(), 0);        // And the run reached case 3 at all.
-        CheckStructure(mg, exact, universe);
-    }
-
     /** The invariants that hold whatever the table has dropped. */
     template <typename MGT>
     static void CheckStructure(const MGT& mg, const std::map<uint64_t, uint64_t>& exact,
-                              const std::vector<uint64_t>& universe) {
+                               const std::vector<uint64_t>& universe, uint8_t flags) {
         const auto& table = mg.GetTable();
         REQUIRE_LE(mg.CountMonitored(), mg.Capacity());
 
@@ -179,22 +114,38 @@ public:
         REQUIRE_LE(mass, mg.GetStreamLength());
 
         for (uint64_t key : universe) {
-            REQUIRE_LE(table.Count(key), 1);        // One entry per key, or none.
-            const auto at = exact.find(table.EntryIdentity(key));
-            REQUIRE_LE(mg.Query(key), at == exact.end() ? 0 : at->second);
+            REQUIRE_LE(table.Count(key, flags), 1);     // One entry per key, or none.
+            const auto at = exact.find(table.EntryIdentity(key, flags));
+            REQUIRE_LE(mg.Query(key, flags), at == exact.end() ? 0 : at->second);
         }
     }
 
     /**
-     * Replays a skewed random stream through both `MG` and the oracle,
-     * checking every invariant at a handful of points and at the end.
+     * Replays a skewed random stream through both `MG` and the oracle.
+     *
+     * The oracle is exact, and it can only be followed until the table first
+     * drops something. A cuckoo filter gives up on a kick path now and then --
+     * it does at the load factor Misra-Gries runs its table at -- and either
+     * drops whichever entry the kicks were carrying or turns the arrival away.
+     * Either one leaves the summary with room the oracle does not have, so from
+     * that moment the two take different decisions and no exact comparison
+     * means anything: the summary can even hold *more* keys than the oracle,
+     * having decremented fewer times.
+     *
+     * So the oracle is checked in lockstep up to the first loss, on a fine
+     * period -- the window is only a few percent of the stream in the tightest
+     * of these configurations, and a coarse period would leave the comparison
+     * happening once, at the empty summary -- and what is checked after it are
+     * the invariants no loss can break: a key is stored once or not at all, no
+     * count is zero, and an estimate never exceeds the true frequency of the
+     * keys sharing its entry, which losing counts cannot violate.
      */
-    template <typename Table = FingerprintTable>
     static void MonteCarlo(uint64_t nslots, uint32_t fingerprint_length, uint32_t seed,
-                           uint64_t universe_size, uint64_t stream_length, bool prehashed) {
+                           uint64_t universe_size, uint64_t stream_length, bool prehashed,
+                           uint64_t min_checks = 8) {
         const hashmode mode = prehashed ? hashmode::Invertible : hashmode::Default;
         const uint8_t flags = prehashed ? MG<>::flag_key_is_hash : 0;
-        MG<Table> mg(nslots, mode, seed, fingerprint_length);
+        MG<> mg(nslots, mode, seed, fingerprint_length);
         ReferenceMG ref{mg.Capacity()};
 
         std::vector<uint64_t> universe(universe_size);
@@ -209,15 +160,29 @@ public:
             return m;
         };
 
-        const uint64_t check_at = stream_length / 8 + 1;
+        std::map<uint64_t, uint64_t> exact;             // Identity -> true frequency.
+        bool oracle_follows = true;
+        uint64_t checks = 0;
+        // A table of a few buckets loses an entry almost at once, so there the
+        // window is a handful of insertions and every one of them is checked.
+        const uint64_t check_at = nslots <= 64 ? 1 : 500;
         for (uint64_t t = 0; t < stream_length; t++) {
             const uint64_t key = draw();
-            mg.Insert(key, flags);
-            ref.Insert(mg.GetTable().EntryIdentity(key, flags));
-            if (t % check_at == 0)
+            const int32_t status = mg.Insert(key, flags);
+            const uint64_t identity = mg.GetTable().EntryIdentity(key, flags);
+            ref.Insert(identity);
+            exact[identity]++;
+            if (!oracle_follows)
+                continue;
+            oracle_follows = status == 0 && mg.GetTable().CountLostEntries() == 0;
+            if (oracle_follows && t % check_at == 0) {
                 CheckSummary(mg, ref, universe, flags);
+                checks++;
+            }
         }
-        CheckSummary(mg, ref, universe, flags);
+        REQUIRE_GE(checks, min_checks);                 // The window was not vacuous.
+        REQUIRE_GT(mg.CountDecrements(), 0);            // And the run reached case 3.
+        CheckStructure(mg, exact, universe, flags);
     }
 };
 
@@ -227,16 +192,15 @@ TEST_CASE("monte carlo") {
     MGTest::MonteCarlo(1024, 10, 2, 50000, 800000, false);
 }
 
-TEST_CASE("over a cuckoo table") {
-    MGTest::CuckooMonteCarlo(/*nslots=*/256, /*fp=*/10, /*seed=*/41,
-                             /*universe=*/8000, /*stream=*/300000);
-    MGTest::CuckooMonteCarlo(1024, 10, 42, 50000, 800000);
-    MGTest::CuckooMonteCarlo(512, 12, 43, 9000, 400000);
+TEST_CASE("more seeds and shapes") {
+    MGTest::MonteCarlo(/*nslots=*/256, /*fp=*/10, /*seed=*/41, /*universe=*/8000, /*stream=*/300000, false);
+    MGTest::MonteCarlo(1024, 10, 42, 50000, 800000, false);
+    MGTest::MonteCarlo(512, 12, 43, 9000, 400000, false);
 }
 
 TEST_CASE("collisions from short fingerprints") {
-    // A short fingerprint forces distinct keys to share entries and runs to
-    // hold several fingerprints, exercising the run scan and the sweep.
+    // A short fingerprint forces distinct keys to share entries, and a bucket
+    // to hold several matching fingerprints, exercising the bucket scan.
     MGTest::MonteCarlo(/*nslots=*/300, /*fp=*/5, /*seed=*/3, /*universe=*/4000, /*stream=*/300000, false);
     MGTest::MonteCarlo(512, 6, 4, 6000, 400000, false);
 }
@@ -251,8 +215,12 @@ TEST_CASE("pre-hashed keys") {
 }
 
 TEST_CASE("tiny table") {
-    MGTest::MonteCarlo(/*nslots=*/16, /*fp=*/8, /*seed=*/8, /*universe=*/500, /*stream=*/60000, false);
-    MGTest::MonteCarlo(8, 6, 9, 200, 40000, false);
+    // Four buckets of four slots: the kick paths have nowhere to go, so the
+    // oracle is good for only the first few insertions and the rest of the run
+    // rests on the structural invariants.
+    MGTest::MonteCarlo(/*nslots=*/16, /*fp=*/8, /*seed=*/8, /*universe=*/500,
+                       /*stream=*/60000, false, /*min_checks=*/1);
+    MGTest::MonteCarlo(8, 6, 9, 200, 40000, false, 1);
 }
 
 TEST_CASE("a decrement sweep can empty several entries at once") {
@@ -261,6 +229,8 @@ TEST_CASE("a decrement sweep can empty several entries at once") {
     MG<> mg(64, MG<>::hashmode::Invertible, 13, 20);
     uint64_t admitted = 0;
     for (uint64_t k = 0; admitted < mg.Capacity(); k++) {
+        if (mg.IsMonitored(k, MG<>::flag_key_is_hash))
+            continue;               // Sharing an entry would leave it above one.
         mg.Insert(k, MG<>::flag_key_is_hash);
         admitted = mg.CountMonitored();
     }
@@ -278,6 +248,8 @@ TEST_CASE("an occurrence that frees nothing is dropped") {
     MG<> mg(64, MG<>::hashmode::Invertible, 17, 20);
     uint64_t admitted = 0;
     for (uint64_t k = 0; admitted < mg.Capacity(); k++) {
+        if (mg.IsMonitored(k, MG<>::flag_key_is_hash))
+            continue;               // One key per entry, so every count is three.
         for (int rep = 0; rep < 3; rep++)
             mg.Insert(k, MG<>::flag_key_is_hash);
         admitted = mg.CountMonitored();

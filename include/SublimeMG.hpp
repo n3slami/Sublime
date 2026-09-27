@@ -9,15 +9,15 @@
  * ============================================================================
  *
  * A Misra-Gries summary is a bounded set of monitored keys, each with a count.
- * Here the set of monitored keys is a `FingerprintTable` -- a rank-and-select
- * quotient filter storing one fingerprint per monitored key -- and the counts
- * are a `VALECounters` array laid over it slot for slot, so that counter `i`
+ * Here the set of monitored keys is a `CuckooTable` -- a cuckoo filter
+ * storing one fingerprint per monitored key -- and the counts are a
+ * `VALECounters` array laid over it slot for slot, so that counter `i`
  * belongs to the fingerprint in slot `i`.
  *
  * Keeping the counts *beside* the fingerprints rather than inside the slots is
  * what lets each side be compact on its own terms: the fingerprints shrink as
  * the filter expands, and the counters, under VALE, are only as long as the
- * counts they actually hold. The table mirrors every slot it shifts into the
+ * counts they actually hold. The table mirrors every slot it moves into the
  * counter array, so the two stay aligned without either knowing much about the
  * other.
  *
@@ -53,7 +53,7 @@
  * The query algorithm
  * ---------------------------------------------------------------------------
  * A query is the counter of the one entry whose fingerprint matches the key,
- * or zero if the key's run holds no match. What it errs by is the occurrences
+ * or zero if neither of the key's two buckets holds a match. What it errs by is the occurrences
  * of the other keys sharing that fingerprint, which is why fingerprints are
  * kept as long as the space allows.
  *
@@ -91,9 +91,9 @@
  * table needs to keep its runs short does not count as usable size.
  *
  * After expanding, the threshold is recomputed from the new `Capacity()`,
- * which is the size the expansion was expected to produce. `FingerprintTable`
- * decides for itself whether that expansion is a stretch within the current
- * period or the doubling that ends one; the threshold only cares what it left
+ * which is the size the expansion was expected to produce. The table decides
+ * for itself whether that expansion is a deepening within the current period
+ * or the doubling that ends one; the threshold only cares what it left
  * behind, which `CountSlotsAfterExpansion` predicts beforehand so that a table
  * that cannot grow any further can stop testing.
  *
@@ -131,7 +131,7 @@
 #include <utility>
 #include <vector>
 
-#include "FingerprintTable.hpp"
+#include "CuckooTable.hpp"
 #include "VALECounters.hpp"
 
 namespace sublime {
@@ -140,16 +140,16 @@ namespace sublime {
  * @tparam expand_on_error_inducing_insertions Whether the size function is
  * tested against the error-inducing insertions alone (the default) or against
  * every insertion. See the note on the size function at the top of this file.
- * @tparam Table The monitored-key set: `FingerprintTable`, the rank-and-select
- * quotient filter, or `CuckooTable`. The two present the same surface and
- * Sublime_MG does not care which it has.
+ * @tparam Table The monitored-key set, which is `CuckooTable`. It is a
+ * parameter so that another table can be dropped in, not because there is a
+ * second one: Sublime_MG only ever asks it for the ~20 methods below.
  * @tparam use_min_tree Whether to lay a min segment tree over the counters and
  * decrement lazily, which trades a doubled counter array for an eviction that
  * costs `O(log w)` instead of a sweep. Off by default. See the note on the
  * decrement above.
  */
 template <bool expand_on_error_inducing_insertions = true, bool use_min_tree = false,
-          typename Table = FingerprintTable>
+          typename Table = CuckooTable>
 class SublimeMG {
     friend class SublimeMGTest;
 
@@ -170,7 +170,7 @@ public:
      * @param nslots The number of slots the fingerprint table holds. Need not
      * be a power of two. `Capacity()` is a shade under this.
      * @param key_bits The number of bits of the hash the table uses.
-     * @param hash_mode The hashing mode, see `FingerprintTable::hashmode`.
+     * @param hash_mode The hashing mode, see `CuckooTable::hashmode`.
      * @param seed The seed of the hash function.
      * @param growth_coefficient `r`, the growth coefficient of Stretching.
      * @param expansion_f The inverse of the size function `W` of the paper:
@@ -234,10 +234,10 @@ public:
             // Everything the decrement emptied may go, up to a bounded batch.
             // Evicting only the one entry this arrival needs would leave the
             // summary sitting at exactly its capacity, and then *every*
-            // arrival behind it pays for an eviction and an admission -- two
-            // passes over a cluster of a table held at its load factor. Taking
-            // a few at a time leaves room for the arrivals behind this one to
-            // walk into, and a bounded batch keeps the worst case bounded.
+            // arrival behind it pays for an eviction and an admission into a
+            // table held at its load factor, which is where a cuckoo filter's
+            // kick paths are longest. Taking a few at a time leaves room for
+            // the arrivals behind this one to walk into.
             for (uint64_t taken = 0; taken < eviction_batch
                     && counters->MinValue() == lazy_decrement_; taken++)
                 evict_minimum();
@@ -371,6 +371,24 @@ public:
     uint64_t GetExpansionLimit() const {
         return expansion_lim_;
     }
+    /**
+     * Turns VALE's *re-tuning* on or off -- the passes that re-derive
+     * `(counters_per_chunk, stub_size)` from the counts as they move, upwards
+     * when chunks spill into tails arrays and downwards when the decrements
+     * have left every counter narrower. With it off the counter array keeps
+     * the tuning it was constructed with for the life of the summary, which is
+     * what a measurement of what the tuning is worth wants.
+     *
+     * It does not touch the rebuild that merges the lazy decrement out: that
+     * one borrows the same machinery but is the algorithm, not the tuning.
+     */
+    void SetVALERetuning(bool on) {
+        vale_retuning_ = on;
+    }
+    bool GetVALERetuning() const {
+        return vale_retuning_;
+    }
+
     /** @returns How many times the size function has grown the summary. */
     uint64_t CountExpansions() const {
         return table_.GetExpansionCount();
@@ -430,6 +448,8 @@ private:
     uint64_t total_decrements_ = 0;
     /** Decrement passes since VALE was last asked to follow the counters down. */
     uint64_t passes_since_shrink_check_ = 0;
+    /** Whether VALE may re-derive its tuning; see `SetVALERetuning`. */
+    bool vale_retuning_ = true;
     /**
      * How many emptied entries one arrival may evict. One is all the arrival
      * itself needs, and a bounded batch would keep the worst case bounded --
@@ -437,10 +457,13 @@ private:
      * effectively unbounded and the batch runs until nothing is left at zero.
      *
      * The reason is the load factor, not the eviction. Capping the batch keeps
-     * the table hovering at its 0.95 load factor, where an RSQF's clusters are
-     * at their longest and every insertion and deletion walks one; clearing
-     * the whole tie drains the table well below that, and the admissions that
-     * refill it are cheap until it climbs back. On kosarak at 16 KB the same
+     * the table hovering at its 0.95 load factor, which is the worst place for
+     * either table to sit: a quotient filter's clusters are then at their
+     * longest and every insertion walks one, and a cuckoo filter's kick paths
+     * are at their longest and some of them fail outright, losing entries.
+     * Clearing the whole tie drains the table well below that, and the
+     * admissions that refill it are cheap until it climbs back. Measured on
+     * the quotient filter this used to run on, kosarak at 16 KB: the same
      * ~2.2M evictions cost 24.5s in batches of 256 and 3.3s unbounded, for
      * identical answers. The amortized bound survives either way: an eviction
      * is paid for by the admission that put the entry there.
@@ -507,42 +530,47 @@ private:
      * Case 3. Takes one off every count in one sweep of the entries, and
      * evicts the ones that reach zero.
      *
-     * The evictions wait for the sweep to finish: removing an entry slides the
-     * rest of its cluster down over the hole, which would move the slots the
-     * sweep has yet to reach. The sweep also tallies what the counters are
-     * left holding, which is what lets VALE follow them downwards -- see the
-     * note on tuning at the top of this file.
+     * An entry is evicted the moment the sweep empties it: a deletion clears
+     * its slot and moves nothing else, and the iterator has already passed
+     * that slot. (A quotient filter would have slid the rest of the cluster
+     * down over the hole, moving slots the sweep had yet to reach, which is
+     * why this used to collect its victims and delete them afterwards.) The
+     * sweep also leaves every counter one smaller, which is what lets VALE
+     * follow them downwards -- see the note on tuning at the top of this file.
      *
      * @returns The number of entries evicted, i.e. the slots this freed.
      */
     uint64_t decrement_pass() {
         VALECounters *counters = table_.GetCounters();
-        std::vector<std::pair<uint64_t, uint64_t>> victims;
+        uint64_t evicted = 0;
         for (auto it = table_.begin(); it != table_.end(); ++it) {
-            if (counters->DecrementIsZero(it.slot()))
-                victims.push_back({it.bucket(), it.slot()});
+            if (counters->DecrementIsZero(it.slot())) {
+                table_.DeleteSlot(it.bucket(), it.slot());
+                evicted++;
+            }
         }
         total_decrements_++;
-        table_.DeleteSlots(victims);
 
         // Every counter has just come down by one, so after enough passes they
         // may all fit in a narrower stub. Asking costs a pass of its own, so it
         // is asked only once they can have shrunk by a whole bit.
-        if (++passes_since_shrink_check_ >= counters->ShrinkRetuneInterval()) {
+        if (vale_retuning_
+                && ++passes_since_shrink_check_ >= counters->ShrinkRetuneInterval()) {
             passes_since_shrink_check_ = 0;
             counters->RetuneIfNarrower();
         }
-        return victims.size();
+        return evicted;
     }
 
     /**
      * Drops the entry the min tree names as the smallest, which is the one
      * whose count has just reached zero.
      *
-     * The tree hands back a slot; the table needs the run's canonical bucket
-     * to remove it, which `BucketOfSlot` recovers from the slot's cluster. The
-     * removal shifts the counters after the hole, and the tree follows them --
-     * including the candidate, which is found again on the way out.
+     * The tree hands back a slot; the table wants the bucket it belongs to as
+     * well, which `BucketOfSlot` gives for nothing (it is `slot / depth`). The
+     * removal clears that one counter and moves no other, so the tree has just
+     * the one leaf to repair -- and its candidate to find again, which it does
+     * on the way out of that repair.
      */
     void evict_minimum() {
         const uint64_t slot = table_.GetCounters()->MinSlot();
@@ -577,6 +605,8 @@ private:
      * it stays a comparison unless it actually fires.
      */
     void rebuild_if_vale_asks() {
+        if (!vale_retuning_)
+            return;
         table_.GetCounters()->MaybeRetune();
     }
 

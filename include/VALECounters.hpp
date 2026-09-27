@@ -7,7 +7,7 @@
  *          A flat array of variable-length counters, laid out with VALE
  *          exactly as `SublimeCMS` lays out its sketch. It is the counter
  *          half of Sublime_MG: counter `i` holds the count of the fingerprint
- *          `FingerprintTable` stores in slot `i`.
+ *          `CuckooTable` stores in slot `i`.
  *
  * ============================================================================
  *
@@ -325,6 +325,15 @@ public:
      * shifting a run along to make room, where `last` is the empty slot the
      * shift consumes.
      */
+    /*
+     * Note: `ShiftRightAndClear`, `ShiftLeftAndClear` and the `repair_range`
+     * behind them have **no caller in the tree**. They were the rank-and-select
+     * quotient filter's, which slid a whole cluster along to open or close a
+     * hole; the cuckoo filter that replaced it moves one counter at a time,
+     * which the ordinary `Set` path handles. They are kept, and still tested,
+     * as the array's own generality rather than any one table's.
+     */
+
     void ShiftRightAndClear(uint64_t hole, uint64_t last) {
         assert(hole <= last && last < CountCounters());
         // The bulk shift writes over the far end of the range without reading
