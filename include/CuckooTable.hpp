@@ -734,8 +734,13 @@ private:
     /** Exchanges what `slot` holds with what the kick path is carrying. */
     void swap_payload(uint64_t slot, uint64_t& carried_count) {
         if (counters_ != nullptr) {
-            const uint64_t there = counters_->Get(slot);
-            counters_->Set(slot, carried_count);
+            // On the *rebased* scale, so that a count carried across the
+            // frontier of a merge pass -- see `VALECounters::BeginOffset` --
+            // has whatever that pass has already taken off applied or undone
+            // as it lands. A kick path knows nothing of any of that; it moves a
+            // count from one slot to another and the array keeps the books.
+            const uint64_t there = counters_->GetRebased(slot);
+            counters_->SetRebased(slot, carried_count, there);
             carried_count = there;
         }
         if (sidecar_ != nullptr)

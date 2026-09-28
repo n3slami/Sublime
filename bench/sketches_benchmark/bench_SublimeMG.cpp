@@ -1,3 +1,9 @@
+#ifdef SUBLIME_MG_FIXED_TUNING
+// First, before anything can pull in `VALECounters.hpp`: this header fixes
+// VALE's tuning by defining macros that it reads. See `SublimeMGNoTuning.hpp.in`.
+#include "SublimeMGNoTuning.hpp"
+#endif
+
 #include <chrono>
 #include <type_traits>
 #include <cstdint>
@@ -99,6 +105,7 @@ inline std::unordered_map<std::string, uint32_t> get_extra_parameters(SublimeMG<
     res["min_tree"] = T ? 1 : 0;
     res["vale_retuning"] = sketch->GetVALERetuning() ? 1 : 0;
     res["fingerprint_bits"] = sketch->GetTable().GetNumFingerprintBits();
+    res["fixed_tuning"] = sublime::VALECounters::TunesAtRuntime() ? 0 : 1;
     // A cuckoo filter drops an entry when a kick path gives up on it, which is
     // silent accuracy loss -- so it is reported rather than left to be guessed.
     res["lost_entries"] = sketch->GetTable().CountLostEntries();

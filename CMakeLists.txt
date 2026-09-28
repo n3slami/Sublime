@@ -77,6 +77,16 @@ set_target_properties(SublimeMGLib PROPERTIES LINKER_LANGUAGE CXX)
 target_include_directories(SublimeMGLib PUBLIC ./include)
 target_compile_options(SublimeMGLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
+# Sublime_MG with VALE's tuning fixed at compile time. Unlike the CMS and CS
+# variants, this duplicates nothing: the generated header hands `VALECounters`
+# the two values as macros and includes the ordinary sketch.
+configure_file(./include/SublimeMGNoTuning.hpp.in ./include/SublimeMGNoTuning.hpp @ONLY)
+add_library(SublimeMGNoTuningLib STATIC ${CMAKE_CURRENT_BINARY_DIR}/include/SublimeMGNoTuning.hpp)
+set_target_properties(SublimeMGNoTuningLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(SublimeMGNoTuningLib PUBLIC ./include
+                                                      ${CMAKE_CURRENT_BINARY_DIR}/include)
+target_compile_options(SublimeMGNoTuningLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+
 
 add_library(CuckooTableLib STATIC ./include/CuckooTable.hpp)
 set_target_properties(CuckooTableLib PROPERTIES LINKER_LANGUAGE CXX)

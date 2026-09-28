@@ -292,6 +292,24 @@ public:
             REQUIRE_EQ(ref[t.MinSlot()], smallest);
         for (uint64_t i = 0; i < ref.size(); i++)
             REQUIRE_EQ(t.Get(i), ref[i]);
+        // Every internal node holds its subtree's minimum outright, so each one
+        // can be checked against its two children directly -- which catches a
+        // climb that stopped a level too early, where `MinValue` alone only
+        // catches the ones that reach the root. The root is in a member.
+        for (uint64_t x = t.leaf_count_ - 1; x >= 1; x--) {
+            const uint64_t left = t.get_raw(2 * x), right = t.get_raw(2 * x + 1);
+            const uint64_t want = left == 0 ? right
+                                            : (right == 0 ? left : std::min(left, right));
+            REQUIRE_EQ(x == 1 ? t.root_min_ : t.get_raw(x), want);
+            if (x == 1)
+                break;
+        }
+        for (uint64_t i = 0; i < t.leaf_count_; i += 2) {
+            const uint64_t left = i < ref.size() ? ref[i] : 0;
+            const uint64_t right = i + 1 < ref.size() ? ref[i + 1] : 0;
+            REQUIRE_EQ(t.not_pair_minimum(t.leaf_count_ + i), right != 0 && right <= left);
+            REQUIRE_EQ(t.not_pair_minimum(t.leaf_count_ + i + 1), left != 0 && left <= right);
+        }
     }
 
     /**
@@ -333,6 +351,92 @@ public:
             }
             CheckMinTree(t, ref);
         }
+    }
+
+    /**
+     * The range minimum, against a scan, over every range of a small array and
+     * over random ranges of a larger one -- including the whole-array case,
+     * which the root answers on its own, and ranges that are empty or all zero.
+     */
+    static void MinInRangeMonteCarlo(uint64_t n, uint64_t steps, uint64_t ceiling, uint32_t seed) {
+        VALECounters t(n, /*with_min_tree=*/true);
+        std::vector<uint64_t> ref(n, 0);
+        std::mt19937_64 rng(seed);
+        const auto check = [&](uint64_t lo, uint64_t hi) {
+            uint64_t want = 0;
+            for (uint64_t i = lo; i < hi; i++)
+                if (ref[i] != 0 && (want == 0 || ref[i] < want))
+                    want = ref[i];
+            const auto [value, pos] = t.MinInRange(lo, hi);
+            REQUIRE_EQ(value, want);
+            if (want != 0) {
+                REQUIRE_GE(pos, lo);
+                REQUIRE_LT(pos, hi);
+                REQUIRE_EQ(ref[pos], want);
+            }
+        };
+        for (uint64_t step = 0; step < steps; step++) {
+            const uint64_t i = rng() % n;
+            const uint64_t v = (rng() % 4 == 0) ? 0 : 1 + rng() % ceiling;
+            t.Set(i, v);
+            ref[i] = v;
+            if (n <= 16) {
+                for (uint64_t lo = 0; lo <= n; lo++)
+                    for (uint64_t hi = lo; hi <= n; hi++)
+                        check(lo, hi);
+            }
+            else {
+                check(0, n);
+                for (int r = 0; r < 4; r++) {
+                    const uint64_t a = rng() % (n + 1), b = rng() % (n + 1);
+                    check(std::min(a, b), std::max(a, b));
+                }
+            }
+        }
+    }
+
+    /**
+     * Taking an offset off every counter a batch at a time: the two scales the
+     * array holds while it is in flight, the rebasing that hides them from a
+     * caller moving values about, and the one scale it is left on.
+     */
+    static void OffsetPassMonteCarlo(uint64_t n, uint64_t batch, uint32_t seed) {
+        VALECounters t(n, /*with_min_tree=*/true);
+        std::vector<uint64_t> ref(n, 0);
+        std::mt19937_64 rng(seed);
+        for (uint64_t i = 0; i < n; i++)
+            if (rng() % 3 != 0) {
+                ref[i] = 1000 + rng() % 5000;
+                t.Set(i, ref[i]);
+            }
+
+        const uint64_t offset = 999;
+        t.BeginOffset(offset);
+        REQUIRE(t.OffsetInProgress());
+        uint64_t finished = 0;
+        while (finished == 0) {
+            // Mid-pass: what is below the frontier has had the offset taken
+            // off, what is above has not, and `GetRebased` is blind to both.
+            const uint64_t frontier = t.OffsetFrontier();
+            for (uint64_t i = 0; i < n; i++) {
+                const uint64_t applied = (ref[i] != 0 && i < frontier) ? offset : 0;
+                REQUIRE_EQ(t.Get(i), ref[i] == 0 ? 0 : ref[i] - applied);
+                REQUIRE_EQ(t.GetRebased(i), ref[i]);
+                REQUIRE_EQ(t.AppliedOffsetAt(i), i < frontier ? offset : 0);
+            }
+            // A value written on the rebased scale reads back on it, wherever
+            // the frontier happens to be -- this is a cuckoo kick's business.
+            const uint64_t moved = rng() % n;
+            const uint64_t value = 1000 + rng() % 5000;
+            t.SetRebased(moved, value, ref[moved]);
+            ref[moved] = value;
+            REQUIRE_EQ(t.GetRebased(moved), value);
+            finished = t.StepOffset(batch);
+        }
+        REQUIRE_EQ(finished, offset);
+        REQUIRE_FALSE(t.OffsetInProgress());
+        for (uint64_t i = 0; i < n; i++)
+            REQUIRE_EQ(t.Get(i), ref[i] == 0 ? 0 : ref[i] - offset);
     }
 
     /** A shift moves the candidate's index, and nothing else about it. */
@@ -827,6 +931,21 @@ TEST_SUITE("VALECounters") {
         VALECountersTest::MinTreeMonteCarlo(64, 20000, 5000, 4);
         VALECountersTest::MinTreeMonteCarlo(777, 20000, 4000000000ULL, 5);
         VALECountersTest::MinTreeMonteCarlo(1000, 20000, 5000, 6);
+    }
+
+    TEST_CASE("min tree range minimum") {
+        VALECountersTest::MinInRangeMonteCarlo(/*n=*/2, /*steps=*/200, /*ceiling=*/50, 51);
+        VALECountersTest::MinInRangeMonteCarlo(7, 300, 5000, 52);
+        VALECountersTest::MinInRangeMonteCarlo(16, 300, 5000, 53);
+        VALECountersTest::MinInRangeMonteCarlo(777, 3000, 4000000000ULL, 54);
+        VALECountersTest::MinInRangeMonteCarlo(1024, 3000, 5000, 55);
+    }
+
+    TEST_CASE("an offset merged out a batch at a time") {
+        VALECountersTest::OffsetPassMonteCarlo(/*n=*/64, /*batch=*/8, 61);
+        VALECountersTest::OffsetPassMonteCarlo(777, 16, 62);
+        VALECountersTest::OffsetPassMonteCarlo(1000, 1, 63);
+        VALECountersTest::OffsetPassMonteCarlo(1000, 4096, 64);
     }
 
     TEST_CASE("min tree candidate follows its leaf") {

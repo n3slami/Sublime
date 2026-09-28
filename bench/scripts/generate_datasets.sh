@@ -18,9 +18,9 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-FIGURE_OPTIONS=("accuracy" "skew" "vale_tuning" "expansion" "contraction" "accuracy_unbiased" "l2_size_function" "join_size" "mg_accuracy" "mg_expansion")
+FIGURE_OPTIONS=("accuracy" "skew" "vale_tuning" "expansion" "contraction" "accuracy_unbiased" "l2_size_function" "join_size" "mg_accuracy" "mg_tail_latency" "mg_expansion")
 
-FIGURES="accuracy,skew,vale_tuning,expansion,contraction,accuracy_unbiased,l2_size_function,join_size,mg_accuracy,mg_expansion"
+FIGURES="accuracy,skew,vale_tuning,expansion,contraction,accuracy_unbiased,l2_size_function,join_size,mg_accuracy,mg_tail_latency,mg_expansion"
 
 function print_help_message_exit() {
     echo "Usage: generate_datasets.sh <build_path> <real_datasets_path> [-f|--figures ${FIGURES}]"
@@ -358,7 +358,10 @@ if [[ "$FIGURES" == *"skew"* || "$FIGURES" == *"vale_tuning"* || "$FIGURES" == *
     echo "[!!] generate_synthetic done"
 fi
 
-if [[ "$FIGURES" == *"accuracy"* || "$FIGURES" == *"accuracy_unbiased"* ]]; then
+# `mg_tail_latency` reuses the `real` workloads too, and its name does not
+# contain "accuracy", so it has to be named here explicitly.
+if [[ "$FIGURES" == *"accuracy"* || "$FIGURES" == *"accuracy_unbiased"* \
+        || "$FIGURES" == *"mg_tail_latency"* ]]; then
     echo "[!!] generate_real start"
     mkdir -p $OUT_PATH/real && cd $OUT_PATH/real || exit 1
     if ! generate_real ; then

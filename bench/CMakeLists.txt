@@ -24,7 +24,7 @@ list(APPEND Targets "SublimeCMS" "SublimeCMSNoTuning" "SublimeCMSNoTuningMorris"
                     "Tailored"
                     "OTailored"
                     "Waving"
-                    "SublimeMG"
+                    "SublimeMG" "SublimeMGNoTuning"
                     "MG"
                     "SpaceSaving")
 
@@ -34,7 +34,14 @@ function(compile_bench ds)
         return()
     endif()
 
-    add_executable(bench_${ds} sketches_benchmark/bench_${ds}.cpp)
+    if (ds STREQUAL "SublimeMGNoTuning")
+        # One glue file serves both Sublime_MG builds: this one just defines the
+        # macro that makes it include the generated fixed-tuning header first.
+        add_executable(bench_${ds} sketches_benchmark/bench_SublimeMG.cpp)
+        target_compile_definitions(bench_${ds} PRIVATE SUBLIME_MG_FIXED_TUNING)
+    else()
+        add_executable(bench_${ds} sketches_benchmark/bench_${ds}.cpp)
+    endif()
     set_target_properties(bench_${ds} PROPERTIES LINKER_LANGUAGE CXX)
     target_link_libraries(bench_${ds} argparse)
 
@@ -104,6 +111,8 @@ function(compile_bench ds)
         target_link_libraries(bench_${ds} WavingLib)
     elseif (ds STREQUAL "SublimeMG")
         target_link_libraries(bench_${ds} SublimeMGLib)
+    elseif (ds STREQUAL "SublimeMGNoTuning")
+        target_link_libraries(bench_${ds} SublimeMGNoTuningLib)
     elseif (ds STREQUAL "MG")
         target_link_libraries(bench_${ds} MGLib)
     elseif (ds STREQUAL "SpaceSaving")

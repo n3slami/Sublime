@@ -780,12 +780,12 @@ def plot_join_size(result_dir, output_dir):
 def plot_mg_accuracy(result_dir, output_dir):
     LEGEND_FONT_SIZE = 10
     LABEL_FONT_SIZE = 10
-    # Sized so each of the three rows is the same panel width/height as a full
+    # Sized so each of the four rows is the same panel width/height as a full
     # (ratio-1) row of the original Sublime_CMS accuracy figure (WIDTH 7.75,
     # HEIGHT 5.0 over height ratios [1, 1, 0.2, 0.75], wspace 0.25, hspace 0.12).
     WIDTH = 7.75
-    HEIGHT = 5.04
-    # The AAE axis is logarithmic, which has no room for the exact answers
+    HEIGHT = 6.72
+    # Both error axes are logarithmic, which has no room for the exact answers
     # (AAE 0) a summary large enough to monitor every key gives. Those are
     # clamped to the floor so the line still reaches its last budget, the same
     # convention the Sublime_MG expansion figure uses.
@@ -799,8 +799,13 @@ def plot_mg_accuracy(result_dir, output_dir):
     memory_powers = {"caida": range(17, 23), "kosarak": range(14, 19), "webdocs": range(17, 23)}
     memory_footprints = {w: [2 ** i for i in memory_powers[w]] for w in workloads}
 
-    fig, axes = plt.subplots(nrows=3, ncols=3, sharex="col", figsize=(WIDTH, HEIGHT))
-    for row in (1, 2):                                  # Share the insert/query rows' y across datasets.
+    # Four rows: the error over every distinct key, the error over the heaviest
+    # `Capacity()` of them, and then insert and query latency. The two error rows
+    # say different things and the second is the one Misra-Gries' guarantee is
+    # about -- over all distinct keys the mean is dominated by the tail no
+    # summary of this size can hold, so it moves far less than the capacity does.
+    fig, axes = plt.subplots(nrows=4, ncols=3, sharex="col", figsize=(WIDTH, HEIGHT))
+    for row in (2, 3):                                  # Share the insert/query rows' y across datasets.
         axes[row][1].sharey(axes[row][0])
         axes[row][2].sharey(axes[row][0])
         axes[row][1].tick_params(labelleft=True)        # ...but keep the tick labels on every column.
@@ -811,6 +816,7 @@ def plot_mg_accuracy(result_dir, output_dir):
     vale_params = {w: {} for w in workloads}            # (counters-per-chunk, stub-length) for SublimeMG.
     for i, workload in enumerate(workloads):
         aae = {s: [] for s in sketches}
+        top_aae = {s: [] for s in sketches}
         insert = {s: [] for s in sketches}
         query = {s: [] for s in sketches}
         for sketch, memory_footprint in itertools.product(sketches, memory_footprints[workload]):
@@ -823,6 +829,7 @@ def plot_mg_accuracy(result_dir, output_dir):
                     continue
                 result = json.loads("[" + fix_file_contents(contents[:-2]) + "]")[-1]
                 aae[sketch].append((result["size"], max(result["aae"], AAE_FLOOR)))
+                top_aae[sketch].append((result["size"], max(result["top_aae"], AAE_FLOOR)))
                 insert[sketch].append((result["size"], result["time_i"] / result["n_keys"] * 1000.0))
                 query[sketch].append((result["size"], result["time_q"] / result["n_unique_keys"] * 1000.0))
                 p99_data[workload][sketch][memory_footprint] = result.get("p99", 0)
@@ -834,8 +841,9 @@ def plot_mg_accuracy(result_dir, output_dir):
             result_found = True
             style = SKETCHES_STYLE_KWARGS[sketch]
             axes[0][i].plot(*zip(*aae[sketch]), **style, **LINES_STYLE)
-            axes[1][i].plot(*zip(*insert[sketch]), **style, **LINES_STYLE)
-            axes[2][i].plot(*zip(*query[sketch]), **style, **LINES_STYLE)
+            axes[1][i].plot(*zip(*top_aae[sketch]), **style, **LINES_STYLE)
+            axes[2][i].plot(*zip(*insert[sketch]), **style, **LINES_STYLE)
+            axes[3][i].plot(*zip(*query[sketch]), **style, **LINES_STYLE)
     if not result_found:
         logging.info(inspect.stack()[0][3][5:] + ": Figure not generated due to no benchmark results being found to include")
         return
@@ -843,28 +851,31 @@ def plot_mg_accuracy(result_dir, output_dir):
     memory_footprint_labels = {w: [f"${2 ** (p - 20)}$" if p >= 20 else f"$1/{2 ** (20 - p)}$"
                                    for p in memory_powers[w]] for w in workloads}
     for i, workload in enumerate(workloads):
-        for row in range(3):
+        for row in range(4):
             axes[row][i].set_xscale("log")
             axes[row][i].margins(0.04)
-        axes[0][i].set_yscale("log")
-        # An explicit `numticks` on the major locator too: the default one
-        # thins the decades out once a panel spans more than a few (Kosarak
-        # runs from the AAE floor to ~1e3), dropping every other label.
-        axes[0][i].yaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10, numticks=15))
-        axes[0][i].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, numticks=15, subs="auto"))
-        axes[1][i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(10))
-        axes[2][i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(5))
+        for row in (0, 1):                              # Both error rows.
+            axes[row][i].set_yscale("log")
+            # An explicit `numticks` on the major locator too: the default one
+            # thins the decades out once a panel spans more than a few (Kosarak
+            # runs from the AAE floor to ~1e3), dropping every other label.
+            axes[row][i].yaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10, numticks=15))
+            axes[row][i].yaxis.set_minor_locator(
+                    matplotlib.ticker.LogLocator(base=10, numticks=15, subs="auto"))
+        axes[2][i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(10))
+        axes[3][i].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(5))
         axes[0][i].set_title(DATASET_NAMES[workload], fontsize=LABEL_FONT_SIZE + 1)
-        axes[2][i].set_xlabel("Memory [MB]", fontsize=LABEL_FONT_SIZE)
-        axes[2][i].xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
-        axes[2][i].set_xticks(memory_footprints[workload])
-        axes[2][i].set_xticklabels(memory_footprint_labels[workload], fontsize=LABEL_FONT_SIZE - 2)
-        axes[2][i].set_xlim(memory_footprints[workload][0] / 1.1, 1.1 * memory_footprints[workload][-1])
-    axes[1][0].set_ylim(bottom=0)                       # Shared -> applies across the insert row.
-    axes[2][0].set_ylim(bottom=0)                       # Shared -> applies across the query row.
+        axes[3][i].set_xlabel("Memory [MB]", fontsize=LABEL_FONT_SIZE)
+        axes[3][i].xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+        axes[3][i].set_xticks(memory_footprints[workload])
+        axes[3][i].set_xticklabels(memory_footprint_labels[workload], fontsize=LABEL_FONT_SIZE - 2)
+        axes[3][i].set_xlim(memory_footprints[workload][0] / 1.1, 1.1 * memory_footprints[workload][-1])
+    axes[2][0].set_ylim(bottom=0)                       # Shared -> applies across the insert row.
+    axes[3][0].set_ylim(bottom=0)                       # Shared -> applies across the query row.
     axes[0][0].set_ylabel("AAE", fontsize=LABEL_FONT_SIZE)
-    axes[1][0].set_ylabel("Insert Latency [ns]", fontsize=LABEL_FONT_SIZE)
-    axes[2][0].set_ylabel("Query Latency [ns]", fontsize=LABEL_FONT_SIZE)
+    axes[1][0].set_ylabel("Top-$k$ AAE", fontsize=LABEL_FONT_SIZE)
+    axes[2][0].set_ylabel("Insert Latency [ns]", fontsize=LABEL_FONT_SIZE)
+    axes[3][0].set_ylabel("Query Latency [ns]", fontsize=LABEL_FONT_SIZE)
     fig.subplots_adjust(hspace=0.12, wspace=0.25)
 
     legend_lines, legend_labels = axes[0][0].get_legend_handles_labels()
@@ -901,6 +912,82 @@ def plot_mg_accuracy(result_dir, output_dir):
                 line += f" & {cs[0]} & {cs[1]}" if cs is not None else " & - & -"
             table.write(line + " \\\\ \n")
         table.writelines(["\\bottomrule \n", "\\end{tabular} \n"])
+
+
+def plot_mg_tail_latency(result_dir, output_dir):
+    """One row: the worst insertion any single update suffered.
+
+    Mirrors the insert-latency row of the Sublime_MG accuracy figure -- same
+    sketches, same budgets, same panel geometry -- but from `mg_tail_latency`'s
+    own runs, because measuring it means timing every insertion and that is not
+    a thing to do to a run whose *average* latency anyone will read. The y-axis
+    is logarithmic: an `O(w)` decrement sweep and an `O(log w)` eviction are two
+    orders of magnitude apart, which is the point of the figure.
+    """
+    LEGEND_FONT_SIZE = 10
+    LABEL_FONT_SIZE = 10
+    # One row of the accuracy figure's panels: that figure is WIDTH 7.75 over
+    # four rows of HEIGHT 6.72, plus the room its x-labels and legend take.
+    WIDTH = 7.75
+    HEIGHT = 2.4
+
+    workloads = ["kosarak", "webdocs", "caida"]
+    workload_subdir = Path("mg_tail_latency_bench")
+    sketches = ["SublimeMG", "SublimeMG_tree", "MG", "SpaceSaving", "Waving"]
+    memory_powers = {"caida": range(17, 23), "kosarak": range(14, 19), "webdocs": range(17, 23)}
+    memory_footprints = {w: [2 ** i for i in memory_powers[w]] for w in workloads}
+
+    fig, axes = plt.subplots(nrows=1, ncols=3, sharex="col", figsize=(WIDTH, HEIGHT))
+    axes[1].sharey(axes[0])                             # One scale across datasets...
+    axes[2].sharey(axes[0])
+    axes[1].tick_params(labelleft=True)                  # ...with the labels kept on each.
+    axes[2].tick_params(labelleft=True)
+
+    result_found = False
+    for i, workload in enumerate(workloads):
+        worst = {sketch: [] for sketch in sketches}
+        for sketch, memory_footprint in itertools.product(sketches, memory_footprints[workload]):
+            file_path = result_dir / workload_subdir / Path(f"{sketch}_{memory_footprint}_{workload}.json")
+            if not file_path.is_file():
+                continue
+            with open(file_path, 'r') as result_file:
+                contents = result_file.read()
+                if len(contents) == 0:
+                    continue
+                result = json.loads("[" + fix_file_contents(contents[:-2]) + "]")[-1]
+                if "max_i" not in result:               # Not a tail-latency run.
+                    continue
+                worst[sketch].append((result["size"], result["max_i"]))
+        for sketch in sketches:
+            if not worst[sketch]:
+                continue
+            result_found = True
+            axes[i].plot(*zip(*worst[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
+    if not result_found:
+        logging.info(inspect.stack()[0][3][5:] + ": Figure not generated due to no benchmark results being found to include")
+        return
+
+    memory_footprint_labels = {w: [f"${2 ** (p - 20)}$" if p >= 20 else f"$1/{2 ** (20 - p)}$"
+                                   for p in memory_powers[w]] for w in workloads}
+    for i, workload in enumerate(workloads):
+        axes[i].set_xscale("log")
+        axes[i].set_yscale("log")
+        axes[i].margins(0.04)
+        axes[i].yaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10, numticks=15))
+        axes[i].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, numticks=15, subs="auto"))
+        axes[i].set_title(DATASET_NAMES[workload], fontsize=LABEL_FONT_SIZE + 1)
+        axes[i].set_xlabel("Memory [MB]", fontsize=LABEL_FONT_SIZE)
+        axes[i].xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
+        axes[i].set_xticks(memory_footprints[workload])
+        axes[i].set_xticklabels(memory_footprint_labels[workload], fontsize=LABEL_FONT_SIZE - 2)
+        axes[i].set_xlim(memory_footprints[workload][0] / 1.1, 1.1 * memory_footprints[workload][-1])
+    axes[0].set_ylabel("Max Insert [ns]", fontsize=LABEL_FONT_SIZE)
+    fig.subplots_adjust(wspace=0.25)
+
+    legend_lines, legend_labels = axes[0].get_legend_handles_labels()
+    axes[1].legend(legend_lines, legend_labels, loc="lower center", bbox_to_anchor=(0.5, 1.18),
+                   fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE, frameon=False)
+    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_19).pdf"), bbox_inches="tight", pad_inches=0.01)
 
 
 def plot_mg_expansion(result_dir, output_dir):
@@ -1055,6 +1142,7 @@ PLOTTERS = {plot_accuracy.__name__[5:]: plot_accuracy,
             plot_l2_size_function.__name__[5:]: plot_l2_size_function,
             plot_join_size.__name__[5:]: plot_join_size,
             plot_mg_accuracy.__name__[5:]: plot_mg_accuracy,
+            plot_mg_tail_latency.__name__[5:]: plot_mg_tail_latency,
             plot_mg_expansion.__name__[5:]: plot_mg_expansion}
 
 

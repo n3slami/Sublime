@@ -46,13 +46,36 @@ public:
             buckets++;
         }
         REQUIRE_EQ(buckets, ss.bucket_count_);
-        REQUIRE_EQ(monitors, ss.index_.size());
-        for (const auto& [key, counter] : ss.index_)
-            REQUIRE_EQ(counter->elem, key);
-        REQUIRE_EQ(total_value, stream_length);                 // Counts sum to N.
+        REQUIRE_EQ(monitors, ss.CountMonitored());
+        // Every slot of the index names a monitor, that monitor points back at
+        // the slot, and nothing else in the sidecar points at anything: the two
+        // halves of the index agree, entry for entry, however the kicks that
+        // put them there moved things about.
+        uint64_t indexed = 0;
+        for (auto it = ss.table_.begin(); it != ss.table_.end(); ++it) {
+            SpaceSaving::Counter *c = ss.sidecar_.monitors[it.slot()];
+            REQUIRE(c != nullptr);
+            REQUIRE_EQ(c->slot, it.slot());
+            indexed++;
+        }
+        REQUIRE_EQ(indexed, monitors);
+        for (uint64_t slot = 0; slot < ss.sidecar_.monitors.size(); slot++)
+            if (ss.sidecar_.monitors[slot] != nullptr)
+                REQUIRE_EQ(ss.sidecar_.monitors[slot]->slot, slot);
+        // Counts sum to N, less what the index could not keep: an occurrence it
+        // had no room for was never counted, and a monitor whose entry a kick
+        // path dropped took its count out with it. Both are a cuckoo filter's
+        // doing and both are accounted for, so this stays an equality.
+        REQUIRE_EQ(total_value + ss.CountDroppedInsertions() + ss.CountLostMass(),
+                   stream_length);
         if (ss.head_ != nullptr)
             for (SpaceSaving::Bucket *b = ss.head_; b != nullptr; b = b->next)
                 REQUIRE_GE(b->value, ss.head_->value);
+    }
+
+    /** What the index can tell of `key`: two keys sharing this share a monitor. */
+    static uint64_t Identity(const SpaceSaving& ss, uint64_t key) {
+        return ss.table_.EntryIdentity(key);
     }
 
     static uint64_t MinValue(const SpaceSaving& ss) {
@@ -83,21 +106,47 @@ static void RunGuarantees(uint64_t capacity, uint32_t seed, uint64_t universe_si
     }
     SpaceSavingTest::CheckStructure(ss, stream_length);
 
-    const uint64_t distinct = exact.size();
-    REQUIRE_EQ(ss.CountMonitored(), std::min(distinct, capacity));
+    // What the summary can tell apart is an *identity*, not a key: the index is
+    // a cuckoo filter, so two keys whose fingerprints and bucket pairs agree
+    // share one monitor and one count.
+    std::map<uint64_t, uint64_t> by_identity, group_of;
+    for (const auto& [key, count] : exact) {
+        const uint64_t id = SpaceSavingTest::Identity(ss, key);
+        by_identity[id] += count;
+        group_of[id]++;
+    }
+    const uint64_t distinct = by_identity.size();
+    // And a kick path that gives up drops entries, which no oracle predicts.
+    const bool lossless = ss.CountDroppedInsertions() == 0 && ss.CountLostMass() == 0;
+
+    REQUIRE_LE(ss.CountMonitored(), std::min(distinct, capacity));
+    if (lossless)
+        REQUIRE_EQ(ss.CountMonitored(), std::min(distinct, capacity));
 
     const uint64_t min_value = SpaceSavingTest::MinValue(ss);
-    if (distinct >= capacity)
+    if (lossless && distinct >= capacity)
         REQUIRE_LE(min_value, stream_length / capacity);        // Space-Saving bound.
 
     for (const auto& [key, count] : exact) {
+        const uint64_t id = SpaceSavingTest::Identity(ss, key);
         if (ss.IsMonitored(key)) {
             const uint64_t est = ss.Query(key);
+            // Space-Saving only ever over-estimates -- *if* the index kept
+            // everything. A monitor whose entry a kick path dropped takes its
+            // count with it, and a key re-admitted afterwards starts again from
+            // one, which reads below the truth. That is what a fingerprint
+            // index costs this baseline, and it is the same loss `MG` and
+            // `SublimeMG` take; see the note at the top of `SpaceSaving.hpp`.
+            if (lossless)
+                REQUIRE_GE(est, count);
+            // `est - err <= true` is the guarantee for a key with a monitor to
+            // itself. A shared one counts both keys, so what it bounds is the
+            // pair's total, not either one.
             const uint64_t err = ss.QueryError(key);
-            REQUIRE_GE(est, count);                             // Over-estimate.
-            REQUIRE_LE(est - err, count);                       // est - err <= true <= est.
+            if (lossless)
+                REQUIRE_LE(est - err, group_of[id] == 1 ? count : by_identity[id]);
         }
-        else {
+        else if (lossless) {
             REQUIRE_LE(count, min_value);                       // Unmonitored => small.
         }
     }

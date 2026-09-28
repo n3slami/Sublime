@@ -138,16 +138,23 @@ public:
     template <typename MGT>
     static void CheckSummary(const MGT& mg) {
         CheckNoCountIsStranded(mg);
-        uint64_t entries = 0, smallest = 0;
+        uint64_t entries = 0, smallest = 0, smallest_count = 0;
         for (auto it = mg.table_.begin(); it != mg.table_.end(); ++it) {
-            const uint64_t stored = mg.Counters().Get(it.slot());
-            REQUIRE_GT(stored, 0);
+            const uint64_t raw = mg.Counters().Get(it.slot());
+            REQUIRE_GT(raw, 0);
+            if (smallest == 0 || raw < smallest)
+                smallest = raw;                     // What the tree holds.
+            // Read on the rebased scale, which is the one the whole decrement
+            // is owed on: while a merge pass is in flight the counters it has
+            // reached hold that much less, and comparing those against `L`
+            // would be comparing two different scales. See `smallest_count`.
+            const uint64_t stored = mg.Counters().GetRebased(it.slot());
             // Nothing may sit below the decrement it owes: an entry at exactly
             // the decrement is a key whose count has reached zero, waiting to
             // be evicted, and one below it would read as a negative count.
             REQUIRE_GE(stored, mg.GetLazyDecrement());
-            if (smallest == 0 || stored < smallest)
-                smallest = stored;
+            if (smallest_count == 0 || stored < smallest_count)
+                smallest_count = stored;            // What a count is measured against.
             entries++;
         }
         REQUIRE_EQ(entries, mg.CountMonitored());
@@ -160,6 +167,13 @@ public:
             REQUIRE_EQ(mg.Counters().MinValue(), smallest);
             if (smallest != 0)
                 REQUIRE_EQ(mg.Counters().Get(mg.Counters().MinSlot()), smallest);
+            // And what the sketch makes of the two scales: the smallest count
+            // it believes it holds is the smallest one there is.
+            const auto [count, slot] = mg.smallest_count();
+            if (smallest_count != 0) {
+                REQUIRE_EQ(count, smallest_count - mg.GetLazyDecrement());
+                REQUIRE_EQ(mg.Counters().GetRebased(slot), smallest_count);
+            }
         }
         else {
             REQUIRE_EQ(mg.GetLazyDecrement(), 0);
@@ -900,7 +914,13 @@ public:
             // A merge is the only thing that makes the decrement fall.
             if (mg.GetLazyDecrement() < previous) {
                 merges++;
-                REQUIRE_EQ(mg.GetLazyDecrement(), 1);
+                // It used to land exactly on one. A merge takes a batch of
+                // counters per operation now, and every decrement made while
+                // it runs is still owed when it ends, so where it lands is one
+                // plus however many those were.
+                REQUIRE_GE(mg.GetLazyDecrement(), 1);
+                REQUIRE_LE(mg.GetLazyDecrement(),
+                           1 + mg.Capacity() / std::decay_t<decltype(mg)>::merge_batch + 1);
                 CheckSummary(mg);
                 widest_stub = 0;
             }
@@ -908,10 +928,18 @@ public:
             // It never climbs far past the threshold it is merged at. The
             // threshold is read against the stub of the moment, and a merge
             // can leave a narrower one behind, so the bound to hold it to is
-            // the widest stub it has seen since the last merge.
+            // the widest stub it has seen since the last merge -- plus the
+            // length of a pass, because the merge now comes off a batch at a
+            // time and every decrement behind it goes on counting while it
+            // does. That is what bounds the *tail*, which was the point: the
+            // decrement is allowed to run a little higher in exchange for no
+            // single insertion ever rebuilding the array.
             widest_stub = std::max(widest_stub,
                                    static_cast<uint64_t>(mg.Counters().GetStubLength()));
-            REQUIRE_LE(mg.GetLazyDecrement(), ((uint64_t{1} << widest_stub) - 1) / 2 + 1);
+            const uint64_t pass_length =
+                    mg.Capacity() / std::decay_t<decltype(mg)>::merge_batch + 1;
+            REQUIRE_LE(mg.GetLazyDecrement(),
+                       ((uint64_t{1} << widest_stub) - 1) / 2 + 1 + pass_length);
         }
         REQUIRE_GT(merges, 0);
         CheckSummary(mg);

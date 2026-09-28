@@ -43,6 +43,10 @@ inline uint32_t size_of_sketch(SpaceSaving *sketch) {
 
 int main(int argc, char const *argv[]) {
     auto parser = init_parser("bench-SpaceSaving");
+    parser.add_argument("--tail-latency")
+            .help("time every insertion and report the tail; the average latency of such a run "
+                  "is meaningless, so this wants a run of its own")
+            .default_value(false).implicit_value(true);
 
     try {
         parser.parse_args(argc, argv);
@@ -55,6 +59,7 @@ int main(int argc, char const *argv[]) {
 
     auto memory_budgets = parser.get<std::vector<uint64_t>>("arg");
     read_workload(parser.get<std::string>("--workload"));
+    measure_insert_latency = parser.get<bool>("--tail-latency");
 
     const uint64_t capacity = std::max<uint64_t>(1, memory_budgets[0] / SpaceSaving::BytesPerMonitorEstimate());
     auto *sketch = new SpaceSaving(capacity);

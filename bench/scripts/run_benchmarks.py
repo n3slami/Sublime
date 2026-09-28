@@ -38,24 +38,28 @@ def execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch,
     print("[ Command finished ]")
 
 
-def rebuild_execute_benchmark(build_dir, output_base, c, s, p, workload_subdir, workload, sketch, bpk, size_function_power=None, size_function_mult=None, force_counter_count=None, override_size=None):
+def rebuild_execute_benchmark(build_dir, output_base, c, s, p, workload_subdir, workload, sketch, bpk, size_function_power=None, size_function_mult=None, force_counter_count=None, override_size=None, extra_args="", label=None, target=None):
     rebuild_command = f"cd {build_dir} && cmake .. -DCMAKE_BUILD_TYPE=Release -DFIXED_TUNING_C={c} -DFIXED_TUNING_S={s}"
     if p is not None:
         rebuild_command += f" -DLOG_REC_INC_PROB={p}"
-    rebuild_command += "&& make -j8"
+    # Naming a target keeps a per-data-point rebuild to seconds instead of
+    # rebuilding every sketch in the tree.
+    rebuild_command += f" && make -j8 {target if target is not None else ''}"
     subprocess.run(rebuild_command, shell=True)
 
     file_to_execute = f"bench/bench_{sketch}"
     size_function_power_option = f"--size-function-power {size_function_power}" if size_function_power != None else ""
     size_function_mult_option = f"--size-function-mult {size_function_mult}" if size_function_mult != None else ""
     counter_count_option = f"--counter-count {force_counter_count}" if force_counter_count != None else ""
+    options = f"{size_function_power_option} {size_function_mult_option} {counter_count_option} {extra_args}"
+    name = sketch if label is None else label
     if type(bpk) is tuple:
         bpk = [str(i) for i in bpk]
-        command = f"{build_dir}/{file_to_execute} {' '.join(bpk)} -w {workload} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee {output_base}/{sketch}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
-        cli_message_command = f"<build_dir>/{file_to_execute} {' '.join(bpk)} -w <workload_dir>/{workload_subdir}/{workload.name} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee <output_dir>/{workload_subdir}/{sketch}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
+        command = f"{build_dir}/{file_to_execute} {' '.join(bpk)} -w {workload} {options} | tee {output_base}/{name}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
+        cli_message_command = f"<build_dir>/{file_to_execute} {' '.join(bpk)} -w <workload_dir>/{workload_subdir}/{workload.name} {options} | tee <output_dir>/{workload_subdir}/{name}_{'_'.join(bpk) if override_size == None else override_size}_{workload.name}.json"
     else:
-        command = f"{build_dir}/{file_to_execute} {bpk} -w {workload} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee {output_base}/{sketch}_{bpk if override_size == None else override_size}_{workload.name}.json"
-        cli_message_command = f"<build_dir>/{file_to_execute} {bpk} -w <workload_dir>/{workload_subdir}/{workload.name} {size_function_power_option} {size_function_mult_option} {counter_count_option} | tee <output_dir>/{workload_subdir}/{sketch}_{bpk if override_size == None else override_size}_{workload.name}.json"
+        command = f"{build_dir}/{file_to_execute} {bpk} -w {workload} {options} | tee {output_base}/{name}_{bpk if override_size == None else override_size}_{workload.name}.json"
+        cli_message_command = f"<build_dir>/{file_to_execute} {bpk} -w <workload_dir>/{workload_subdir}/{workload.name} {options} | tee <output_dir>/{workload_subdir}/{name}_{bpk if override_size == None else override_size}_{workload.name}.json"
 
     print(f"[ Executing: {cli_message_command} ]")
     subprocess.run(command, shell=True)
@@ -242,14 +246,31 @@ def join_size_bench():
 
 def mg_accuracy_bench():
     SEED = 12345                            # Fixed for the sketches that support it (reproducibility).
-    # (binary, result label, extra flags). Sublime_MG runs in both of its
-    # configurations, so the figure reads the min tree against the decrement
-    # sweep at the same budgets as the baselines.
-    configurations = [("SublimeMG", "SublimeMG", f"--seed {SEED}"),
-                      ("SublimeMG", "SublimeMG_tree", f"--seed {SEED} --min-tree"),
-                      ("MG", "MG", f"--seed {SEED}"),
-                      ("SpaceSaving", "SpaceSaving", ""),
-                      ("Waving", "Waving", "")]
+    # The baselines, which tune nothing: (binary, result label, extra flags).
+    baselines = [("MG", "MG", f"--seed {SEED}"),
+                 ("SpaceSaving", "SpaceSaving", ""),
+                 ("Waving", "Waving", "")]
+    # Sublime_MG runs in both of its configurations -- the decrement sweep and
+    # the min tree -- with VALE's tuning *baked in at compile time*, as the
+    # Sublime_CMS and Sublime_CS accuracy figures do. So each of these points is
+    # its own configure-and-build of `bench_SublimeMGNoTuning`, which is why the
+    # target is named: rebuilding the whole tree 22 times over would cost more
+    # than the runs.
+    #
+    # The pairs are `(counters_per_chunk, stub_length)` per budget, ascending,
+    # and they are what the auto-tuning build settled on in the run of
+    # 2026-09-26 -- each configuration gets its own, since the tree's counters
+    # hold minima as well as counts and tune a notch differently.
+    vale_params = {
+        ("kosarak", "SublimeMG"):      [(37, 10), (39, 10), (41, 9), (46, 8), (55, 6)],
+        ("kosarak", "SublimeMG_tree"): [(40, 9), (40, 9), (42, 9), (46, 8), (58, 6)],
+        ("caida", "SublimeMG"):        [(40, 9), (48, 7), (46, 8), (56, 6), (57, 6), (68, 5)],
+        ("caida", "SublimeMG_tree"):   [(45, 8), (48, 7), (50, 7), (52, 7), (64, 5), (68, 5)],
+        ("webdocs", "SublimeMG"):      [(31, 12), (31, 12), (34, 11), (39, 9), (45, 8), (55, 6)],
+        ("webdocs", "SublimeMG_tree"): [(31, 12), (34, 11), (39, 9), (44, 8), (48, 7), (55, 6)],
+    }
+    sublime_flags = {"SublimeMG": f"--seed {SEED}",
+                     "SublimeMG_tree": f"--seed {SEED} --min-tree"}
     memory_footprints = {"caida": [2 ** i for i in range(17, 23)],
                          "kosarak": [2 ** i for i in range(14, 19)],
                          "webdocs": [2 ** i for i in range(17, 23)]}
@@ -262,9 +283,70 @@ def mg_accuracy_bench():
         if workload.name not in memory_footprints:
             continue
         for (sketch, label, extra_args), memory_footprint in \
-                itertools.product(configurations, memory_footprints[workload.name]):
+                itertools.product(baselines, memory_footprints[workload.name]):
             execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint,
                               extra_args=extra_args, label=label)
+        for label, flags in sublime_flags.items():
+            params = vale_params[(workload.name, label)]
+            assert len(params) == len(memory_footprints[workload.name])
+            for memory_footprint, (c, s) in zip(memory_footprints[workload.name], params):
+                rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir,
+                                          workload, "SublimeMGNoTuning", memory_footprint,
+                                          extra_args=flags, label=label,
+                                          target="bench_SublimeMGNoTuning")
+
+
+def mg_tail_latency_bench():
+    """The worst insertion, rather than the average one.
+
+    Its own benchmark because it has to be its own *run*: timing every single
+    insertion costs about as much as a cuckoo-table insertion itself, so the
+    average latency a run like this reports is meaningless and must not be
+    confused with `mg_accuracy`'s. The tail is unharmed by the instrumentation
+    -- what it measures is microseconds of eviction sweep against tens of
+    nanoseconds of two clock reads -- which is the whole reason this is
+    separable. See `bench_template.hpp`'s `measure_insert_latency`.
+
+    Same sketches, same budgets and the same baked-in VALE tunings as
+    `mg_accuracy`, so the two figures' rows line up point for point.
+    """
+    SEED = 12345
+    baselines = [("MG", "MG", f"--seed {SEED}"),
+                 ("SpaceSaving", "SpaceSaving", ""),
+                 ("Waving", "Waving", "")]
+    vale_params = {
+        ("kosarak", "SublimeMG"):      [(37, 10), (39, 10), (41, 9), (46, 8), (55, 6)],
+        ("kosarak", "SublimeMG_tree"): [(40, 9), (40, 9), (42, 9), (46, 8), (58, 6)],
+        ("caida", "SublimeMG"):        [(40, 9), (48, 7), (46, 8), (56, 6), (57, 6), (68, 5)],
+        ("caida", "SublimeMG_tree"):   [(45, 8), (48, 7), (50, 7), (52, 7), (64, 5), (68, 5)],
+        ("webdocs", "SublimeMG"):      [(31, 12), (31, 12), (34, 11), (39, 9), (45, 8), (55, 6)],
+        ("webdocs", "SublimeMG_tree"): [(31, 12), (34, 11), (39, 9), (44, 8), (48, 7), (55, 6)],
+    }
+    sublime_flags = {"SublimeMG": f"--seed {SEED}",
+                     "SublimeMG_tree": f"--seed {SEED} --min-tree"}
+    memory_footprints = {"caida": [2 ** i for i in range(17, 23)],
+                         "kosarak": [2 ** i for i in range(14, 19)],
+                         "webdocs": [2 ** i for i in range(17, 23)]}
+    workload_subdir = inspect.stack()[0][3]
+    output_base = Path(f"./{output_prefix}/{workload_subdir}/")
+    output_base.mkdir(parents=True, exist_ok=True)
+
+    workload_path = Path(f"{workload_dir}/real")
+    for workload in workload_path.iterdir():
+        if workload.name not in memory_footprints:
+            continue
+        for (sketch, label, extra_args), memory_footprint in \
+                itertools.product(baselines, memory_footprints[workload.name]):
+            execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint,
+                              extra_args=f"{extra_args} --tail-latency", label=label)
+        for label, flags in sublime_flags.items():
+            params = vale_params[(workload.name, label)]
+            assert len(params) == len(memory_footprints[workload.name])
+            for memory_footprint, (c, s) in zip(memory_footprints[workload.name], params):
+                rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir,
+                                          workload, "SublimeMGNoTuning", memory_footprint,
+                                          extra_args=f"{flags} --tail-latency", label=label,
+                                          target="bench_SublimeMGNoTuning")
 
 
 def mg_expansion_bench():
@@ -312,6 +394,7 @@ RUNNERS = {accuracy_bench.__name__[:-6]: accuracy_bench,
            l2_size_function_bench.__name__[:-6]: l2_size_function_bench,
            join_size_bench.__name__[:-6]: join_size_bench,
            mg_accuracy_bench.__name__[:-6]: mg_accuracy_bench,
+           mg_tail_latency_bench.__name__[:-6]: mg_tail_latency_bench,
            mg_expansion_bench.__name__[:-6]: mg_expansion_bench}
 
 

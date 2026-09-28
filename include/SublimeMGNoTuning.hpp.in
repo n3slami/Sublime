@@ -1,0 +1,37 @@
+#pragma once
+
+/*
+ * ============================================================================
+ *
+ *        SublimeMGNoTuning
+ *          Sublime_MG with VALE's tuning baked in at compile time, for
+ *          measurements that should not be paying for the runtime tuner.
+ *
+ * ============================================================================
+ *
+ * `SublimeCMSNoTuning` and friends do this by duplicating a whole sketch, and
+ * their tuning lives in the sketch. Sublime_MG's lives one level down, in
+ * `VALECounters`, so there is nothing to duplicate: this header hands that
+ * class the two values as macros and includes the ordinary sketch. What comes
+ * out is the same `sublime::SublimeMG`, with `counters_per_chunk` and
+ * `stub_size` as `static constexpr` -- every mask and shift folded, the
+ * histogram tuner and both retune paths compiled out.
+ *
+ * The values come from CMake's `FIXED_TUNING_C` / `FIXED_TUNING_S`, the same
+ * knobs the `SublimeCMSNoTuning` variants use, so `run_benchmarks.py` sweeps
+ * them the same way -- one configure-and-build per data point.
+ *
+ * **Include this before anything else.** It works by defining macros that
+ * `VALECounters.hpp` reads, so a translation unit that has already pulled that
+ * header in would silently get the runtime-tuned array instead. The `#error`
+ * below is there so that "silently" cannot happen.
+ */
+
+#ifdef SUBLIME_VALECOUNTERS_INCLUDED
+#error "SublimeMGNoTuning.hpp has to be included before VALECounters.hpp"
+#endif
+
+#define VALE_FIXED_COUNTERS_PER_CHUNK @FIXED_TUNING_C@
+#define VALE_FIXED_STUB_SIZE          @FIXED_TUNING_S@
+
+#include "SublimeMG.hpp"
