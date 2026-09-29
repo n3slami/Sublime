@@ -38,16 +38,25 @@
  *      that reach zero are evicted, and the key takes one of the slots that
  *      frees up. If nothing reaches zero, the occurrence is dropped.
  *
- * Case 3 is a single sweep of the entries, decrementing as it goes and
- * collecting whatever it empties; the evictions follow the sweep rather than
- * happening inside it, since removing an entry slides its neighbours along and
- * would move the very slots the sweep is walking.
+ * There are two ways to apply case 3's decrement, and `use_min_tree` picks
+ * between them.
  *
- * The sweep is why the counters are asked for `DecrementIsZero` rather than a
- * decrement and a read: a VALE counter holds zero exactly when it has no
- * extension and its stub reads zero, so finding the entries to evict costs
- * nothing beyond the decrement that was happening anyway -- no extension, and
- * no tails array, is ever decoded for it.
+ * **The sweep** (the default) walks every entry, decrementing as it goes and
+ * evicting whatever it empties on the spot. It is why the counters are asked
+ * for `DecrementIsZero` rather than a decrement and a read: a VALE counter
+ * holds zero exactly when it has no extension and its stub reads zero, so
+ * finding the entries to evict costs nothing beyond the decrement that was
+ * happening anyway -- no extension, and no tails array, is ever decoded for it.
+ * It is `O(w)` in the monitored keys, and on a full summary it is the most
+ * expensive thing the sketch does.
+ *
+ * **The min tree** makes it `O(log w)`. The decrement is not applied at all:
+ * `VALECounters::IncrementLazy` raises `L`, a count is its counter less `L`, and
+ * a count reaches zero exactly when the smallest counter catches up with `L`.
+ * A min tree over the counters names the counter that has, so an eviction is a
+ * read rather than a search, and `L` is taken off the counters themselves a
+ * group of 32 at a time, on demand, by whichever insertion touches that group
+ * next. Nothing here is `O(w)`; see `VALECounters`, which owns all of it.
  *
  * ---------------------------------------------------------------------------
  * The query algorithm
@@ -143,9 +152,9 @@ namespace sublime {
  * @tparam Table The monitored-key set, which is `CuckooTable`. It is a
  * parameter so that another table can be dropped in, not because there is a
  * second one: Sublime_MG only ever asks it for the ~20 methods below.
- * @tparam use_min_tree Whether to lay a min segment tree over the counters and
- * decrement lazily, which trades a doubled counter array for an eviction that
- * costs `O(log w)` instead of a sweep. Off by default. See the note on the
+ * @tparam use_min_tree Whether to maintain a min segment tree over the counters
+ * and decrement lazily, which trades about three bits a counter for an eviction
+ * that costs `O(log w)` instead of a sweep. Off by default. See the note on the
  * decrement above.
  */
 template <bool expand_on_error_inducing_insertions = true, bool use_min_tree = false,
@@ -194,61 +203,10 @@ public:
      * @returns 0, or a negative status code.
      */
     int32_t Insert(uint64_t key, uint8_t flags = 0) {
-        // Tested before this insertion is counted, so that the measure the
-        // threshold reads is complete: whether *this* key is error-inducing is
-        // not known until it has been looked up, and the lookup has to happen
-        // after any expansion, which moves every entry.
-        if (SizeMeasure() >= expansion_lim_)
-            grow_to_fit();
-        n_++;
-
-        const int64_t pos = table_.FindMatch(key, flags);
-        if (pos >= 0) {                             // Case 1: already monitored.
-            table_.GetCounters()->Increment(pos);
-            rebuild_if_vale_asks();
-            return 0;
-        }
-        // Nothing in the table matched, so this occurrence is one the summary
-        // could not simply count -- see the size function note up top.
-        error_inducing_++;
-
-        if (CountMonitored() < Capacity())          // Case 2: room to admit it.
-            return admit(key, flags);
-
-        // Case 3: every count comes down by one, and the occurrence that paid
-        // for that takes one of the slots it emptied, if it emptied any.
-        if constexpr (use_min_tree) {
-            VALECounters *counters = table_.GetCounters();
-            // Nothing is at zero yet, so this occurrence has to pay for the
-            // decrement itself. When something *is* already at zero -- a key
-            // tied with the one a previous arrival evicted -- the decrement
-            // has been paid for and this occurrence simply takes the slot,
-            // which is what the sweep did when one pass emptied several.
-            if (smallest_count().first > 0) {
-                lazy_decrement_++;
-                total_decrements_++;
-            }
-            step_lazy_merge();
-            if (smallest_count().first != 0)
-                return 0;                           // Nothing has reached zero.
-            // Everything the decrement emptied may go, up to a bounded batch.
-            // Evicting only the one entry this arrival needs would leave the
-            // summary sitting at exactly its capacity, and then *every*
-            // arrival behind it pays for an eviction and an admission into a
-            // table held at its load factor, which is where a cuckoo filter's
-            // kick paths are longest. Taking a few at a time leaves room for
-            // the arrivals behind this one to walk into.
-            for (uint64_t taken = 0; taken < eviction_batch; taken++) {
-                const auto [count, slot] = smallest_count();
-                if (count != 0)
-                    break;
-                evict_at(slot);
-            }
-            return admit(key, flags);
-        }
-        else {
-            return decrement_pass() > 0 ? admit(key, flags) : 0;
-        }
+        const int32_t res = insert_one(key, flags);
+        if constexpr (use_min_tree)
+            drain_emptied();
+        return res;
     }
 
     /**
@@ -267,12 +225,12 @@ public:
         const int64_t pos = table_.FindMatch(key, flags);
         if (pos < 0)
             return 0;
-        const uint64_t stored = use_min_tree ? table_.GetCounters()->GetRebased(pos)
-                                             : table_.GetCounters()->Get(pos);
-        if constexpr (use_min_tree)
-            return stored > lazy_decrement_ ? stored - lazy_decrement_ : 0;
-        else
-            return stored;
+        // With the tree the counters hold each count plus the lazy decrement,
+        // which is the scale `VALECounters` is public about; without it they
+        // hold the count outright and the subtraction below is of zero.
+        const uint64_t value = table_.GetCounters()->Get(pos);
+        const uint64_t owed = table_.GetCounters()->LazyDecrement();
+        return value > owed ? value - owed : 0;
     }
 
     /** @returns True if some stored fingerprint matches `key`. */
@@ -282,8 +240,7 @@ public:
 
     /** Empties the summary, keeping its shape. */
     void Reset() {
-        table_.Reset();   // Resets the counters along with it.
-        lazy_decrement_ = 0;
+        table_.Reset();   // Resets the counters, and the lazy decrement, with it.
         total_decrements_ = 0;
         passes_since_shrink_check_ = 0;
         n_ = 0;
@@ -299,7 +256,6 @@ public:
      * code.
      */
     int64_t Expand() {
-        finish_lazy_merge();
         const int64_t res = table_.Expand();
         if (res >= 0)
             retarget();
@@ -314,7 +270,6 @@ public:
      * @returns The number of fingerprints afterwards, or a negative status code.
      */
     int64_t Contract() {
-        finish_lazy_merge();
         const int64_t res = table_.Contract();
         if (res >= 0)
             retarget();
@@ -334,18 +289,18 @@ public:
     /**
      * @returns How many times every count came down by one. This is the
      * classic Misra-Gries parameter: no key's count is understated by more
-     * than this. With the min tree it is the lazy decrement, merged ones
-     * included; without it, the number of sweeps.
+     * than this. With the min tree it is the lazy decrement; without it, the
+     * number of sweeps.
      */
     uint64_t CountDecrements() const {
         return total_decrements_;
     }
     /**
-     * @returns What every stored counter currently owes. Always zero without
-     * the min tree, where a decrement is applied on the spot instead.
+     * @returns `L`, the decrement every counter carries with it. Always zero
+     * without the min tree, where a decrement is applied on the spot instead.
      */
     uint64_t GetLazyDecrement() const {
-        return lazy_decrement_;
+        return table_.GetCounters()->LazyDecrement();
     }
     /** @returns `N`, the number of insertions the summary has seen. */
     uint64_t GetStreamLength() const {
@@ -444,12 +399,6 @@ private:
     }
 
     Table table_;
-    /**
-     * What every stored counter owes, with the min tree in use. A decrement
-     * then costs one increment of this rather than a pass over the counters,
-     * and a key's count is its counter less this. Stays zero without the tree.
-     */
-    uint64_t lazy_decrement_ = 0;
     /** How many times every count has come down by one. */
     uint64_t total_decrements_ = 0;
     /** Decrement passes since VALE was last asked to follow the counters down. */
@@ -457,32 +406,11 @@ private:
     /** Whether VALE may re-derive its tuning; see `SetVALERetuning`. */
     bool vale_retuning_ = true;
     /**
-     * How many emptied entries one arrival may evict. One is all the arrival
-     * itself needs, and a bounded batch would keep the worst case bounded --
-     * but measurement says a bound is the wrong trade here, so this is
-     * effectively unbounded and the batch runs until nothing is left at zero.
-     *
-     * The reason is the load factor, not the eviction. Capping the batch keeps
-     * the table hovering at its 0.95 load factor, which is the worst place for
-     * either table to sit: a quotient filter's clusters are then at their
-     * longest and every insertion walks one, and a cuckoo filter's kick paths
-     * are at their longest and some of them fail outright, losing entries.
-     * Clearing the whole tie drains the table well below that, and the
-     * admissions that refill it are cheap until it climbs back. Measured on
-     * the quotient filter this used to run on, kosarak at 16 KB: the same
-     * ~2.2M evictions cost 24.5s in batches of 256 and 3.3s unbounded, for
-     * identical answers. The amortized bound survives either way: an eviction
-     * is paid for by the admission that put the entry there.
+     * How many emptied entries *any* insertion may evict on its way out, with
+     * the min tree in use. See `drain_emptied`, which is where this
+     * configuration's tail was hiding.
      */
-    static constexpr uint64_t eviction_batch = std::numeric_limits<uint64_t>::max();
-    /**
-     * How many counters one operation takes the lazy decrement off. The pass
-     * has no deadline -- `L` going on rising while it runs costs nothing but a
-     * few temporarily wider counters -- so this is chosen for the *tail*: it is
-     * the work the worst insertion does, and a pass finishes in
-     * `Capacity() / merge_batch` operations regardless.
-     */
-    static constexpr uint64_t merge_batch = 16;
+    static constexpr uint64_t drain_batch = 2;
     /** Stands for "no count at all", above anything a counter can hold. */
     static constexpr uint64_t no_count = std::numeric_limits<uint64_t>::max();
     /** The threshold of a summary that will not expand again. */
@@ -543,6 +471,66 @@ private:
     }
 
     /**
+     * One Misra-Gries insertion, without the drain `Insert` runs afterwards.
+     */
+    int32_t insert_one(uint64_t key, uint8_t flags) {
+        // Tested before this insertion is counted, so that the measure the
+        // threshold reads is complete: whether *this* key is error-inducing is
+        // not known until it has been looked up, and the lookup has to happen
+        // after any expansion, which moves every entry.
+        if (SizeMeasure() >= expansion_lim_)
+            grow_to_fit();
+        n_++;
+
+        const int64_t pos = table_.FindMatch(key, flags);
+        if (pos >= 0) {                             // Case 1: already monitored.
+            table_.GetCounters()->Increment(pos);
+            rebuild_if_vale_asks();
+            return 0;
+        }
+        // Nothing in the table matched, so this occurrence is one the summary
+        // could not simply count -- see the size function note up top.
+        error_inducing_++;
+
+        if (CountMonitored() < Capacity())          // Case 2: room to admit it.
+            return admit(key, flags);
+
+        // Case 3: every count comes down by one, and the occurrence that paid
+        // for that takes one of the slots it emptied, if it emptied any.
+        if constexpr (use_min_tree) {
+            VALECounters *counters = table_.GetCounters();
+            // Nothing is at zero yet, so this occurrence has to pay for the
+            // decrement itself. When something *is* already at zero -- a key
+            // tied with the one a previous arrival evicted -- the decrement
+            // has been paid for and this occurrence simply takes the slot,
+            // which is what the sweep did when one pass emptied several.
+            if (smallest_count() > 0) {
+                counters->IncrementLazy();
+                total_decrements_++;
+            }
+            // The decrement is now owed by every counter in the summary. This
+            // insertion pays part of that debt off: the group of counters the
+            // arriving key hashes to, if it has fallen far enough behind to be
+            // storing counts wider than it needs to. Every case-3 insertion
+            // lands on a group the hash chose, so the debt comes off everywhere
+            // without anything ever making a pass over the whole array.
+            counters->MaybeFlushGroup(table_.PrimarySlotOf(key, flags));
+            if (smallest_count() != 0)
+                return 0;                           // Nothing has reached zero.
+            // One slot, for this arrival, and no more: the rest of what the
+            // decrement emptied is cleared out a couple at a time by
+            // `drain_emptied`, on the way out of the insertions that follow.
+            // The tree named the slot and said what its counter holds, so the
+            // eviction costs the array no decode of its own.
+            evict_at(counters->MinSlot(), counters->MinValue());
+            return admit(key, flags);
+        }
+        else {
+            return decrement_pass() > 0 ? admit(key, flags) : 0;
+        }
+    }
+
+    /**
      * Case 3. Takes one off every count in one sweep of the entries, and
      * evicts the ones that reach zero.
      *
@@ -579,103 +567,72 @@ private:
     }
 
     /**
-     * Drops the entry the min tree names as the smallest, which is the one
-     * whose count has just reached zero.
+     * Drops the entry in `slot`, which with the min tree in use is the one the
+     * tree named as the smallest -- the one whose count has reached zero.
      *
      * The tree hands back a slot; the table wants the bucket it belongs to as
      * well, which `BucketOfSlot` gives for nothing (it is `slot / depth`). The
-     * removal clears that one counter and moves no other, so the tree has just
-     * the one leaf to repair -- and its candidate to find again, which it does
-     * on the way out of that repair.
+     * removal clears that one counter and moves no other, so the tree has one
+     * leaf to repair and nothing else.
      */
-    void evict_minimum() {
-        evict_at(smallest_count().second);
-    }
-
     void evict_at(uint64_t slot) {
         table_.DeleteSlot(table_.BucketOfSlot(slot), slot);
     }
 
-    /**
-     * The smallest count in the summary, and a slot holding it -- `{0, 0}` when
-     * nothing is stored.
-     *
-     * Ordinarily this is the tree's root and its candidate, two reads. While
-     * the lazy decrement is being merged out a batch at a time, though, the
-     * array holds *two scales*: what the pass has reached owes `L` less what it
-     * took off, and the rest owes the whole of `L`. A single minimum over both
-     * cannot be compared against either -- a merged counter of 5 reads below an
-     * unmerged counter of 0 -- so the two halves are asked separately. That is
-     * one range query each, and it is only during a pass.
-     */
-    std::pair<uint64_t, uint64_t> smallest_count() const {
-        const VALECounters *counters = table_.GetCounters();
-        if (!counters->OffsetInProgress()) {
-            const uint64_t value = counters->MinValue();
-            return {value == 0 ? no_count : value - lazy_decrement_, counters->MinSlot()};
-        }
-        const uint64_t frontier = counters->OffsetFrontier();
-        const uint64_t merged_owes = lazy_decrement_ - counters->OffsetAmount();
-        const auto [merged_value, merged_slot] = counters->MinInRange(0, frontier);
-        const auto [rest_value, rest_slot] =
-                counters->MinInRange(frontier, table_.GetSlotCapacity());
-        const uint64_t merged_count = merged_value == 0 ? no_count : merged_value - merged_owes;
-        const uint64_t rest_count = rest_value == 0 ? no_count : rest_value - lazy_decrement_;
-        return merged_count <= rest_count ? std::pair{merged_count, merged_slot}
-                                          : std::pair{rest_count, rest_slot};
+    /** The same, told what the counter holds, which saves the array a decode. */
+    void evict_at(uint64_t slot, uint64_t value) {
+        table_.DeleteSlot(table_.BucketOfSlot(slot), slot, value);
     }
 
     /**
-     * Takes the lazy decrement off every counter once it has grown into real
-     * dead weight -- past half of what a stub can hold, which is the point
-     * where it alone starts pushing counters into their extensions -- and does
-     * it **`merge_batch` counters at a time**.
+     * Clears out entries whose count has reached zero, a couple per insertion,
+     * whichever case that insertion fell into.
      *
-     * It used to come off in one pass, as VALE's rebuild offset, which was free
-     * in the sense that the rebuild read and rewrote every counter anyway. Free
-     * on average and ruinous in the worst case: that one insertion rebuilt the
-     * whole array, and it was *the* worst insertion the sketch made -- 624
-     * microseconds against the decrement sweep's 250 on kosarak at 16 KB, which
-     * left the `O(log w)` eviction this configuration exists for with nothing
-     * to show for itself. Spreading it out costs a little arithmetic on every
-     * operation and a range query per eviction while a pass is in flight; see
-     * `smallest_count` and `VALECounters::BeginOffset`.
+     * Those entries are dead weight: an entry at zero answers zero, which is
+     * what an unmonitored key answers too, so removing it costs no accuracy and
+     * frees a slot. What it buys is the **load factor**, and that is the whole
+     * of this configuration's cost.
      *
-     * What comes off is `L - 1`, not `L`. An entry whose count has reached zero
-     * sits at exactly `L`, and taking the whole of `L` off it would store zero,
-     * which the tree reads as an empty slot. `L` goes on rising while the pass
-     * runs -- every decrement behind it counts -- so what the end of the pass
-     * subtracts is what its start decided, not whatever `L` has become.
+     * A decrement empties every entry that was at one, which on a skewed stream
+     * is most of the ones recently admitted -- hundreds or thousands at a time.
+     * Leaving all of them for the arrival that needs a slot to clear is an
+     * `O(w)` insertion, and the worst one the sketch makes: measured on kosarak
+     * at 16 KB, a p9999 of 147 microseconds. Capping what that arrival may take
+     * is worse still, in the average rather than the tail: it pins the table at
+     * its 0.95 load factor, which is where a cuckoo filter's kick paths are
+     * longest and where some of them fail outright and lose an entry, and the
+     * same run costs 845 ms unbounded against 1541 ms in batches of 32.
+     *
+     * Draining a little on every insertion gets both. The table settles at the
+     * occupancy its *live* entries call for, exactly as the unbounded batch
+     * leaves it, and no single insertion does more than `drain_batch` evictions.
+     * There are about four insertions per decrement here and rather more than
+     * one emptied entry per decrement, so a budget of two keeps up comfortably;
+     * the case-3 arrival still takes the one slot it needs for itself, so it
+     * never has to wait for the drain to catch up.
      */
-    /**
-     * Finishes any merge pass outright, because a resize renumbers every slot
-     * and the pass's frontier is an index into the old numbering. Resizes are
-     * rare, and one whole pass is what a merge used to cost anyway.
-     */
-    void finish_lazy_merge() {
-        if constexpr (use_min_tree) {
-            VALECounters *counters = table_.GetCounters();
-            if (counters != nullptr && counters->OffsetInProgress())
-                lazy_decrement_ -= counters->FinishOffset();
-        }
-    }
-
-    void step_lazy_merge() {
+    void drain_emptied() {
         VALECounters *counters = table_.GetCounters();
-        if (counters->OffsetInProgress()) {
-            const uint64_t finished = counters->StepOffset(merge_batch);
-            assert(finished == 0 || lazy_decrement_ > finished);
-            lazy_decrement_ -= finished;
-            return;
+        for (uint64_t taken = 0; taken < drain_batch; taken++) {
+            if (smallest_count() != 0)
+                return;
+            evict_at(counters->MinSlot(), counters->MinValue());
         }
-        const uint64_t stub_ceiling = (uint64_t{1} << counters->GetStubLength()) - 1;
-        if (lazy_decrement_ > stub_ceiling / 2) {
-            // Begin *and* step, so that a pass takes the same number of
-            // operations however it started, and the decrement's peak stays
-            // where the arithmetic above says it does.
-            counters->BeginOffset(lazy_decrement_ - 1);
-            counters->StepOffset(merge_batch);
-        }
+    }
+
+    /**
+     * The smallest count in the summary, or `no_count` if nothing is stored.
+     *
+     * The tree's root, which is a member of the counter array: one read. The
+     * counters hold their counts plus `L`, and the root holds the smallest of
+     * those, so taking `L` off it gives the smallest count -- however much of
+     * `L` any individual group has had applied, which is the counter array's
+     * business and not visible here.
+     */
+    uint64_t smallest_count() const {
+        const VALECounters *counters = table_.GetCounters();
+        const uint64_t value = counters->MinValue();
+        return value == 0 ? no_count : value - counters->LazyDecrement();
     }
 
     /**
@@ -700,24 +657,16 @@ private:
      * @returns 0, or a negative status code.
      */
     int32_t admit_with_count(uint64_t key, uint8_t flags, uint64_t count) {
-        const int64_t pos = table_.InsertAt(key, flags);
+        // Stored above the decrement everything else owes, so that it reads
+        // back as `count` -- and so that it is, at `L + 1`, a minimum, which is
+        // how an admission becomes the next eviction candidate. It goes in with
+        // the entry rather than after it: a kick path that writes a zero first
+        // and the real count second pays for two climbs of the min tree, and
+        // the zero in between is an empty slot, which is the expensive kind.
+        const int64_t pos = table_.InsertAt(key, flags,
+                                            count + table_.GetCounters()->LazyDecrement());
         if (pos < 0)
             return static_cast<int32_t>(pos);
-        // Stored above the decrement everything else owes, so that it reads
-        // back as `count` -- and so that it is, at `L + 1`, a minimum, which
-        // is how an admission becomes the next eviction candidate.
-        uint64_t stored = count;
-        if constexpr (use_min_tree)
-            stored += lazy_decrement_;
-        // The slot the table just handed back was empty, and saying so saves
-        // the counter array a read and tells the tree which way to climb: a
-        // write into an empty slot can only pull a minimum down. `SetRebased`
-        // because a merge pass may already have been past this slot, in which
-        // case what goes in is `L + count` less what the pass took off.
-        if constexpr (use_min_tree)
-            table_.GetCounters()->SetRebased(pos, stored, 0);
-        else
-            table_.GetCounters()->Set(pos, stored, 0);
         rebuild_if_vale_asks();
         return 0;
     }

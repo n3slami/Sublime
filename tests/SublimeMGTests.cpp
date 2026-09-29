@@ -144,17 +144,14 @@ public:
             REQUIRE_GT(raw, 0);
             if (smallest == 0 || raw < smallest)
                 smallest = raw;                     // What the tree holds.
-            // Read on the rebased scale, which is the one the whole decrement
-            // is owed on: while a merge pass is in flight the counters it has
-            // reached hold that much less, and comparing those against `L`
-            // would be comparing two different scales. See `smallest_count`.
-            const uint64_t stored = mg.Counters().GetRebased(it.slot());
             // Nothing may sit below the decrement it owes: an entry at exactly
             // the decrement is a key whose count has reached zero, waiting to
             // be evicted, and one below it would read as a negative count.
-            REQUIRE_GE(stored, mg.GetLazyDecrement());
-            if (smallest_count == 0 || stored < smallest_count)
-                smallest_count = stored;            // What a count is measured against.
+            // However much of `L` this counter's own group has had applied is
+            // the array's business; what comes back here is on the one scale.
+            REQUIRE_GE(raw, mg.GetLazyDecrement());
+            if (smallest_count == 0 || raw < smallest_count)
+                smallest_count = raw;               // What a count is measured against.
             entries++;
         }
         REQUIRE_EQ(entries, mg.CountMonitored());
@@ -169,10 +166,9 @@ public:
                 REQUIRE_EQ(mg.Counters().Get(mg.Counters().MinSlot()), smallest);
             // And what the sketch makes of the two scales: the smallest count
             // it believes it holds is the smallest one there is.
-            const auto [count, slot] = mg.smallest_count();
             if (smallest_count != 0) {
-                REQUIRE_EQ(count, smallest_count - mg.GetLazyDecrement());
-                REQUIRE_EQ(mg.Counters().GetRebased(slot), smallest_count);
+                REQUIRE_EQ(mg.smallest_count(), smallest_count - mg.GetLazyDecrement());
+                REQUIRE_EQ(mg.Counters().Get(mg.Counters().MinSlot()), smallest_count);
             }
         }
         else {
@@ -845,37 +841,47 @@ public:
     }
 
     /**
-     * The keys a decrement empties all go at once, and the decrement is paid
-     * for once. Admitting every key at the same moment leaves them all at the
-     * same count, so the first arrival that finds the summary full takes the
-     * whole table with it.
+     * A decrement that empties everything is paid for once, and the entries it
+     * emptied are cleared out a couple per insertion rather than all at once.
+     *
+     * Admitting every key at the same moment leaves them all at a count of one,
+     * so the first arrival that finds the summary full empties the whole table.
+     * It takes the one slot it needs for itself; the rest of the room comes back
+     * over the insertions that follow, and none of them pays for a decrement.
      */
-    static void TreeEvictsEveryEmptiedKeyAtOnce() {
+    static void TreeEvictsEmptiedKeysGradually() {
         SublimeMG<true, true> mg(128, 30, hashmode::Default, 5);
         const uint64_t capacity = mg.Capacity();
-        const auto keys = DistinctKeys(mg, capacity + 4, 6);
+        const uint64_t drain = std::decay_t<decltype(mg)>::drain_batch;
+        const auto keys = DistinctKeys(mg, capacity + 20, 6);
         for (uint64_t i = 0; i < capacity; i++)
             REQUIRE_EQ(mg.Insert(keys[i]), 0);
         REQUIRE_EQ(mg.CountMonitored(), capacity);
         REQUIRE_EQ(mg.GetLazyDecrement(), 0);
         CheckSummary(mg);
 
-        // Every count is one, so one decrement empties all of them.
+        // One decrement takes every count to zero. The arrival evicts the one
+        // entry it needs a slot for and is admitted, and the drain on its way
+        // out takes `drain_batch` more.
         REQUIRE_EQ(mg.Insert(keys[capacity]), 0);
         REQUIRE_EQ(mg.CountDecrements(), 1);
         REQUIRE_EQ(mg.GetLazyDecrement(), 1);
-        REQUIRE_EQ(mg.CountMonitored(), 1);             // All gone, the arrival admitted.
+        REQUIRE_EQ(mg.CountMonitored(), capacity - drain);
         REQUIRE_EQ(mg.Query(keys[capacity]), 1);
+        // Evicted or not, every one of the others now answers zero.
         for (uint64_t i = 0; i < capacity; i++)
             REQUIRE_EQ(mg.Query(keys[i]), 0);
         CheckSummary(mg);
 
-        // And the arrivals behind it walk into the room that left, without
-        // paying for a decrement of their own.
-        REQUIRE_EQ(mg.Insert(keys[capacity + 1]), 0);
-        REQUIRE_EQ(mg.CountDecrements(), 1);
-        REQUIRE_EQ(mg.CountMonitored(), 2);
-        CheckSummary(mg);
+        // The arrivals behind it walk into the room that opened up, and go on
+        // opening more, without any of them paying for a decrement.
+        for (uint64_t i = 1; i <= 10; i++) {
+            REQUIRE_EQ(mg.Insert(keys[capacity + i]), 0);
+            REQUIRE_EQ(mg.CountDecrements(), 1);
+            REQUIRE_EQ(mg.Query(keys[capacity + i]), 1);
+            CheckSummary(mg);
+        }
+        REQUIRE_LT(mg.CountMonitored(), capacity);
     }
 
     /** An arrival that empties nothing is dropped, and pays for its decrement. */
@@ -898,51 +904,44 @@ public:
     }
 
     /**
-     * The lazy decrement is merged out once it passes half of what a stub can
-     * hold, and every count survives the rebuild it rides on.
+     * The lazy decrement is applied to the counters a group at a time, on
+     * demand, and every count survives it.
+     *
+     * `L` itself never falls -- it is the whole decrement the summary has ever
+     * taken, and it is only ever raised. What comes down is what each group of
+     * counters still *owes* of it, brought back to one by whichever insertion
+     * next hashes into that group. Nothing here makes a pass over the array, so
+     * there is no worst insertion to bound; what has to be shown instead is
+     * that no group is left owing so much that the counters carrying it grow
+     * without limit.
      */
-    static void TreeMergesTheLazyDecrement() {
+    static void TreeAppliesTheLazyDecrementByGroup() {
         SublimeMG<true, true> mg(256, 34, hashmode::Default, 9);
         std::mt19937_64 rng(10);
         std::vector<uint64_t> stream;
-        uint64_t merges = 0, previous = 0, widest_stub = 0;
+        uint64_t previous = 0, worst_owed = 0;
         for (int32_t i = 0; i < 400000; i++) {
             const double u = (rng() % 1000000) / 1000000.0;
             const uint64_t key = static_cast<uint64_t>(40000 * u * u * u);
             stream.push_back(key);
             InsertOK(mg, key);
-            // A merge is the only thing that makes the decrement fall.
-            if (mg.GetLazyDecrement() < previous) {
-                merges++;
-                // It used to land exactly on one. A merge takes a batch of
-                // counters per operation now, and every decrement made while
-                // it runs is still owed when it ends, so where it lands is one
-                // plus however many those were.
-                REQUIRE_GE(mg.GetLazyDecrement(), 1);
-                REQUIRE_LE(mg.GetLazyDecrement(),
-                           1 + mg.Capacity() / std::decay_t<decltype(mg)>::merge_batch + 1);
-                CheckSummary(mg);
-                widest_stub = 0;
-            }
+            REQUIRE_GE(mg.GetLazyDecrement(), previous);        // It only ever rises.
             previous = mg.GetLazyDecrement();
-            // It never climbs far past the threshold it is merged at. The
-            // threshold is read against the stub of the moment, and a merge
-            // can leave a narrower one behind, so the bound to hold it to is
-            // the widest stub it has seen since the last merge -- plus the
-            // length of a pass, because the merge now comes off a batch at a
-            // time and every decrement behind it goes on counting while it
-            // does. That is what bounds the *tail*, which was the point: the
-            // decrement is allowed to run a little higher in exchange for no
-            // single insertion ever rebuilding the array.
-            widest_stub = std::max(widest_stub,
-                                   static_cast<uint64_t>(mg.Counters().GetStubLength()));
-            const uint64_t pass_length =
-                    mg.Capacity() / std::decay_t<decltype(mg)>::merge_batch + 1;
-            REQUIRE_LE(mg.GetLazyDecrement(),
-                       ((uint64_t{1} << widest_stub) - 1) / 2 + 1 + pass_length);
+            worst_owed = std::max(worst_owed, mg.Counters().MaxOwed());
+            if (i % 5000 == 0)
+                CheckSummary(mg);
         }
-        REQUIRE_GT(merges, 0);
         CheckSummary(mg);
+        REQUIRE_GT(mg.GetLazyDecrement(), 0);
+        REQUIRE_GT(mg.Counters().CountGroupFlushes(), 0);
+        // A group is flushed by an insertion that hashes into it, so how long
+        // one waits is a coupon-collector affair rather than a hard bound. It
+        // is still nothing like the array: the loosest honest statement is that
+        // no group falls behind by more than the threshold plus a few visits
+        // round every group there is.
+        const uint64_t groups =
+                (mg.Capacity() + VALECounters::counters_per_group) / VALECounters::counters_per_group;
+        REQUIRE_LE(worst_owed, mg.Counters().FlushThreshold() + 40 * (groups + 1));
         REQUIRE_GT(CheckMisraGriesGuarantee(mg, stream), 0);
     }
 
@@ -1504,16 +1503,16 @@ TEST_SUITE("SublimeMG") {
         SublimeMGTest::TreeMonteCarlo<Sweep>(1024, 50000, 200000, 33);
     }
 
-    TEST_CASE("min tree evicts every emptied key at once") {
-        SublimeMGTest::TreeEvictsEveryEmptiedKeyAtOnce();
+    TEST_CASE("min tree evicts emptied keys gradually") {
+        SublimeMGTest::TreeEvictsEmptiedKeysGradually();
     }
 
     TEST_CASE("min tree drops an arrival that frees nothing") {
         SublimeMGTest::TreeDropsAnArrivalThatFreesNothing();
     }
 
-    TEST_CASE("min tree merges the lazy decrement") {
-        SublimeMGTest::TreeMergesTheLazyDecrement();
+    TEST_CASE("min tree applies the lazy decrement by group") {
+        SublimeMGTest::TreeAppliesTheLazyDecrementByGroup();
     }
 
     TEST_CASE("min tree expands") {

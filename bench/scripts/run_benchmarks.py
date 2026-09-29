@@ -258,16 +258,17 @@ def mg_accuracy_bench():
     # than the runs.
     #
     # The pairs are `(counters_per_chunk, stub_length)` per budget, ascending,
-    # and they are what the auto-tuning build settled on in the run of
-    # 2026-09-26 -- each configuration gets its own, since the tree's counters
-    # hold minima as well as counts and tune a notch differently.
+    # and they are what the auto-tuning build settled on in the sweep of
+    # 2026-09-28. Each configuration gets its own: the tree's counters carry
+    # whatever of the lazy decrement their group still owes, so they run a
+    # little wider and tune a notch differently.
     vale_params = {
-        ("kosarak", "SublimeMG"):      [(37, 10), (39, 10), (41, 9), (46, 8), (55, 6)],
-        ("kosarak", "SublimeMG_tree"): [(40, 9), (40, 9), (42, 9), (46, 8), (58, 6)],
-        ("caida", "SublimeMG"):        [(40, 9), (48, 7), (46, 8), (56, 6), (57, 6), (68, 5)],
-        ("caida", "SublimeMG_tree"):   [(45, 8), (48, 7), (50, 7), (52, 7), (64, 5), (68, 5)],
-        ("webdocs", "SublimeMG"):      [(31, 12), (31, 12), (34, 11), (39, 9), (45, 8), (55, 6)],
-        ("webdocs", "SublimeMG_tree"): [(31, 12), (34, 11), (39, 9), (44, 8), (48, 7), (55, 6)],
+        ("kosarak", "SublimeMG"):      [(39, 9), (37, 10), (41, 9), (46, 8), (52, 7)],
+        ("kosarak", "SublimeMG_tree"): [(37, 10), (39, 10), (38, 10), (47, 8), (55, 6)],
+        ("caida", "SublimeMG"):        [(40, 9), (49, 7), (46, 8), (56, 6), (68, 5), (68, 5)],
+        ("caida", "SublimeMG_tree"):   [(39, 10), (42, 9), (44, 8), (50, 7), (58, 6), (68, 5)],
+        ("webdocs", "SublimeMG"):      [(31, 12), (33, 11), (39, 9), (45, 8), (44, 8), (55, 6)],
+        ("webdocs", "SublimeMG_tree"): [(28, 13), (32, 11), (35, 10), (40, 9), (46, 8), (56, 6)],
     }
     sublime_flags = {"SublimeMG": f"--seed {SEED}",
                      "SublimeMG_tree": f"--seed {SEED} --min-tree"}
@@ -315,12 +316,12 @@ def mg_tail_latency_bench():
                  ("SpaceSaving", "SpaceSaving", ""),
                  ("Waving", "Waving", "")]
     vale_params = {
-        ("kosarak", "SublimeMG"):      [(37, 10), (39, 10), (41, 9), (46, 8), (55, 6)],
-        ("kosarak", "SublimeMG_tree"): [(40, 9), (40, 9), (42, 9), (46, 8), (58, 6)],
-        ("caida", "SublimeMG"):        [(40, 9), (48, 7), (46, 8), (56, 6), (57, 6), (68, 5)],
-        ("caida", "SublimeMG_tree"):   [(45, 8), (48, 7), (50, 7), (52, 7), (64, 5), (68, 5)],
-        ("webdocs", "SublimeMG"):      [(31, 12), (31, 12), (34, 11), (39, 9), (45, 8), (55, 6)],
-        ("webdocs", "SublimeMG_tree"): [(31, 12), (34, 11), (39, 9), (44, 8), (48, 7), (55, 6)],
+        ("kosarak", "SublimeMG"):      [(39, 9), (37, 10), (41, 9), (46, 8), (52, 7)],
+        ("kosarak", "SublimeMG_tree"): [(37, 10), (39, 10), (38, 10), (47, 8), (55, 6)],
+        ("caida", "SublimeMG"):        [(40, 9), (49, 7), (46, 8), (56, 6), (68, 5), (68, 5)],
+        ("caida", "SublimeMG_tree"):   [(39, 10), (42, 9), (44, 8), (50, 7), (58, 6), (68, 5)],
+        ("webdocs", "SublimeMG"):      [(31, 12), (33, 11), (39, 9), (45, 8), (44, 8), (55, 6)],
+        ("webdocs", "SublimeMG_tree"): [(28, 13), (32, 11), (35, 10), (40, 9), (46, 8), (56, 6)],
     }
     sublime_flags = {"SublimeMG": f"--seed {SEED}",
                      "SublimeMG_tree": f"--seed {SEED} --min-tree"}

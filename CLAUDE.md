@@ -127,7 +127,8 @@ is. Neither sketch knows anything about it beyond the ~20 methods it calls.
 
 The cuckoo table replaced the RSQF because the RSQF's cost is *shifting*: an insert or delete
 slides a whole cluster, which at a 0.95 load factor is hundreds of slots, each dragging its
-counter and the min tree's repair with it. A cuckoo filter relocates one entry per kick and
+counter and the min tree's repair with it (the tree was inside the counter array then). A cuckoo
+filter relocates one entry per kick and
 never shifts.
 Measured on kosarak at 16 KB while both still existed, insert latency: RSQF sweep 794 ms, RSQF +
 tree 5220 ms, **cuckoo 451 ms, cuckoo + tree 1132 ms** — the tree configuration costs 4.6x less on the cuckoo table,
@@ -143,7 +144,10 @@ narrower than in the comparison above and every configuration improved):
 |---|---|---|---|---|
 | `MG` | 112.9 | 14568 | 1702 | 364 ms |
 | `SublimeMG` (sweep) | 91.8 | 17892 | 2918 | 388 ms |
-| `SublimeMG` (min tree) | 100.0 | 19016 | 2432 | 1096 ms |
+| `SublimeMG` (min tree) | 100.0 | 16104 | 2432 | 632 ms |
+
+The min tree row is after the 2026-09-28 rewrite; it was 19016 bytes and 1096 ms before, holding
+the tree inside a doubled counter array.
 
 The sizes run over the budget because the budget search probes a *fresh* sketch and VALE's
 counters grow with the counts; the plots are (actual size, error) curves, so it only means the
@@ -211,131 +215,137 @@ The sweep is `O(w)` in the monitored keys. The tree replaces it with a **lazy de
 and an eviction that costs `O(log w)`: a decrement is `L++`, and a key's count is its counter
 less `L`, so a count reaches zero exactly when the smallest counter catches up with `L`.
 
-- **The tree lives in the counter array**, which doubles: `2n` counters for `n` slots, leaves in
-  `[n, 2n)`, internal nodes in `[1, n)`, `parent(i) = i / 2`, index 0 unused. That is the
-  bottom-up layout, whose root aggregates every leaf for *any* `n` — which matters, since a slot
-  capacity of `buckets * depth` is a power of two only when the depth is. `VALECounters`' public API stays
-  slot-indexed and adds `n` internally, so the table needed no change.
-- **A zero counter means "no entry here", not a count of zero**, so the combine is `min` over
-  the *non-zero* children. A monitored key's counter is always at least `L + 1 >= 1`, so zero is
-  unambiguous — and it leaves an empty slot costing a zero stub and nothing else, where a
-  `+inf` sentinel would give every one of them an extension or a tails entry.
-- **An internal node holds its subtree's minimum outright**, at full width, and 0 means the
-  subtree is empty. The root's copy lives in a member rather than the array, since the eviction
-  loop reads it two or three times per insertion; index 1 goes unused.
-- **`Set` splits on the direction the minimum can move**, and the caller passes the old value
-  when it has it — which it always does: a kick has just read the count it is carrying, an
-  admission is writing `L + 1` into a slot it knows to be empty, and an eviction is clearing the
-  counter it asked the tree for. A value *below* what was there (or into an empty slot) can only
-  pull minima down, so each level is one `store_if_smaller` and **no sibling is ever read**. A
-  value above it, or a cleared leaf, can raise a minimum and only the sibling knows what to, so
-  that one costs a sibling read per level. Either climb stops at the first node whose value does
-  not change, since nothing above a node that did not move can have moved.
-- **`store_if_differs` / `store_if_smaller` are one function each, not a `Get` and a `Set`.**
-  Most of the question is answerable without decoding: the stub is the counter's low bits, so a
-  differing stub settles it, an overflow bit on one side only settles it, and when neither side
-  has an extension the comparison *and* the write are the word already loaded. Only equal stubs
-  with an extension on both sides pay for a full read.
-- **This replaced a difference encoding** — internal node = `excess + 1` against its parent, so
-  a root-to-leaf path summed to the leaf's count — which held much smaller numbers (2185 of 2559
-  were exactly 1, so the doubled array cost 23% rather than 100%) but made every write climb:
-  a node sitting at its parent's minimum had to renormalise the pair, and a write that moved a
-  minimum had to derive what the minima *were* on the way up. Outright minima cost 5.4% more
-  space at 16 KB (20040 bytes against 19016) and 15% less insert time (903 ms against 1066).
-- **A leaf count is rounded up to even**, so that no node has one leaf child and one internal
-  one and a climb never has to ask which kind a sibling is. An odd count gets a spare, empty leaf.
-- **`VALECounters::repair_range` now has no caller.** It exists for a table that moves a *range*
-  of counters at once, which the RSQF's shifts did and the cuckoo table's kicks do not — a kick
-  is one `Set` per relocated entry, which the ordinary update handles. It and the two
-  `Shift*AndClear` routines are kept, and still tested, because they are the general
-  array's business rather than any one table's; see the `VALECounters.hpp` row. Their cost is
-  what the cuckoo table bought us: the tree over the RSQF was the slowest of the four
-  configurations by 4.6x, because every shifted slot dragged a repair with it.
-- **The eviction candidate is tracked, not searched for.** `MinSlot()` is a leaf holding the
-  root's value, maintained on every write: a write that attains the root becomes the candidate
-  (which is how an admission becomes the next eviction), and a write that lifts the candidate
-  off the minimum descends from *the node the climb stopped at* — whose other child holds the
-  minimum — rather than from the root. A slot shift only moves the candidate's index.
+This was **redesigned from the ground up** on 2026-09-28, and the old shape is worth knowing only
+so as not to reintroduce it: the tree used to live *inside* the counter array, which doubled it
+(`2n` counters for `n` slots, leaves in `[n, 2n)`), with each internal node holding its subtree's
+minimum outright at full width, plus a per-leaf "not my pair's minimum" bit, plus a global
+`L`-merging pass run `merge_batch` counters at a time that left the array on two scales and made
+"is any count zero" a pair of `MinInRange` queries. All of that is gone. `git log` has it.
+
+- **The counters are the classic `n`.** The tree is a separate packed bit array and **an internal
+  node stores the position of its subtree's minimum, as an offset within that subtree** -- one
+  bit at the bottom level, two the level above, four above that, each rounded up to a power of
+  two so that no field straddles a 64-bit word. That is 2.29 bits a counter, against the whole
+  extra counter (12-14 bits) the old shape cost. Level `l` holds `ceil(n / 2^l)` nodes, node `j`
+  covering leaves `[j * 2^l, (j+1) * 2^l)`; a non-power-of-two `n` needs **no padding**, only a
+  bounds check per level for the last node of a level, which can be short.
+- **The root is not in the array.** It is `min_pos_` and `min_value_`, two members, so `MinSlot`
+  and `MinValue` are one read each and **nothing ever descends from the root** -- where a tree of
+  minima had to walk back down to turn a value into a slot, and spent 54 cycles an insertion
+  doing it.
+- **`L` is applied to the counters a group of 32 at a time, on demand.** `group_applied_[g]` is
+  how much of `L` group `g` has had subtracted; what it still owes is `L - group_applied_[g]`.
+  `MaybeFlushGroup(pos)` subtracts the difference from one group's 32 counters when a caller
+  touches it and it has fallen more than `1 << (stub_size - 2)` behind, which Sublime_MG does on
+  every case-3 insertion, at the group the arriving key hashes to. One `uint32` per 32 counters
+  is **one bit a counter**. Two things make it cheap, and both come from a group being **an
+  aligned block of 32 slots, which is exactly a level-5 subtree**:
+  - **A flush changes no count, so it changes nothing in the tree.** Not "only the nodes above
+    the group": nothing. Every counter of the group comes down by the same amount and its
+    `group_applied_` entry goes up by it, so every *value* is exactly what it was, and the tree
+    compares values. A flush is a re-encoding of one or two cache lines.
+  - **Comparisons inside a group need no rebasing**, since both sides owe the same amount, so
+    the bottom five levels of a climb compare stored forms directly.
+  A flush always holds **one** unit back, so that a count of zero does not store the zero that
+  means *empty*. That is the same rule the old design's "merge out `L - 1`, not `L`" was.
+- **Three scales, and only the middle one is public.** A counter has a *count*, a *value* (the
+  count plus `L`, which is what `Get`, `Set`, `MinValue` and everything else here speak), and a
+  *stored form* (the value less what its group has had applied), which never leaves the class.
+  `L` itself lives in `VALECounters`, so `GetRebased`/`SetRebased` are gone: a cuckoo kick moving
+  a count between slots in different groups is a plain `Set`, and the array keeps the books.
+  `IncrementLazy` moves **no memory at all** -- the values are the counts plus `L`, so they are
+  where they were, and neither the tree nor the minimum cache is affected.
+- **A retune needs no rebuild.** It re-encodes values it does not change, and the tree is a
+  function of the values alone -- it names positions, and positions do not move. Only a **resize**
+  invalidates it, because that renumbers every slot; `SuspendTree`/`RebuildTree` are still there
+  for that, and the rebuild is one bottom-up pass carrying each level's winners forward in a
+  scratch buffer, so it decodes each counter once rather than twice.
+- **The climbs split three ways**, and the currency is still counter decodes:
+  - **An increment** can only push its leaf up, so a node that does not name that leaf has a
+    minimum strictly below what the leaf held and cannot move. Level 1 answers that with a
+    *one-bit field read and no decode at all*, which is where two increments in three stop --
+    the same fast case the old per-leaf bitmap bought, for free. Above it, a node that does name
+    the leaf compares against the other child for *inequality* only, because the node naming this
+    leaf already says it was the smaller: a differing stub proves they differ, which proves the
+    leaf was strictly below, which means one more still fits (`provably_differs`).
+  - **A value that fell** -- every write below what was there, every admission into an empty slot
+    -- pulls minima down and cannot push any up, so no sibling is read. And when the new value is
+    at or below `MinValue()`, which is where nearly every admission lands (`L + 1` is the least a
+    live counter can be), *every* node from the leaf to the root names it and nothing has to be
+    compared: the climb decodes nothing and its writes do not even depend on each other.
+  - **Anything else** -- a clear, a write above what was there -- is `climb`, and two facts keep
+    it cheap. **Only the nodes naming the position have anything to recompute**, so the climb ends
+    at the first that does not, having read one field to find out. And **once the replacement is
+    level with what the position held, no sibling above can beat it**: a node naming that position
+    says every leaf beneath it is at or above what it held, so the folding stops and the rest of
+    the climb is a field read and a field write per level.
+- **That second fact is what makes an eviction affordable**, and evictions are what this
+  configuration does most. Misra-Gries evicts the smallest counter, so every eviction clears a
+  position all of its ancestors name -- a climb to the root, and without the shortcut a decoded
+  counter at every level of it. But a decrement empties *every* entry that was at one, which on a
+  skewed stream is hundreds at a time, so the replacement is almost always level with what was
+  cleared and almost always found in the first level or two. Measured on kosarak at 16 KB it took
+  the tree from **10.7 decoded counters per eviction to 1.3**, and the whole configuration from
+  834 ms to 660. A further split on whether the cleared position is the one the *root* names
+  (`climb_from_minimum`) drops the field reads too -- there is nowhere to stop, so nothing is read
+  to decide where -- for another 2%.
+- **The tail was the eviction batch, and the fix was to stop batching at all.** Entries at a count
+  of zero are dead weight: they answer zero, which is what an unmonitored key answers, so removing
+  one costs no accuracy and frees a slot. What it buys is the **load factor**. Leaving all of them
+  for the arrival that needs a slot is an `O(w)` insertion and the worst one the sketch makes
+  (p9999 147 microseconds); *capping* what that arrival may take is worse still in the average,
+  because it pins the table at its 0.95 load factor where a cuckoo filter's kick paths are longest
+  and some fail outright -- 845 ms unbounded against 1541 ms in batches of 32. `drain_emptied`
+  gets both: **`drain_batch = 2` evictions on the way out of every insertion**, whichever case it
+  fell into, so the table settles at the occupancy its live entries call for and no insertion does
+  more than two evictions. Budgets of 1, 2, 4 and 16 all measure the same (846-860 ms), so the
+  constant is not a knob to tune; the case-3 arrival still takes the one slot it needs itself, so
+  it never waits for the drain.
 - **`CuckooTable::BucketOfSlot` is `slot / depth`**, which is what turns the tree's answer back
-  into something the table can delete: the tree hands back a slot and `DeleteSlot` wants the
-  bucket with it. Over the RSQF this was an `O(cluster)` walk back to the start of the slot's
-  cluster, pairing runs with occupied buckets forward.
-- **Case 3 pays for a decrement only when nothing is already at zero** (`MinValue() > L`), and
-  then evicts **everything** the decrement emptied, not just the one entry the arrival needs.
-  Both halves matter. The first keeps `stored >= L` an invariant, which is what makes the merge
-  below safe — it is unreachable while the batch is unbounded, but `eviction_batch` is a
-  constant and a finite one would need it. The second is a performance cliff, not a nicety:
-  capping the batch leaves the table hovering at its 0.95 load factor, where every insertion and
-  deletion walks a long cluster, and on kosarak at 16 KB the same ~2.2M evictions cost **24.5 s
-  in batches of 256 against 3.3 s unbounded**, for identical answers.
-- **The lazy decrement is merged out incrementally**, `merge_batch` counters per operation, once
-  it passes half of what a stub can hold. It used to come off in one pass, as VALE's rebuild
-  offset, which is free *on average* — the rebuild reads and rewrites every counter anyway — and
-  ruinous in the worst case: that one insertion was the most expensive the sketch ever made, 624
-  µs against the decrement sweep's 250 on kosarak at 16 KB, which left the `O(log w)` eviction
-  this configuration exists for with nothing to show for itself. What comes off is `L - 1`, not
-  `L`: an entry whose count has reached zero sits at exactly `L`, and taking all of `L` off it
-  would store zero, which the tree reads as an empty slot.
-- **A pass in flight means two scales at once**, and this is the part to be careful about.
-  Counters below `VALECounters::OffsetFrontier()` have had the amount taken off and owe `L - M`;
-  the rest owe `L`. Three consequences:
-  - `GetRebased`/`SetRebased` read and write on the *whole-`L`* scale, so a caller moving a count
-    between slots — every step of a cuckoo kick path — needs to know nothing about any of it.
-    `CuckooTable::swap_payload` uses them, and that is the only change the table needed.
-  - **The tree's root can no longer answer "is any count zero"**: a merged counter of 5 reads
-    below an unmerged counter of 0. `SublimeMG::smallest_count` asks the two halves separately,
-    which is a `MinInRange` each — a range minimum being a plain bottom-up loop only because the
-    nodes hold minima outright, which the difference encoding could not have done at all.
-  - A resize renumbers every slot, so `Expand`/`Contract` finish the pass first
-    (`finish_lazy_merge`).
-- **What is left in the tail is the eviction batch**, not the merge. Swept on kosarak at 16 KB
-  (tree, `c/s 40/9`), `eviction_batch` against p99 / p999 / p9999 / average insert: 32 gives
-  4,351 / 7,679 / **12,287** ns and 2272 ms; 128 gives 2,687 / 19,455 / 24,575 and 1761 ms; 512
-  gives 1,535 / 6,911 / 106,495 and 1332 ms; 2048 and unbounded are identical below the maximum
-  (831 / 3,199 / 221,183) at 1215 and 1188 ms, because an eviction batch rarely exceeds 2048.
-  So there is no sweet spot: p9999 only improves at a batch of 128 or less, which is exactly
-  where the average doubles. A batch of 32 buys an **18x better p9999 for 1.9x the average
-  insert time**. It stays unbounded, and this is the table to argue from if that changes.
-- **A higher fanout is the open idea.** With fanout `k` the array is `n * k / (k - 1)` rather
-  than `2n`, so `k = 4` takes the tree's space overhead from 100% to 33% and gives about a third
-  more capacity per byte -- which also shrinks every `O(n)` path, the merge pass and the eviction
-  batch included. The obstacle is `MinInRange`: the incremental merge depends on it, and it is
-  the standard *binary* bottom-up loop, which does not generalise to `k`-ary without a different
-  formulation. The per-leaf "not my group's minimum" bits would also need a `k`-way scan per
-  write, against one sibling read today.
-- **`L` is allowed to run higher than the trigger** while a pass is in flight, since every
-  decrement behind it still counts: it peaks at about `threshold + Capacity() / merge_batch` and
-  lands at `1 +` however many decrements the pass saw. Wider counters for a while is the price of
-  a bounded tail. The trigger both begins *and* steps a pass, so a pass always takes the same
-  number of operations — without that the peak is one higher than the arithmetic says, which is
-  exactly what the suite caught.
+  into something the table can delete. `DeleteSlot` has an overload taking the count, because a
+  caller that got the slot *from* the tree has `MinValue()` in hand and hands it over rather than
+  making the array decode it again.
+- **An entry travels the kick path with its count.** `InsertAt` takes an `initial_count`, so an
+  admission that has to kick does not write a zero first and the real count second: two climbs,
+  the first of them the expensive kind, because the zero in between is an empty slot. And each
+  kick step is a **fused store-and-move** -- one `Set(slot, arriving, displaced)`, one climb, with
+  the displaced count handed back in the same call.
+- **`L` stays small on these workloads, which is worth knowing before optimizing the flush.** It
+  only rises when nothing is already at zero, and the drain keeps zeros cleared, so a decrement is
+  rare: on kosarak at 16 KB, `L` reaches **1697** over 8M insertions and the whole run makes 644
+  group flushes. The flush machinery is not on the hot path there. What *is*: 12.1M counter
+  decodes over the run, against the sweep's 1.34M.
 - **Measure it interleaved.** This machine's clock drifts about 10% between sessions: the same
   binary measured 834 ms one hour and 915 ms the next. Build both variants, alternate them in one
   script, and take medians -- comparing against a number from an earlier run has sent me chasing
   a regression that was not there, and would equally have hidden a real one.
-- **Where its time goes**, profiled on kosarak at 16 KB (cycles per insertion, the climb nested
-  inside `Set`/`Increment`): `FindMatch` 62 against the sweep's 64, the table's own insert 65
-  against 31, `Set` **105 against 16**, `Increment` **68 against 12**, and a `MinSlot` descent of
-  54 that the sweep has no equivalent of — against the 21 the sweep spends in its pass. Per
-  operation that is `Set` 135 cycles against 25, `Increment` ~92 against 16, and ~204 cycles for
-  one root-to-leaf descent per eviction. **The currency is counter decodes**: 5.8 per insertion
-  against the sweep's 0.17, because a VALE decode is a stub read, an overflow-bitmap test and,
-  17% of the time here (60% at 256 KB, where the counts are larger), a rank-and-select into the
-  extension pool. It is not cache: at this budget the whole array is 20 KB. Half of what is left
-  is the descent (3.0 decodes an insertion, 11.4 levels at ~18 cycles each), and the rest is
-  sibling reads, one per `Set` and one per slow increment.
-- **Two things the profile bought**, and one it refuted. `Increment` used to decode the counter
-  before asking the pair bit, though three increments in four learn from the bit that nothing can
-  move: asking first is worth 8% at 16 KB and 31% at 256 KB, where a run is almost all
-  increments. The slow path then stopped decoding the *sibling* as well, which the lemma above
-  `after_leaf_increment` justifies, for another 2%. What did *not* pay: replacing
-  `pos / counters_per_chunk_` with a precomputed reciprocal -- see the note above `chunk_ptr`,
-  because the reason is worth knowing.
-- **What it costs.** The counters double, so at a fixed budget the summary monitors fewer keys
-  (kosarak at 16 KB: 1716 against 2279) and is correspondingly less accurate (AAE 108.8 against
-  100.0). Insertion is still ~2.5x slower than the sweep there (1132 ms against 451 ms), because
-  the sweep's bulk eviction leaves the table slack that the tree has to work harder for. What
-  the tree buys is the *worst case*: `O(log w)` to find and evict, against `O(w)`.
+- **What it costs.** The tree and its group table are **3.29 bits a counter**, about 7.5% of a
+  slot, so at a fixed budget the summary monitors slightly fewer keys. Whether it actually does is
+  a matter of granularity: the cuckoo table's achievable slot counts go 2048, 2560, 3072, 3584,
+  4096 and then double, so 7.5% either costs a whole step or nothing. Under the *auto-tuning*
+  build it costs a step at every budget (capacity ratio exactly 5/6); under the **baked tunings the
+  figures use it costs nothing at 13 of the 17 points**, the two configurations landing on the same
+  slot count -- and where they do, their AAE and top-k AAE agree to six digits. **At equal capacity
+  the tree and the sweep answer identically**, which is the cleanest statement of what the tree
+  costs in accuracy: nothing. The four points where they differ (webdocs 128/256 KB, caida 1-4 MB)
+  are the ones where it lost a step.
+- **Which statistic sees the sweep's `O(w)` pass** is the thing to get right before claiming
+  anything about tails, and `p9999` mostly does not. The sweep only decrements when nothing is
+  already at zero, and it evicts everything a decrement empties, so passes are *rare*: measured on
+  the committed runs, 1 insertion in 4,725 on kosarak at 16 KB, and between 1 in 29,501 and 1 in
+  12.5M at all sixteen other points. A pass that happens once in 30,000 insertions sits at the
+  99.9966th percentile -- above `p9999`, which therefore reports ordinary insertions, where the
+  tree is 1.5-2.5x *worse* because its ordinary insertion costs more. The one point where `p9999`
+  does see a pass is kosarak at 16 KB, and there the tree is **11.4x better** (2,687 ns against
+  30,719).
+- **What the tree buys shows in `max`, and it is not noise there**, even though max is a poor
+  statistic in general (see the note under "Fig. 19"): the sweep's worst insertion **scales with the
+  summary** and the tree's does not. On webdocs the sweep's max runs 1.42, 0.64, 1.31, 2.32, 4.35,
+  **10.98 ms** across the six budgets while the tree's stays at 275-295 microseconds; on caida it
+  runs 1.27 ... **8.32 ms** against the tree's 133-324. That is 39x at webdocs 4 MB and 43x at
+  caida 4 MB, and it is `O(w)` against `O(log w)` drawn in six points on two datasets rather than
+  one measurement that might have been a scheduler hiccup.
+
 
 ### When it grows: the size function
 
@@ -455,7 +465,7 @@ argument is what keeps two runs of one binary in separate files. **Both of those
 `mg_accuracy_bench` — the same arrangement the Sublime_CMS and Sublime_CS accuracy figures use, so
 the latency panels are not paying for a histogram pass and the `.tex` VALE table reports the
 tuning the run was compiled for. Each configuration gets its own pair, since the tree's counters
-hold minima as well as counts and tune a notch differently. A baked tuning also makes the *size*
+carry whatever of the lazy decrement their group still owes and so run a notch wider. A baked tuning also makes the *size*
 honest: the budget search probes an array that cannot grow into a wider one, so the points land at
 or under the budget instead of overshooting it as the auto-tuned build does (kosarak at 16 KB:
 15048 bytes for 2432 keys, against 17892 for 2918 — the same 0.16 keys per byte, further left on
@@ -566,8 +576,19 @@ column count, Sublime_MG a monitored-key `Capacity()`. The shared `--size-functi
 
 ### State of play
 
-Everything above is implemented and tested: 34 `sublime_mg` cases, 17 `vale_counters`, 10 `mg`,
+Everything above is implemented and tested: 34 `sublime_mg` cases, 13 `vale_counters`, 10 `mg`,
 6 `cuckoo_table`, all green under `ctest`, under an assert-enabled build, and under ASan.
+
+**How the rewritten min tree was checked**, because it is the part where a wrong answer is
+silent. `VALECountersTest::CheckMinTree` re-derives, by scanning, what *every* internal node ought
+to name, not just the root -- which is what catches a climb that stopped a level too early, the
+failure mode every one of the shortcuts above could have introduced. `MinTreeMonteCarlo` runs it
+after every operation of a random mix of writes, increments, decrements, lazy decrements and group
+flushes, at counter counts of 1, 2, 7, 64, 777 and 1000 (mostly not powers of two, which is the
+case the levels' short last nodes have to get right). `GroupFlushes` pins down that a lazy
+decrement moves nothing and a flush moves no *value* while making the stored counters smaller, and
+that one unit is always held back. Each shortcut was added with that harness already in place and
+re-run under ASan before it was measured.
 
 **Two things to know when touching the MG suites**, both consequences of the cuckoo table:
 
@@ -606,7 +627,8 @@ prevents, but the harness should not depend on it: run the mutant under `ulimit 
 The benchmark glue and both experiments are implemented (see "Benchmarking Sublime_MG"): `MG`
 (10 `mg` cases) and `SpaceSaving` (3 `space_saving` cases) are green under `ctest` and
 ASan-clean, built the same mutation-injection way. Both figures have been rerun on the real
-datasets under the rewrite (results `2026-09-25.12:19:25`). What it changed, against the same
+datasets under the min tree's rewrite (results `2026-09-28.23:48:49`, figures of the same name),
+and once before that under the cuckoo-table rewrite (results `2026-09-25.12:19:25`). What it changed, against the same
 32-bit-fingerprint runs of the old design: Sublime_MG is slightly *better* everywhere (the void
 bit's removal buys ~3% more capacity per byte) and 20-25% faster to insert, while `MG` improves
 sharply (kosarak at 256 KB: AAE 22.1 -> 4.1) and inserts 2.5-3x faster, because it lost the
@@ -666,8 +688,8 @@ One bench target serves both builds: `bench_SublimeMGNoTuning` compiles
 | `CMS.hpp`, `CS.hpp` | Plain Count-Min / Count Sketch baselines. |
 | `MG.hpp` | Textbook Misra-Gries baseline: a fixed-size `CuckooTable` (no expansion) with a plain 32-bit counter array that a `CuckooTable::SlotMirror` sidecar keeps aligned as kicks relocate entries. Case 3 is the same sweep `SublimeMG` does — decrement every entry, evict what reaches zero, admit into a slot it freed — with no heap and no bucket list. At a fixed size it is `SublimeMG` minus VALE, and the two agree key for key. |
 | `SpaceSaving.hpp` | Space-Saving baseline over the Stream-Summary structure (sorted doubly-linked bucket list + per-bucket monitor lists), pointer-heavy by design. Its **index is a `CuckooTable`**, not a hash map: the same fingerprints the MG family uses, with a monitor pointer beside each slot kept aligned by a `SlotMirror`. No key is stored anywhere — a monitor holds the *slot* that names it, which kicks move — so eviction removes a slot rather than a key. Two consequences it now shares with `MG`: keys whose fingerprint and bucket pair agree share a monitor, and a kick path that gives up drops one. **Its index runs at `index_load_factor = 0.5`**, far below what a cuckoo filter can reach, and that is not a knob to tighten: Space-Saving deletes and re-inserts on *every* miss, so at a full table's load factor the kick paths fail constantly and each failure drops a monitor with a large count on it — 99% of the counted mass, measured. Slack costs it almost nothing next to a 40-byte monitor and a 32-byte bucket, and buys back zero losses. `CountDroppedInsertions` and `CountLostMass` account for every occurrence the monitors do not, which is how the suite keeps "counts sum to N" an equality. |
-| `VALECounters.hpp` | A flat VALE counter array (chunk = cache line: overflows bitmap + stubs + extension pool, spilling to a heap tails array), extracted from `SublimeCMS`'s sketch layout. `ShiftLeft/RightAndClear` move a range by one slot touching only stubs, the bitmap, and any tails array — the pool is ordered by counter position, so a shift by one leaves it bit-identical and only the counters *crossing a chunk boundary* need their extensions moved. **Those two, and the tree's `repair_range` behind them, have no caller left**: they were the quotient filter's, and a cuckoo table moves one counter at a time. They are kept and still tested, as the array's own generality. Optionally carries a **min segment tree** over the counters (`VALECounters(n, with_min_tree)`), which doubles the array and lays a bottom-up tree over it — leaves in `[n, 2n)`, `parent(i) = i / 2` — so `MinValue()` is the smallest non-zero counter and `MinSlot()` a leaf holding it, both maintained through writes and slot shifts; a zero counter means *empty*, not a count of zero. `MaybeRetune` mirrors `SublimeCMS`'s tails-fraction trigger, `Retune(offset)` subtracts a uniform offset as it rebuilds (Misra-Gries' lazy decrement, applied for free), and `RetuneIfNarrower` is the other direction, for counters that have *shrunk* — which spills no chunk and so fires no tails trigger; `ShrinkRetuneInterval()` says how often asking is worth the pass it costs. `DecrementIsZero` decrements and reports emptiness from the overflow bit and the stub alone, without decoding an extension, which is what makes a Misra-Gries decrement sweep affordable. A counter tops out at `2^(32+stub_size)` (tails are `uint32_t`). |
-| `SublimeMG.hpp` | Sublime_MG: a `CuckooTable` with counters enabled, so counter `i` is the count of the fingerprint in slot `i`. `Insert` applies all three Misra-Gries cases and `Query` is the matching entry's counter — one entry per key, since every fingerprint is of the same length. `template <bool expand_on_error_inducing_insertions, bool use_min_tree, typename Table>`: with the tree off (the default), case 3 is one sweep that decrements every entry and evicts what it empties; with it on, a lazy decrement `L` and a min tree over the counters make an eviction `O(log w)`. `SetVALERetuning(false)` pins VALE to the tuning it was built with, for measuring what the tuning is worth. Expansion is driven by the size function `expansion_f` handed to the constructor, as in the other Sublime sketches; `template <bool expand_on_error_inducing_insertions = true>` picks whether that size function is read against the insertions that matched nothing or against every insertion — the two Sublime_MG "versions". See the Sublime_MG section above. |
+| `VALECounters.hpp` | A flat VALE counter array (chunk = cache line: overflows bitmap + stubs + extension pool, spilling to a heap tails array), extracted from `SublimeCMS`'s sketch layout. **The range-moving routines are gone** — `ShiftLeft/RightAndClear`, the `repair_range` behind them, and `MinInRange`: they were the quotient filter's, and a cuckoo table moves one counter at a time, so porting them to the rewritten tree would have been real work for capability nothing uses. `git log` has them. Optionally maintains a **min segment tree** over the counters (`VALECounters(n, with_min_tree)`) as a separate packed bit array of within-subtree offsets, 2.29 bits a counter, with the root in a member — so `MinValue()` is the smallest non-empty counter's value and `MinSlot()` a position holding it, each one read; a *stored* zero means *empty*, not a value of zero. With the tree it also owns Misra-Gries' lazy decrement: `IncrementLazy` lowers every count without touching memory, `Get`/`Set` speak counts-plus-`L`, and `MaybeFlushGroup`/`FlushAllGroups` subtract `L` from the counters a group of 32 at a time. See "Insertion: the min segment tree" above, which is where all of that is explained. `MaybeRetune` mirrors `SublimeCMS`'s tails-fraction trigger and needs no tree rebuild, and `RetuneIfNarrower` is the other direction, for counters that have *shrunk* — which spills no chunk and so fires no tails trigger; `ShrinkRetuneInterval()` says how often asking is worth the pass it costs. `DecrementIsZero` decrements and reports emptiness from the overflow bit and the stub alone, without decoding an extension, which is what makes a Misra-Gries decrement sweep affordable. A counter tops out at `2^(32+stub_size)` (tails are `uint32_t`). |
+| `SublimeMG.hpp` | Sublime_MG: a `CuckooTable` with counters enabled, so counter `i` is the count of the fingerprint in slot `i`. `Insert` applies all three Misra-Gries cases and `Query` is the matching entry's counter — one entry per key, since every fingerprint is of the same length. `template <bool expand_on_error_inducing_insertions, bool use_min_tree, typename Table>`: with the tree off (the default), case 3 is one sweep that decrements every entry and evicts what it empties; with it on, a lazy decrement `L` and a min tree over the counters make an eviction `O(log w)`, and `drain_emptied` clears two emptied entries on the way out of every insertion. `SetVALERetuning(false)` pins VALE to the tuning it was built with, for measuring what the tuning is worth. Expansion is driven by the size function `expansion_f` handed to the constructor, as in the other Sublime sketches; `template <bool expand_on_error_inducing_insertions = true>` picks whether that size function is read against the insertions that matched nothing or against every insertion — the two Sublime_MG "versions". See the Sublime_MG section above. |
 | `CuckooTable.hpp` | The monitored-key set of `SublimeMG` and `MG`. A cuckoo filter with partial-key hashing: `bucket_count` (a power of two) x `depth` slots, slot `b * depth + j`, and `i2 = i1 ^ mix(fingerprint)`. Fingerprint 0 marks an empty slot, so a hash whose fingerprint would be zero uses 1. **Each slot carries a flag bit** saying whether its entry sits in its primary bucket or its alternate, which is the one bit partial-key hashing is short of: with it `hash_of` recovers the whole `key_bits` hash, and a resize is a plain re-hash. **Stretching is depth**: an expansion inside a period gives every bucket `base_depth / r` more slots, and reaching `2 * base_depth` doubles the buckets, halves the depth back and sheds a fingerprint bit. An insertion that finds both buckets full **kicks**, carrying the entry it is displacing *in hand* and swapping it with each slot it passes through — which moves one entry and one counter per kick, and makes a kick path that loops back on itself harmless. A kick path that runs out of patience **drops** what it is carrying, or turns the arrival away with `err_no_space`; `CountLostEntries` reports the first and the benches report both. The constructor takes the largest power-of-two bucket count that *fits* in the `nslots` asked
 for and spends what is left on the depth, so a table never overshoots its budget; rounding the
 bucket count up instead would make one up to twice the size, which a caller sizing a summary to

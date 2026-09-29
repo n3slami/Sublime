@@ -179,12 +179,6 @@ public:
 
     /*
      * ------------------------------------------------------------------
-     * Shifting.
-     * ------------------------------------------------------------------
-     */
-
-    /*
-     * ------------------------------------------------------------------
      * The extension pool's own shifts.
      * ------------------------------------------------------------------
      */
@@ -284,7 +278,12 @@ public:
         return res;
     }
 
-    /** The tree's root is that minimum, and its candidate is a leaf holding it. */
+    /**
+     * Everything the tree promises: the root names the smallest value and knows
+     * what it is, and *every* internal node names a position holding its own
+     * subtree's minimum -- which is what catches a climb that stopped a level
+     * too early, where the root alone catches only the ones that reach it.
+     */
     static void CheckMinTree(const VALECounters& t, const std::vector<uint64_t>& ref) {
         const uint64_t smallest = SmallestNonZero(ref);
         REQUIRE_EQ(t.MinValue(), smallest);
@@ -292,183 +291,145 @@ public:
             REQUIRE_EQ(ref[t.MinSlot()], smallest);
         for (uint64_t i = 0; i < ref.size(); i++)
             REQUIRE_EQ(t.Get(i), ref[i]);
-        // Every internal node holds its subtree's minimum outright, so each one
-        // can be checked against its two children directly -- which catches a
-        // climb that stopped a level too early, where `MinValue` alone only
-        // catches the ones that reach the root. The root is in a member.
-        for (uint64_t x = t.leaf_count_ - 1; x >= 1; x--) {
-            const uint64_t left = t.get_raw(2 * x), right = t.get_raw(2 * x + 1);
-            const uint64_t want = left == 0 ? right
-                                            : (right == 0 ? left : std::min(left, right));
-            REQUIRE_EQ(x == 1 ? t.root_min_ : t.get_raw(x), want);
-            if (x == 1)
-                break;
-        }
-        for (uint64_t i = 0; i < t.leaf_count_; i += 2) {
-            const uint64_t left = i < ref.size() ? ref[i] : 0;
-            const uint64_t right = i + 1 < ref.size() ? ref[i + 1] : 0;
-            REQUIRE_EQ(t.not_pair_minimum(t.leaf_count_ + i), right != 0 && right <= left);
-            REQUIRE_EQ(t.not_pair_minimum(t.leaf_count_ + i + 1), left != 0 && left <= right);
+        for (uint32_t l = 1; l <= t.shape_.levels; l++) {
+            for (uint64_t j = 0; j < t.shape_.size[l]; j++) {
+                const uint64_t lo = j << l;
+                const uint64_t hi = std::min<uint64_t>(lo + (uint64_t{1} << l), ref.size());
+                uint64_t want = 0;
+                for (uint64_t i = lo; i < hi; i++)
+                    if (ref[i] != 0 && (want == 0 || ref[i] < want))
+                        want = ref[i];
+                if (want == 0)
+                    continue;               // An empty subtree may name anything.
+                const uint64_t named = l == t.shape_.levels ? t.min_pos_ : t.subtree_min(l, j);
+                REQUIRE_GE(named, lo);
+                REQUIRE_LT(named, hi);
+                REQUIRE_EQ(ref[named], want);
+            }
         }
     }
 
     /**
-     * Every operation, against a brute-force minimum. The leaf count is not a
-     * power of two in most of these, which is the case the bottom-up layout
-     * has to get right.
+     * Every operation, against a brute-force minimum, on the scale the class is
+     * public about: a value is a count plus the lazy decrement. The counter
+     * count is not a power of two in most of these, which is the case the
+     * levels' partial last nodes have to get right.
      */
     static void MinTreeMonteCarlo(uint64_t n, uint64_t steps, uint64_t ceiling, uint32_t seed) {
         VALECounters t(n, /*with_min_tree=*/true);
         REQUIRE(t.HasMinTree());
         REQUIRE_EQ(t.CountCounters(), n);
-        // The leaf count is rounded up to even, so that no node has one leaf
-        // child and one internal one; an odd count gets a spare, empty leaf.
-        REQUIRE_EQ(t.CountStoredCounters(), 2 * (n + (n & 1)));
         std::vector<uint64_t> ref(n, 0);
         std::mt19937_64 rng(seed);
         CheckMinTree(t, ref);
 
         for (uint64_t step = 0; step < steps; step++) {
             const uint64_t i = rng() % n;
-            switch (rng() % 5) {
-                case 0: { const uint64_t v = 1 + rng() % ceiling; t.Set(i, v); ref[i] = v; break; }
-                case 1: t.Set(i, 0); ref[i] = 0; break;
-                case 2: t.Increment(i); ref[i]++; break;
-                case 3: if (ref[i] > 0) { t.Decrement(i); ref[i]--; } break;
-                case 4: {
-                    const uint64_t j = rng() % n;
-                    const uint64_t lo = std::min(i, j), hi = std::max(i, j);
-                    if (rng() % 2) {
-                        t.ShiftRightAndClear(lo, hi);
-                        ShiftRightRef(ref, lo, hi);
-                    }
-                    else {
-                        t.ShiftLeftAndClear(lo, hi);
-                        ShiftLeftRef(ref, lo, hi);
-                    }
+            switch (rng() % 7) {
+                // A live counter is always above the lazy decrement: its count
+                // is what it holds less that, and a count of zero is an entry
+                // waiting to be evicted, not a negative one.
+                case 0: {
+                    const uint64_t v = t.LazyDecrement() + 1 + rng() % ceiling;
+                    t.Set(i, v, ref[i]);
+                    ref[i] = v;
                     break;
                 }
+                case 1: {
+                    const uint64_t v = t.LazyDecrement() + 1 + rng() % ceiling;
+                    t.Set(i, v);                    // Reads the old value itself.
+                    ref[i] = v;
+                    break;
+                }
+                case 2: t.Set(i, 0, ref[i]); ref[i] = 0; break;
+                case 3: if (ref[i] != 0) { t.Increment(i); ref[i]++; } break;
+                case 4:
+                    if (ref[i] > t.LazyDecrement() + 1) {
+                        t.Decrement(i);
+                        ref[i]--;
+                    }
+                    break;
+                case 5:
+                    // A decrement of every count at once, which moves no memory
+                    // and so must move nothing here either.
+                    if (SmallestNonZero(ref) > t.LazyDecrement())
+                        t.IncrementLazy();
+                    break;
+                case 6: t.MaybeFlushGroup(i); break;
             }
             CheckMinTree(t, ref);
         }
     }
 
     /**
-     * The range minimum, against a scan, over every range of a small array and
-     * over random ranges of a larger one -- including the whole-array case,
-     * which the root answers on its own, and ranges that are empty or all zero.
+     * The lazy decrement, and the groups it is applied to.
+     *
+     * Raising it must move nothing at all -- the values are the counts plus it,
+     * so they are where they were -- and a flush must leave every value exactly
+     * as it was too, while making the *stored* counters smaller. One unit is
+     * always held back, so that a count of zero never stores the zero that
+     * means an empty position.
      */
-    static void MinInRangeMonteCarlo(uint64_t n, uint64_t steps, uint64_t ceiling, uint32_t seed) {
-        VALECounters t(n, /*with_min_tree=*/true);
-        std::vector<uint64_t> ref(n, 0);
-        std::mt19937_64 rng(seed);
-        const auto check = [&](uint64_t lo, uint64_t hi) {
-            uint64_t want = 0;
-            for (uint64_t i = lo; i < hi; i++)
-                if (ref[i] != 0 && (want == 0 || ref[i] < want))
-                    want = ref[i];
-            const auto [value, pos] = t.MinInRange(lo, hi);
-            REQUIRE_EQ(value, want);
-            if (want != 0) {
-                REQUIRE_GE(pos, lo);
-                REQUIRE_LT(pos, hi);
-                REQUIRE_EQ(ref[pos], want);
-            }
-        };
-        for (uint64_t step = 0; step < steps; step++) {
-            const uint64_t i = rng() % n;
-            const uint64_t v = (rng() % 4 == 0) ? 0 : 1 + rng() % ceiling;
-            t.Set(i, v);
-            ref[i] = v;
-            if (n <= 16) {
-                for (uint64_t lo = 0; lo <= n; lo++)
-                    for (uint64_t hi = lo; hi <= n; hi++)
-                        check(lo, hi);
-            }
-            else {
-                check(0, n);
-                for (int r = 0; r < 4; r++) {
-                    const uint64_t a = rng() % (n + 1), b = rng() % (n + 1);
-                    check(std::min(a, b), std::max(a, b));
-                }
-            }
-        }
-    }
-
-    /**
-     * Taking an offset off every counter a batch at a time: the two scales the
-     * array holds while it is in flight, the rebasing that hides them from a
-     * caller moving values about, and the one scale it is left on.
-     */
-    static void OffsetPassMonteCarlo(uint64_t n, uint64_t batch, uint32_t seed) {
-        VALECounters t(n, /*with_min_tree=*/true);
-        std::vector<uint64_t> ref(n, 0);
-        std::mt19937_64 rng(seed);
-        for (uint64_t i = 0; i < n; i++)
+    static void GroupFlushes() {
+        VALECounters t(400, true);
+        std::vector<uint64_t> ref(400, 0);
+        std::mt19937_64 rng(4242);
+        for (uint64_t i = 0; i < 400; i++)
             if (rng() % 3 != 0) {
-                ref[i] = 1000 + rng() % 5000;
-                t.Set(i, ref[i]);
+                ref[i] = 5000 + rng() % 5000;
+                t.Set(i, ref[i], 0);
             }
-
-        const uint64_t offset = 999;
-        t.BeginOffset(offset);
-        REQUIRE(t.OffsetInProgress());
-        uint64_t finished = 0;
-        while (finished == 0) {
-            // Mid-pass: what is below the frontier has had the offset taken
-            // off, what is above has not, and `GetRebased` is blind to both.
-            const uint64_t frontier = t.OffsetFrontier();
-            for (uint64_t i = 0; i < n; i++) {
-                const uint64_t applied = (ref[i] != 0 && i < frontier) ? offset : 0;
-                REQUIRE_EQ(t.Get(i), ref[i] == 0 ? 0 : ref[i] - applied);
-                REQUIRE_EQ(t.GetRebased(i), ref[i]);
-                REQUIRE_EQ(t.AppliedOffsetAt(i), i < frontier ? offset : 0);
-            }
-            // A value written on the rebased scale reads back on it, wherever
-            // the frontier happens to be -- this is a cuckoo kick's business.
-            const uint64_t moved = rng() % n;
-            const uint64_t value = 1000 + rng() % 5000;
-            t.SetRebased(moved, value, ref[moved]);
-            ref[moved] = value;
-            REQUIRE_EQ(t.GetRebased(moved), value);
-            finished = t.StepOffset(batch);
-        }
-        REQUIRE_EQ(finished, offset);
-        REQUIRE_FALSE(t.OffsetInProgress());
-        for (uint64_t i = 0; i < n; i++)
-            REQUIRE_EQ(t.Get(i), ref[i] == 0 ? 0 : ref[i] - offset);
-    }
-
-    /** A shift moves the candidate's index, and nothing else about it. */
-    static void MinTreeCandidateFollowsItsLeaf() {
-        VALECounters t(500, true);
-        std::vector<uint64_t> ref(500, 0);
-        for (uint64_t i = 100; i < 200; i++) {
-            ref[i] = 500 - (i - 100);           // Descending, so the minimum is at 199.
-            t.Set(i, ref[i]);
-        }
-        REQUIRE_EQ(t.MinSlot(), 199);
-        REQUIRE_EQ(t.MinValue(), 401);
-
-        t.ShiftRightAndClear(150, 300);         // The candidate is inside the range.
-        ShiftRightRef(ref, 150, 300);
-        REQUIRE_EQ(t.MinSlot(), 200);           // It moved with its leaf.
-        REQUIRE_EQ(t.MinValue(), 401);
         CheckMinTree(t, ref);
 
-        t.ShiftLeftAndClear(120, 250);
-        ShiftLeftRef(ref, 120, 250);
-        REQUIRE_EQ(t.MinSlot(), 199);
+        // Nothing owes anything yet, so no group has anything to flush.
+        REQUIRE_EQ(t.OwedAt(0), 0);
+        REQUIRE_FALSE(t.MaybeFlushGroup(0));
+
+        const uint64_t threshold = t.FlushThreshold();
+        for (uint64_t d = 0; d < threshold + 1; d++)
+            t.IncrementLazy();
+        CheckMinTree(t, ref);                   // A lazy decrement moves nothing.
+        REQUIRE_EQ(t.OwedAt(0), threshold + 1);
+        REQUIRE_EQ(t.OwedAt(399), threshold + 1);
+
+        // One group comes up to date, and only that group.
+        const uint64_t before = t.get_raw(0);
+        REQUIRE(t.MaybeFlushGroup(0));
+        REQUIRE_EQ(t.OwedAt(0), 1);             // One unit is always held back.
+        REQUIRE_EQ(t.OwedAt(VALECounters::counters_per_group), threshold + 1);
+        REQUIRE_EQ(t.get_raw(0), before - threshold);
+        CheckMinTree(t, ref);                   // And no value moved.
+
+        // At the threshold nothing happens; one past it flushes. The group
+        // owes one already, so it takes one fewer decrement to get there.
+        REQUIRE_FALSE(t.MaybeFlushGroup(0));
+        for (uint64_t d = 0; d + 1 < threshold; d++)
+            t.IncrementLazy();
+        REQUIRE_EQ(t.OwedAt(0), threshold);
+        REQUIRE_FALSE(t.MaybeFlushGroup(0));
+        t.IncrementLazy();
+        REQUIRE(t.MaybeFlushGroup(0));
         CheckMinTree(t, ref);
 
-        // Discarding the candidate itself is the one case that has to search.
-        const uint64_t at = t.MinSlot();
-        t.ShiftLeftAndClear(at, at + 10);
-        ShiftLeftRef(ref, at, at + 10);
+        t.FlushAllGroups();
+        for (uint64_t i = 0; i < 400; i++)
+            REQUIRE_EQ(t.OwedAt(i), 1);
+        CheckMinTree(t, ref);
+
+        // A counter whose count has reached zero stores the one unit held back,
+        // which is not the zero that means "nothing here".
+        const uint64_t zeroed = 7;
+        t.Set(zeroed, t.LazyDecrement(), ref[zeroed]);
+        ref[zeroed] = t.LazyDecrement();
+        REQUIRE_FALSE(t.raw_is_zero(zeroed));
+        REQUIRE_EQ(t.MinValue(), t.LazyDecrement());
+        REQUIRE_EQ(t.MinSlot(), zeroed);
+        t.FlushAllGroups();
+        REQUIRE_FALSE(t.raw_is_zero(zeroed));
         CheckMinTree(t, ref);
     }
 
-    /** The tree survives the rebuilds that re-tune the array. */
+    /** The tree survives the rebuilds that re-tune the array, and a copy. */
     static void MinTreeSurvivesRetuning() {
         VALECounters t(2000, true);
         std::vector<uint64_t> ref(2000, 0);
@@ -476,34 +437,31 @@ public:
         for (uint64_t i = 0; i < 2000; i++)
             if (rng() % 3) {
                 ref[i] = 100000 + rng() % 400000;
-                t.Set(i, ref[i]);
+                t.Set(i, ref[i], 0);
             }
         CheckMinTree(t, ref);
 
-        REQUIRE(t.Retune());                    // A plain re-tuning.
+        // A retune re-encodes values it does not change, and the tree names
+        // positions, so it needs no rebuilding at all.
+        REQUIRE(t.Retune());
         CheckMinTree(t, ref);
 
-        const uint64_t offset = SmallestNonZero(ref) - 1;
-        REQUIRE(t.Retune(offset));              // And one that subtracts an offset.
-        for (auto& v : ref)
-            if (v != 0)
-                v -= offset;
+        for (uint64_t d = 0; d < 300; d++)
+            t.IncrementLazy();
+        t.FlushAllGroups();
+        REQUIRE(t.Retune(/*shrank=*/true));
         CheckMinTree(t, ref);
 
         const VALECounters copy(t);             // A copy carries the tree over.
         CheckMinTree(copy, ref);
-    }
 
-    static void ShiftRightRef(std::vector<uint64_t>& ref, uint64_t hole, uint64_t last) {
-        for (uint64_t i = last; i > hole; i--)
-            ref[i] = ref[i - 1];
-        ref[hole] = 0;
-    }
+        VALECounters moved(std::move(t));
+        CheckMinTree(moved, ref);
 
-    static void ShiftLeftRef(std::vector<uint64_t>& ref, uint64_t hole, uint64_t last) {
-        for (uint64_t i = hole; i < last; i++)
-            ref[i] = ref[i + 1];
-        ref[last] = 0;
+        // And a bulk rebuild agrees with what the climbs had been maintaining.
+        moved.SuspendTree();
+        moved.RebuildTree();
+        CheckMinTree(moved, ref);
     }
 
     /** Fills the array with a mix of stub-sized, extension-sized, and zero values. */
@@ -519,149 +477,6 @@ public:
         }
     }
 
-    static void ShiftsWithinAChunk() {
-        VALECounters t(500);
-        const uint32_t cpc = t.GetCountersPerChunk();
-        std::vector<uint64_t> ref(500, 0);
-        FillMixed(t, ref, 3);
-        CheckAgainst(t, ref);
-
-        // A shift whose whole range sits inside one chunk must leave that
-        // chunk's extension pool bit for bit identical: the pool is ordered by
-        // the position of the counters its entries belong to, and a shift by
-        // one does not disturb that order.
-        const uint64_t chunk = 2;
-        const uint64_t base = chunk * cpc;
-        t.Set(base + 40, 0);                    // The empty slot the shift consumes.
-        ref[base + 40] = 0;
-
-        const auto pool_before = Pool(t, chunk);
-        t.ShiftRightAndClear(base + 10, base + 40);
-        ShiftRightRef(ref, base + 10, base + 40);
-        REQUIRE(Pool(t, chunk) == pool_before);
-        CheckAgainst(t, ref);
-
-        // ... and the same going the other way.
-        const auto pool_before_left = Pool(t, chunk);
-        t.Set(base + 10, 0);
-        ref[base + 10] = 0;
-        const auto pool_after_clear = Pool(t, chunk);
-        t.ShiftLeftAndClear(base + 10, base + 40);
-        ShiftLeftRef(ref, base + 10, base + 40);
-        REQUIRE(Pool(t, chunk) == pool_after_clear);
-        CheckAgainst(t, ref);
-        (void) pool_before_left;
-
-        // Neighbouring chunks were not touched at all.
-        for (uint64_t c = 0; c < t.CountChunks(); c++) {
-            if (c == chunk)
-                continue;
-            for (uint64_t i = c * cpc; i < std::min<uint64_t>((c + 1) * cpc, 500); i++)
-                REQUIRE_EQ(t.Get(i), ref[i]);
-        }
-    }
-
-    static void ShiftsAcrossChunks() {
-        VALECounters t(500);
-        std::vector<uint64_t> ref(500, 0);
-        FillMixed(t, ref, 4);
-
-        // Ranges that span several chunks, so counters cross boundaries and
-        // their extensions have to move pool to pool.
-        struct Range { uint64_t hole, last; bool right; };
-        const std::vector<Range> ranges = {
-            {10, 200, true}, {10, 200, false},
-            {0, 499, true},  {0, 499, false},
-            {67, 69, true},  {67, 69, false},     // Straddling one boundary.
-            {135, 137, true}, {135, 137, false},
-            {5, 5, true},    {300, 300, false},   // Degenerate: just a clear.
-        };
-        for (const Range& r : ranges) {
-            if (r.right) {
-                t.ShiftRightAndClear(r.hole, r.last);
-                ShiftRightRef(ref, r.hole, r.last);
-            }
-            else {
-                t.ShiftLeftAndClear(r.hole, r.last);
-                ShiftLeftRef(ref, r.hole, r.last);
-            }
-            CheckAgainst(t, ref);
-        }
-    }
-
-    /** A chunk holding a tails array shifts along with everything else. */
-    static void ShiftsWithTailsArray() {
-        VALECounters t(300);
-        const uint32_t cpc = t.GetCountersPerChunk();
-        std::vector<uint64_t> ref(300, 0);
-        // Values big enough to drive the first two chunks into tails arrays.
-        for (uint64_t i = 0; i < 2 * cpc; i++) {
-            ref[i] = 5000000ULL + 7 * i;
-            t.Set(i, ref[i]);
-        }
-        REQUIRE(HasTails(t, 0));
-        REQUIRE(HasTails(t, 1));
-        CheckAgainst(t, ref);
-
-        t.Set(cpc / 2, 0);
-        ref[cpc / 2] = 0;
-        t.ShiftRightAndClear(3, cpc / 2);
-        ShiftRightRef(ref, 3, cpc / 2);
-        CheckAgainst(t, ref);
-
-        // A shift that crosses out of a chunk with a tails array and into
-        // another one.
-        t.Set(2 * cpc - 1, 0);
-        ref[2 * cpc - 1] = 0;
-        t.ShiftRightAndClear(5, 2 * cpc - 1);
-        ShiftRightRef(ref, 5, 2 * cpc - 1);
-        CheckAgainst(t, ref);
-
-        t.ShiftLeftAndClear(7, 2 * cpc + 10);
-        ShiftLeftRef(ref, 7, 2 * cpc + 10);
-        CheckAgainst(t, ref);
-    }
-
-    /** Random values, random shifts, checked against a plain vector throughout. */
-    static void ShiftMonteCarlo() {
-        std::mt19937_64 rng(5);
-        for (const uint64_t n : {70ULL, 137ULL, 500ULL, 1024ULL}) {
-            VALECounters t(n);
-            std::vector<uint64_t> ref(n, 0);
-            FillMixed(t, ref, n);
-
-            for (int32_t step = 0; step < 400; step++) {
-                const uint64_t a = rng() % n, b = rng() % n;
-                const uint64_t hole = std::min(a, b), last = std::max(a, b);
-                if (rng() % 2) {
-                    t.ShiftRightAndClear(hole, last);
-                    ShiftRightRef(ref, hole, last);
-                }
-                else {
-                    t.ShiftLeftAndClear(hole, last);
-                    ShiftLeftRef(ref, hole, last);
-                }
-                // Keep feeding in fresh values so the pools stay interesting.
-                for (int32_t k = 0; k < 4; k++) {
-                    const uint64_t i = rng() % n;
-                    ref[i] = (rng() % 3) ? rng() % (1ULL << 22) : 0;
-                    t.Set(i, ref[i]);
-                }
-                const uint64_t i = rng() % n;
-                t.Increment(i);
-                ref[i]++;
-                CheckAgainst(t, ref);
-            }
-        }
-    }
-
-    /*
-     * ------------------------------------------------------------------
-     * Tuning.
-     * ------------------------------------------------------------------
-     */
-
-    /** The default tuning, and the shape it implies. */
     static void DefaultTuning() {
         const auto [cpc, ss] = VALECounters::tune_params(nullptr);
         REQUIRE_EQ(cpc, VALECounters::default_counter_per_cache_line);
@@ -726,9 +541,6 @@ public:
             ref[i]++;
         }
         CheckAgainst(t, ref);
-        t.ShiftRightAndClear(100, 5000);
-        ShiftRightRef(ref, 100, 5000);
-        CheckAgainst(t, ref);
     }
 
     /**
@@ -780,8 +592,6 @@ public:
         // The array works normally afterwards.
         t.Increment(7);
         ref[7]++;
-        t.ShiftRightAndClear(10, 400);
-        ShiftRightRef(ref, 10, 400);
         CheckAgainst(t, ref);
     }
 
@@ -853,14 +663,6 @@ public:
             std::vector<uint64_t> ref(n, 0);
             FillMixed(t, ref, n + 100);
             CheckAgainst(t, ref);
-            if (n < 2)
-                continue;
-            t.ShiftRightAndClear(0, n - 1);
-            ShiftRightRef(ref, 0, n - 1);
-            CheckAgainst(t, ref);
-            t.ShiftLeftAndClear(0, n - 1);
-            ShiftLeftRef(ref, 0, n - 1);
-            CheckAgainst(t, ref);
         }
     }
 };
@@ -881,22 +683,6 @@ TEST_SUITE("VALECounters") {
 
     TEST_CASE("spills into a tails array") {
         VALECountersTest::SpillsIntoTailsArray();
-    }
-
-    TEST_CASE("shifts within a chunk leave the pool alone") {
-        VALECountersTest::ShiftsWithinAChunk();
-    }
-
-    TEST_CASE("shifts across chunks") {
-        VALECountersTest::ShiftsAcrossChunks();
-    }
-
-    TEST_CASE("shifts with a tails array") {
-        VALECountersTest::ShiftsWithTailsArray();
-    }
-
-    TEST_CASE("shift monte carlo") {
-        VALECountersTest::ShiftMonteCarlo();
     }
 
     TEST_CASE("default tuning") {
@@ -933,23 +719,8 @@ TEST_SUITE("VALECounters") {
         VALECountersTest::MinTreeMonteCarlo(1000, 20000, 5000, 6);
     }
 
-    TEST_CASE("min tree range minimum") {
-        VALECountersTest::MinInRangeMonteCarlo(/*n=*/2, /*steps=*/200, /*ceiling=*/50, 51);
-        VALECountersTest::MinInRangeMonteCarlo(7, 300, 5000, 52);
-        VALECountersTest::MinInRangeMonteCarlo(16, 300, 5000, 53);
-        VALECountersTest::MinInRangeMonteCarlo(777, 3000, 4000000000ULL, 54);
-        VALECountersTest::MinInRangeMonteCarlo(1024, 3000, 5000, 55);
-    }
-
-    TEST_CASE("an offset merged out a batch at a time") {
-        VALECountersTest::OffsetPassMonteCarlo(/*n=*/64, /*batch=*/8, 61);
-        VALECountersTest::OffsetPassMonteCarlo(777, 16, 62);
-        VALECountersTest::OffsetPassMonteCarlo(1000, 1, 63);
-        VALECountersTest::OffsetPassMonteCarlo(1000, 4096, 64);
-    }
-
-    TEST_CASE("min tree candidate follows its leaf") {
-        VALECountersTest::MinTreeCandidateFollowsItsLeaf();
+    TEST_CASE("group flushes of the lazy decrement") {
+        VALECountersTest::GroupFlushes();
     }
 
     TEST_CASE("min tree survives retuning") {

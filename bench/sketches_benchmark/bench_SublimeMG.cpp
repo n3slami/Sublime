@@ -109,6 +109,8 @@ inline std::unordered_map<std::string, uint32_t> get_extra_parameters(SublimeMG<
     // A cuckoo filter drops an entry when a kick path gives up on it, which is
     // silent accuracy loss -- so it is reported rather than left to be guessed.
     res["lost_entries"] = sketch->GetTable().CountLostEntries();
+    res["decrements"] = sketch->CountDecrements();
+    res["lazy_decrement"] = sketch->GetLazyDecrement();
     return res;
 }
 

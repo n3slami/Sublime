@@ -304,9 +304,9 @@ public:
      * or `err_no_space` if the kicking ran out of patience, which a cuckoo
      * filter can do with room still left in the table.
      */
-    int64_t InsertAt(uint64_t key, uint8_t flags = 0) {
+    int64_t InsertAt(uint64_t key, uint8_t flags = 0, uint64_t initial_count = 0) {
         const uint64_t hash = hash_key(key, flags);
-        return insert_hash_at(hash);
+        return insert_hash_at(hash, initial_count);
     }
 
     /** As `InsertAt`, without reporting the slot. */
@@ -328,6 +328,16 @@ public:
         return 0;
     }
 
+    /**
+     * @returns The first slot of the bucket `key` hashes to primarily, whether
+     * or not anything of `key`'s is in it. A caller keeping per-region
+     * bookkeeping beside the slots -- Sublime_MG's per-group lazy decrement --
+     * uses it to name the region an arriving key belongs to before it has one.
+     */
+    uint64_t PrimarySlotOf(uint64_t key, uint8_t flags = 0) const {
+        return bucket_from_hash(hash_key(key, flags)) * depth_;
+    }
+
     /** Removes the entry in `slot`; `bucket` is accepted for interface parity. */
     void DeleteSlot(uint64_t bucket, uint64_t slot) {
         (void) bucket;
@@ -336,6 +346,22 @@ public:
         entry_count_--;
         if (counters_ != nullptr)
             counters_->Set(slot, 0);
+        if (sidecar_ != nullptr)
+            sidecar_->Clear(slot);
+    }
+
+    /**
+     * The same, told what the counter holds. A caller that got this slot *from*
+     * its counters -- Sublime_MG asking the min tree what to evict -- has the
+     * value in hand already, and handing it over saves a decode.
+     */
+    void DeleteSlot(uint64_t bucket, uint64_t slot, uint64_t old_count) {
+        (void) bucket;
+        assert(read_slot(slot) != 0);
+        write_slot(slot, 0);
+        entry_count_--;
+        if (counters_ != nullptr)
+            counters_->Set(slot, 0, old_count);
         if (sidecar_ != nullptr)
             sidecar_->Clear(slot);
     }
@@ -731,16 +757,24 @@ private:
         return rng_state_;
     }
 
+    /** Writes a brand-new entry's count into the slot it landed in. */
+    void store_initial_count(uint64_t slot, uint64_t count) {
+        if (counters_ != nullptr && count != 0)
+            counters_->Set(slot, count, 0);      // The slot was empty.
+    }
+
     /** Exchanges what `slot` holds with what the kick path is carrying. */
     void swap_payload(uint64_t slot, uint64_t& carried_count) {
         if (counters_ != nullptr) {
-            // On the *rebased* scale, so that a count carried across the
-            // frontier of a merge pass -- see `VALECounters::BeginOffset` --
-            // has whatever that pass has already taken off applied or undone
-            // as it lands. A kick path knows nothing of any of that; it moves a
-            // count from one slot to another and the array keeps the books.
-            const uint64_t there = counters_->GetRebased(slot);
-            counters_->SetRebased(slot, carried_count, there);
+            // One write, and one climb of the min tree behind it: the counter
+            // takes on the arriving count and hands the displaced one back in
+            // the same call. Clearing the slot and then storing into it would
+            // cost two of each, and the empty leaf in between would make the
+            // second climb the expensive kind. The counter array keeps whatever
+            // books it keeps about the lazy decrement; a kick path knows only
+            // that it is moving a count from one slot to another.
+            const uint64_t there = counters_->Get(slot);
+            counters_->Set(slot, carried_count, there);
             carried_count = there;
         }
         if (sidecar_ != nullptr)
@@ -765,7 +799,7 @@ private:
      * entry in hand has nowhere to go and is lost, which is what a cuckoo
      * filter does; the caller's entry is stored either way.
      */
-    int64_t insert_hash_at(uint64_t hash) {
+    int64_t insert_hash_at(uint64_t hash, uint64_t initial_count = 0) {
         const uint64_t fingerprint = fingerprint_from_hash(hash);
         const uint64_t primary = bucket_from_hash(hash);
         const uint64_t other = alternate(primary, fingerprint);
@@ -777,22 +811,26 @@ private:
         if (at >= 0) {
             write_slot(at, fingerprint_at(fingerprint, false));
             entry_count_++;
+            store_initial_count(at, initial_count);
             return at;
         }
         at = find_in_bucket(other, 0);
         if (at >= 0) {
             write_slot(at, fingerprint_at(fingerprint, true));
             entry_count_++;
+            store_initial_count(at, initial_count);
             return at;
         }
 
         // Both buckets are full, so a tenant of one of them makes way. The
-        // arrival goes in with nothing to its name; its caller sets the count.
+        // arrival travels with its count like any other entry: writing it in
+        // afterwards would mean storing a zero first, which for a counter array
+        // with a min tree over it is an empty slot and a climb of its own.
         if (sidecar_ != nullptr)
             sidecar_->ClearHeld();
         uint64_t bucket = (next_random() & 1) ? primary : other;
         uint64_t carried = fingerprint_at(fingerprint, bucket == other);
-        uint64_t carried_count = 0;
+        uint64_t carried_count = initial_count;
         bool arrival_in_hand = true;
         uint64_t landed = 0;
         entry_count_++;
@@ -843,11 +881,9 @@ private:
         for (auto it = begin(); it != end(); ++it) {
             const uint64_t hash = it.hash();
             const uint64_t count = (counters_ != nullptr ? counters_->Get(it.slot()) : 0);
-            const int64_t at = dest.insert_hash_at(hash);
+            const int64_t at = dest.insert_hash_at(hash, count);
             if (at < 0)
                 return at;
-            if (dest.counters_ != nullptr)
-                dest.counters_->Set(at, count);
             moved++;
         }
         if (dest.counters_ != nullptr)

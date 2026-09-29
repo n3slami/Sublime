@@ -41,86 +41,95 @@
  * from a histogram of the counter values and rebuilds the array.
  *
  * ---------------------------------------------------------------------------
- * Shifting
+ * Three scales, and which one a caller sees
  * ---------------------------------------------------------------------------
- * A quotient filter moves slots around on nearly every insertion and deletion,
- * and the counters have to move with them. Doing that a counter at a time
- * would mean unpacking and repacking an extension per counter. It is not
- * necessary: a shift by one *preserves the relative order* of the counters it
- * moves, so within a chunk the extension pool -- which is ordered by exactly
- * that -- comes out bit-for-bit identical. All that has to move is the stubs
- * and the overflows bitmap, which are contiguous bit ranges and shift in a
- * handful of word operations.
+ * With a min tree over them (`VALECounters(n, true)`, which is Sublime_MG's
+ * tree configuration) the counters carry Misra-Gries' **lazy decrement** as
+ * well as their counts, and they carry it in two pieces. There are three
+ * numbers for one counter, and only the middle one is ever public:
  *
- * Only two things are left to do per chunk boundary the shift crosses: the one
- * counter that leaves the chunk has its extension removed from the pool it is
- * leaving, and re-inserted into the pool it arrives in. So the cost of moving
- * extensions is proportional to the number of chunks the shift spans, not to
- * the number of counters it moves.
+ *   - its **count**, what the caller's key has actually been seen;
+ *   - its **value**, the count plus `L`, the lazy decrement. This is the scale
+ *     `Get`, `Set`, `MinValue` and everything else here speaks. It does not
+ *     move when a decrement is taken, which is the point: one `IncrementLazy`
+ *     lowers every count by one and touches no memory at all;
+ *   - its **stored form**, the value less however much of `L` has already been
+ *     taken off the *group* it sits in. This never leaves the class.
  *
- * A tails array is the exception: it is indexed by position, not by rank, so
- * it has to be shifted along with the stubs. That is a `memmove`.
+ * A group is an aligned block of `counters_per_group` counters -- 32, which is
+ * exactly one level-5 subtree of the min tree, and that is not a coincidence
+ * (see below). `group_applied_[g]` is how much of `L` group `g` has had
+ * subtracted, and what it still owes is `L - group_applied_[g]`. A counter that
+ * owes a lot is stored larger than it needs to be, so the owing is brought back
+ * down by a **flush**: `MaybeFlushGroup` subtracts the difference from the 32
+ * counters of one group, on demand, when a caller touches it and it has fallen
+ * more than `1 << (stub_size - 2)` behind.
+ *
+ * Two things make that cheap, and both come from the group being a subtree:
+ *
+ *  - **A flush changes no count, so it changes nothing in the tree.** Not "only
+ *    the nodes above the group": nothing. It subtracts a uniform amount from
+ *    every stored counter of the group and adds it to `group_applied_[g]`, and
+ *    the *value* of every one of them -- the scale the tree compares on -- comes
+ *    out exactly as it went in. So a flush is a re-encoding of one or two cache
+ *    lines and no more.
+ *  - **Comparisons inside a group need no rebasing.** Two counters of one group
+ *    owe the same amount, so it cancels: the bottom five levels of the climb
+ *    compare stored forms directly. Only levels 6 and up read
+ *    `group_applied_`, out of a table of `n / 8` bytes.
+ *
+ * A flush always holds **one** unit back, leaving the group owing at least one.
+ * A stored zero means *this slot is empty*, and a count that has reached zero
+ * -- an entry waiting to be evicted -- would otherwise store exactly that.
  *
  * ---------------------------------------------------------------------------
- * What the min tree costs, and what makes it cheaper
+ * The min segment tree
  * ---------------------------------------------------------------------------
- * The tree roughly doubles the cost of a write, and a write is what Sublime_MG
- * mostly does: over 8M kosarak insertions at a 16 KB budget it makes 19.9M
- * `Set` calls -- evictions, admissions, and a counter moving with its entry on
- * every step of a cuckoo kick path -- against only 0.6M `Increment`s. Measured
- * on that mix in isolation, the tree makes the array 6-7x slower per operation.
- * That is where to look before optimizing anything here.
+ * Misra-Gries needs the smallest count and a slot holding it, and it needs them
+ * without a pass over the summary. The tree is a separate, packed bit array;
+ * the counters stay the classic `n`.
  *
- * Five things are done about it. Together they take Sublime_MG's insert time
- * on that workload from 1066 ms to 903 ms:
+ * **An internal node stores the position of its subtree's minimum, as an offset
+ * within that subtree** -- one bit at the bottom level, two the level above,
+ * four above that. Rounded up to a power of two so that no field straddles a
+ * 64-bit word, that is about 2.3 bits per counter, against the whole extra
+ * counter (12-14 bits) that holding minima outright in a doubled array cost.
+ * Level `l` holds `ceil(n / 2^l)` nodes, node `j` covering leaves
+ * `[j * 2^l, (j+1) * 2^l)`; the last node of a level may cover a short range,
+ * which costs one bounds check per level on the climb and no padding anywhere.
+ * The root is not in the array at all: it is `min_pos_` and `min_value_`, two
+ * members, so `MinSlot` and `MinValue` are a read each and nothing ever
+ * descends from the root.
  *
- *  - **Internal nodes hold their subtree's minimum outright**, at full width,
- *    rather than its difference against the parent's. The differences were
- *    smaller -- 2185 of 2559 of them held exactly one -- and that bought a
- *    doubled array costing 23% rather than 100%, but it made every write climb:
- *    a node at its parent's minimum had to renormalise the pair, and a write
- *    that moved a minimum anywhere had to derive what the minima *were* on the
- *    way up. With minima outright, a write that does not move the minimum of a
- *    pair stops at the first node whose value does not change, and the common
- *    case -- incrementing a counter that is already above its subtree's minimum
- *    -- does not touch the tree at all.
- *  - **`Set` splits on direction.** A value below what the counter held, and an
- *    admission into an empty slot, can only pull minima *down*: `store_if_smaller`
- *    per level, no sibling read anywhere. A value above it, or a cleared leaf,
- *    can raise a minimum, and only the sibling knows what to. See `minimum_fell`
- *    and `minimum_changed`.
- *  - **A bit per leaf** saying whether it is *not* its pair's minimum, i.e.
- *    whether its sibling is non-empty and no larger. An increment of such a
- *    leaf cannot move any minimum, so it reads two bits and stops -- no
- *    sibling counter, no root, no climb. See `not_pair_minimum`.
- *  - **The eviction candidate is found lazily.** Almost every write lifts the
- *    standing candidate off the minimum and almost none of them is followed by
- *    anyone asking for it, so `MinSlot` pays for the walk rather than the
- *    write: 5.6M walks became a few hundred thousand.
- *  - **The root lives in a member**, not in the array, because the eviction
- *    loop reads it two or three times per insertion and reading it there means
- *    decoding a counter. Index 1 of the array goes unused.
- *  - **A stub is written with one read-modify-write**, not two. Clearing the
- *    field and then writing it is `&=` then `|=` on the same word, the second
- *    waiting on the first; XOR-ing in the difference between what is there and
- *    what is wanted is one. That one is not the tree's at all -- it is every
- *    write the array makes -- and it is worth 6-7% of *both* configurations,
- *    the sweep included. See `set_raw`, `store_if_differs`, `store_if_smaller`.
+ * What it costs to maintain is **one counter decode per level**, and the climbs
+ * are split three ways to keep it there:
  *
- * And one thing that was tried and is *not* here: giving the internal nodes an
- * array of their own, with their own VALE tuning. Their values are tiny -- 2185
- * of 2559 hold exactly one, mean bit length 0.94 -- so the arithmetic is
- * appealing, and they do tune narrower (5.4 bits a node against the leaves'
- * 6.2). It still loses. Two reasons. VALE cannot go below about 5.5 bits a
- * counter whatever it holds, because a chunk is a cache line and the counters
- * per chunk are capped, and the tuner is driven by the *outliers* -- a handful
- * of 20-bit values -- not by the mean. (Those figures are from when the nodes
- * held differences; holding minima outright makes their distribution the
- * leaves' own, which only strengthens the argument for one array.) And the leaves' own array is
- * already tuned for a distribution full of empty and small counters, so the
- * nodes ride along in it cheaply, while a separate array pays VALE's per-chunk
- * overhead a second time. Measured: 3% smaller at 256 KB, 1% larger at 16 KB,
- * and **24% larger at 1 MB**, with insert time worse at every size.
+ *  - **An increment** can only push its leaf *up*, so a node that does not name
+ *    that leaf has a minimum strictly below what the leaf held and cannot move.
+ *    The first level answers that with a one-bit field read and no decode at
+ *    all, which is where three increments in four stop. Above it, a node that
+ *    *does* name the leaf compares it against the other child's minimum -- and
+ *    only for *inequality*, because the node naming this leaf already says it
+ *    was the smaller of the two: a differing stub proves they differ, which
+ *    proves the leaf was strictly below, which means one more still fits. See
+ *    `provably_differs`.
+ *  - **A value that fell**, which is every write below what the counter held
+ *    and every admission into an empty slot, pulls minima down and cannot push
+ *    any up, so no sibling is ever read: each level compares the new value
+ *    against what the node names and stops at the first one that does not move.
+ *  - **Anything else** -- a clear, a write above what was there -- reads the
+ *    other child's minimum per level, since only it knows what replaces a
+ *    minimum that rose.
+ *
+ * Either of the last two stops at the first node whose named leaf *and* value
+ * are both unchanged; the value part matters, because a node can keep naming
+ * the same leaf while that leaf's value moves under it.
+ *
+ * And one thing that is *not* here, because it is no longer needed: a range
+ * minimum. The lazy decrement used to come off in one global pass, which left
+ * the array on two scales at once and made "is any count zero" a pair of range
+ * queries. Per-group application replaced it, and `MinValue` answers that on
+ * its own again.
  *
  * ---------------------------------------------------------------------------
  * The range of a counter
@@ -174,6 +183,22 @@ public:
     static_assert(min_stub_size <= default_stub_size && default_stub_size <= max_stub_size);
     static_assert(default_counter_per_cache_line * (default_stub_size + 1) <= cache_line_size - 48);
 
+    /**
+     * Counters per group, the unit the lazy decrement is applied in. A power of
+     * two, so that a group is exactly one subtree of the min tree -- which is
+     * what makes a flush invisible to the tree and comparisons within a group
+     * free of rebasing. 32 of them carry one 32-bit `group_applied_` entry, so
+     * the whole arrangement costs one bit per counter.
+     */
+    static constexpr uint32_t group_shift = 5;
+    static constexpr uint32_t counters_per_group = 1u << group_shift;
+    /**
+     * How far behind a group is allowed to fall before a caller touching it
+     * pays to bring it up to date, as a shift off the stub: the default is a
+     * quarter of what a stub can hold.
+     */
+    static constexpr uint32_t default_flush_shift = 2;
+
 private:
     /* VALE's extension fragment length. */
     static constexpr uint32_t extension_size = 2;
@@ -189,6 +214,8 @@ private:
     static constexpr auto bit_length_to_extension_count = setup_extension_len_lookup_table();
     // Mask used to derive the `delimiters` bitmap in the rank-and-select workflow.
     static constexpr uint64_t select_mask = 0x5555555555555555;
+    /** More levels than a tree over 2^47 counters could have. */
+    static constexpr uint32_t max_levels = 48;
 
     /**
      * The widest the extension pool can get, in words. Sized off
@@ -198,23 +225,36 @@ private:
      */
     static constexpr uint32_t max_extension_words = extension_size * max_extension_count / 64 + 2;
 
+    /**
+     * The shape of the min tree: how many nodes each level holds, how wide its
+     * offset fields are, and where in `tree_` they start.
+     *
+     * `size[0]` is the counter count. Levels `1 .. levels - 1` live in `tree_`;
+     * level `levels` is the root, which holds one node and lives in `min_pos_`
+     * and `min_value_` instead. An array of one counter has `levels == 1`, a
+     * root covering the one leaf and nothing in `tree_` at all.
+     */
+    struct TreeShape {
+        uint32_t levels = 0;
+        uint64_t size[max_levels] = {};
+        uint64_t start[max_levels] = {};
+        uint8_t width[max_levels] = {};
+    };
+
 public:
     /**
      * Constructs an array of `counter_count` counters, all zero.
      *
-     * @param with_min_tree Whether to lay a min segment tree over them, which
-     * doubles the array: see the note at the top of this file. Without it the
-     * array is exactly what it always was.
+     * @param with_min_tree Whether to maintain a min segment tree over them,
+     * which adds about 2.3 bits a counter of tree and one more of lazy-decrement
+     * bookkeeping: see the note at the top of this file. Without it the array is
+     * exactly what it always was, and `Get`/`Set` are the stored values
+     * themselves.
      */
     explicit VALECounters(uint64_t counter_count, bool with_min_tree = false) {
-        // An even leaf count keeps every node's two children on the same side
-        // of the leaf boundary -- both leaves or both internal -- which is
-        // what lets the climb test a sibling without asking what kind of node
-        // it is. An odd count gets one spare leaf, which stays empty.
-        leaf_count_ = with_min_tree ? counter_count + (counter_count & 1) : 0;
-        addressable_count_ = counter_count;
-        not_pair_min_.assign((leaf_count_ + 63) / 64, 0);
-        allocate(with_min_tree ? 2 * leaf_count_ : counter_count, nullptr);
+        tree_present_ = with_min_tree;
+        allocate(counter_count, nullptr);
+        setup_tree();
     }
 
     /**
@@ -223,13 +263,20 @@ public:
      * copied over came out of an array with that tuning, so starting there
      * both skips an immediate retune and guarantees `MaxValue()` is wide
      * enough to hold every one of them.
+     *
+     * The lazy decrement comes across too, since the values about to be written
+     * are on its scale. Every group starts owing exactly one -- the least that
+     * keeps a count of zero from storing the zero that means *empty* -- so the
+     * counters arrive as small as they can be whatever the source had applied.
      */
     VALECounters(uint64_t counter_count, const VALECounters& like) {
-        leaf_count_ = like.HasMinTree() ? counter_count + (counter_count & 1) : 0;
-        addressable_count_ = counter_count;
-        not_pair_min_.assign((leaf_count_ + 63) / 64, 0);
-        allocate_with(like.HasMinTree() ? 2 * leaf_count_ : counter_count,
-                      like.counters_per_chunk_, like.stub_size_);
+        tree_present_ = like.tree_present_;
+        flush_shift_ = like.flush_shift_;
+        lazy_ = like.lazy_;
+        allocate_with(counter_count, like.counters_per_chunk_, like.stub_size_);
+        setup_tree();
+        const uint32_t applied = lazy_ > 0 ? static_cast<uint32_t>(lazy_ - 1) : 0;
+        std::fill(group_applied_.begin(), group_applied_.end(), applied);
     }
 
     ~VALECounters() {
@@ -238,14 +285,7 @@ public:
     }
 
     VALECounters(const VALECounters& other) {
-        leaf_count_ = other.leaf_count_;
-        addressable_count_ = other.addressable_count_;
-        root_min_ = other.root_min_;
-        min_pos_ = other.min_pos_;
-        min_pos_stale_ = other.min_pos_stale_;
-        pending_offset_ = other.pending_offset_;
-        offset_frontier_ = other.offset_frontier_;
-        not_pair_min_ = other.not_pair_min_;
+        copy_tree_state_from(other);
         allocate_with(other.counter_count_, other.counters_per_chunk_, other.stub_size_);
         copy_values_from(other);
     }
@@ -261,14 +301,7 @@ public:
         // with them, so a copy goes through the counter values instead.
         free_tails();
         delete[] chunks_;
-        leaf_count_ = other.leaf_count_;
-        addressable_count_ = other.addressable_count_;
-        root_min_ = other.root_min_;
-        min_pos_ = other.min_pos_;
-        min_pos_stale_ = other.min_pos_stale_;
-        pending_offset_ = other.pending_offset_;
-        offset_frontier_ = other.offset_frontier_;
-        not_pair_min_ = other.not_pair_min_;
+        copy_tree_state_from(other);
         allocate_with(other.counter_count_, other.counters_per_chunk_, other.stub_size_);
         copy_values_from(other);
         return *this;
@@ -281,15 +314,16 @@ public:
         delete[] chunks_;
 
         counter_count_ = other.counter_count_;
-        leaf_count_ = other.leaf_count_;
-        addressable_count_ = other.addressable_count_;
-        root_min_ = other.root_min_;
-        min_pos_ = other.min_pos_;
-        min_pos_stale_ = other.min_pos_stale_;
-        pending_offset_ = other.pending_offset_;
-        offset_frontier_ = other.offset_frontier_;
-        not_pair_min_ = std::move(other.not_pair_min_);
+        tree_present_ = other.tree_present_;
         tree_suspended_ = other.tree_suspended_;
+        shape_ = other.shape_;
+        tree_ = std::move(other.tree_);
+        group_applied_ = std::move(other.group_applied_);
+        lazy_ = other.lazy_;
+        flush_shift_ = other.flush_shift_;
+        group_flushes_ = other.group_flushes_;
+        min_pos_ = other.min_pos_;
+        min_value_ = other.min_value_;
         chunk_count_ = other.chunk_count_;
         chunks_with_tails_ = other.chunks_with_tails_;
         tail_retune_limit_ = other.tail_retune_limit_;
@@ -308,17 +342,27 @@ public:
         return *this;
     }
 
-    /** @returns The value of the counter at `pos`. */
+    /**
+     * @returns The value of the counter at `pos` -- its count plus the lazy
+     * decrement, which is the one scale this class is public about. Zero means
+     * the position holds nothing.
+     */
     uint64_t Get(uint64_t pos) const {
-        return get_raw(leaf_of(pos));
+        const uint64_t stored = get_raw(pos);
+        if (!tree_present_ || stored == 0)
+            return stored;
+        return stored + group_applied_[pos >> group_shift];
     }
 
     /** Sets the counter at `pos` to `value`, which must be at most `MaxValue()`. */
     void Set(uint64_t pos, uint64_t value) {
-        const uint64_t at = leaf_of(pos);
-        const uint64_t previous = has_live_tree() ? get_raw(at) : 0;
-        set_raw(at, value);
-        after_leaf_write(pos, previous, value);
+        if (!has_live_tree()) {
+            set_raw(pos, to_stored(pos, value));
+            return;
+        }
+        const uint64_t previous = Get(pos);
+        set_raw(pos, to_stored(pos, value));
+        after_write(pos, previous, value);
     }
 
     /**
@@ -326,14 +370,21 @@ public:
      * more than that tells the tree which way the minimum can have moved.
      *
      * Every caller with a tree over the counters knows: a kick has just read
-     * the count it is carrying, an admission is writing into a slot it knows to
-     * be empty, and an eviction is clearing the counter it asked for the
-     * minimum. `old_value` must be what `Get(pos)` would return.
+     * the count it is carrying, an admission is writing `L + 1` into a slot it
+     * knows to be empty, and an eviction is clearing the counter it asked the
+     * tree for. `old_value` must be what `Get(pos)` would return.
+     *
+     * This is also the *only* way a counter that is changing hands should be
+     * written. A cuckoo kick storing a new count in a slot and taking the old
+     * one away is one call, not a clear and a store: two writes would cost two
+     * climbs, and the first of them would put an empty leaf into the tree and
+     * make the second pay for a full sibling-reading climb to get it out again.
      */
     void Set(uint64_t pos, uint64_t value, uint64_t old_value) {
-        assert(!has_live_tree() || get_raw(leaf_of(pos)) == old_value);
-        set_raw(leaf_of(pos), value);
-        after_leaf_write(pos, old_value, value);
+        assert(!has_live_tree() || Get(pos) == old_value);
+        set_raw(pos, to_stored(pos, value));
+        if (has_live_tree())
+            after_write(pos, old_value, value);
     }
 
     /**
@@ -345,24 +396,39 @@ public:
         return (static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) << stub_size_) | stub_mask_;
     }
 
-    /** Adds one to the counter at `pos`, carrying into its extension as needed. */
+    /**
+     * Adds one to the counter at `pos`, carrying into its extension as needed.
+     *
+     * With a tree over the counters the position must not be empty: a count is
+     * a value less `L`, so a counter that holds nothing has no count for this
+     * to raise. `Set` is what puts something there.
+     */
     void Increment(uint64_t pos) {
-        const uint64_t at = leaf_of(pos);
-        const uint64_t chunk = at / counters_per_chunk_;
-        increment_counter(chunk, at - chunk * counters_per_chunk_);
-        if (has_live_tree())
-            after_leaf_increment(pos);
+        increment_raw(pos);
+        if (!has_live_tree())
+            return;
+        assert(!raw_is_zero(pos));
+        // The bottom level, which is where most increments end: if the pair's
+        // minimum is not this leaf then the minimum is strictly below what this
+        // leaf held, and one more cannot have changed that. A one-bit field
+        // read, and nothing decoded -- not this counter, not its sibling.
+        if (shape_.levels > 0 && named_at(1, pos) != pos)
+            return;
+        const uint64_t value = Get(pos);
+        climb<true>(pos, value, value - 1);
     }
 
     /** Takes one off the counter at `pos`, borrowing from its extension as needed. */
     void Decrement(uint64_t pos) {
-        const uint64_t at = leaf_of(pos);
-        const uint64_t chunk = at / counters_per_chunk_;
-        decrement_counter(chunk, at - chunk * counters_per_chunk_);
-        if (has_live_tree()) {
-            const uint64_t value = get_raw(at);
-            after_leaf_write(pos, value + 1, value);
-        }
+        const uint64_t before = has_live_tree() ? Get(pos) : 0;
+        decrement_raw(pos);
+        if (!has_live_tree())
+            return;
+        const uint64_t value = Get(pos);
+        if (value == 0)
+            climb<false>(pos, 0, before);    // It emptied, so a minimum may have risen.
+        else
+            climb_fell(pos, value);
     }
 
     /**
@@ -372,20 +438,23 @@ public:
      * exactly when it has no extension and its stub reads zero, so neither the
      * extension pool nor a tails array has to be touched to find out -- which
      * is what makes a Misra-Gries decrement pass, which asks this of every
-     * counter it touches, worth doing in one sweep.
+     * counter it touches, worth doing in one sweep. That sweep is the
+     * tree-less configuration, and this is its primitive.
      *
      * @returns True if the counter is now zero.
      */
     bool DecrementIsZero(uint64_t pos) {
-        const uint64_t at = leaf_of(pos);
-        const uint64_t chunk = at / counters_per_chunk_;
-        const uint32_t inter_chunk = at - chunk * counters_per_chunk_;
+        const uint64_t before = has_live_tree() ? Get(pos) : 0;
+        const uint64_t chunk = pos / counters_per_chunk_;
+        const uint32_t inter_chunk = pos - chunk * counters_per_chunk_;
         decrement_counter(chunk, inter_chunk);
         const bool empty = counter_is_zero(chunk, inter_chunk);
-        assert(empty == (get_raw(at) == 0));
+        assert(empty == (get_raw(pos) == 0));
         if (has_live_tree()) {
-            const uint64_t value = empty ? 0 : get_raw(at);
-            after_leaf_write(pos, value + 1, value);
+            if (empty)
+                climb<false>(pos, 0, before);
+            else
+                climb_fell(pos, Get(pos));
         }
         return empty;
     }
@@ -397,94 +466,32 @@ public:
      */
     __attribute__((always_inline))
     void Prefetch(uint64_t pos) const {
-        __builtin_prefetch(chunks_ + (leaf_of(pos) / counters_per_chunk_) * cache_line_size_bytes);
+        __builtin_prefetch(chunks_ + (pos / counters_per_chunk_) * cache_line_size_bytes);
     }
 
     /*
-     * Prefetching a leaf's *ancestors* here, so that the climb's misses
-     * overlap, was tried and is not worth it: it cost between 0 and 6% at
-     * every depth from one ancestor to four, monotonically worse with each
-     * extra one. There is nothing to hide. The internal nodes live in
-     * `[1, n)`, which is 2 KB of counters for a 2160-slot table and 18 KB for
-     * a 20000-slot one, so the climb stays inside L1 -- while the leaves it
-     * starts from span the whole array. The leaf prefetch above, which
-     * `FindMatch` issues before it touches the table at all, is the one that
-     * pays.
+     * Prefetching a leaf's *ancestors* was tried under the previous tree, which
+     * kept them in the counter array, and was not worth it: it cost between 0
+     * and 6% at every depth from one ancestor to four. There is nothing to
+     * hide -- the nodes are a few kilobytes and stay in L1, while the leaves
+     * they start from span the whole array. The tree is now a packed bit array
+     * an eighth of that size, so there is even less. The leaf prefetch above,
+     * which `FindMatch` issues before it touches the table at all, is the one
+     * that pays.
      */
-
-    /**
-     * Opens a hole at `hole` by moving the counters in `[hole, last)` up one
-     * position each, into `(hole, last]`. Whatever was at `last` is discarded,
-     * and the counter at `hole` is left zero. Mirrors a quotient filter
-     * shifting a run along to make room, where `last` is the empty slot the
-     * shift consumes.
-     */
-    /*
-     * Note: `ShiftRightAndClear`, `ShiftLeftAndClear` and the `repair_range`
-     * behind them have **no caller in the tree**. They were the rank-and-select
-     * quotient filter's, which slid a whole cluster along to open or close a
-     * hole; the cuckoo filter that replaced it moves one counter at a time,
-     * which the ordinary `Set` path handles. They are kept, and still tested,
-     * as the array's own generality rather than any one table's.
-     */
-
-    void ShiftRightAndClear(uint64_t hole, uint64_t last) {
-        assert(hole <= last && last < CountCounters());
-        // The bulk shift writes over the far end of the range without reading
-        // it, so anything there -- in particular an extension still sitting in
-        // the pool -- has to be retired properly first.
-        const bool candidate_discarded = has_live_tree() && min_pos_ == last;
-        set_raw(leaf_of(last), 0);
-        if (hole != last)
-            move_range_up(leaf_of(hole), leaf_of(last) - 1);
-        if (has_live_tree()) {
-            repair_range(leaf_of(hole), leaf_of(last));
-            // The candidate moved with its leaf; it did not change identity,
-            // so there is nothing to search for.
-            if (!min_pos_stale_ && min_pos_ >= hole && min_pos_ < last)
-                min_pos_++;
-            else if (candidate_discarded)
-                min_pos_stale_ = true;
-        }
-    }
-
-    /**
-     * Fills the hole at `hole` by moving the counters in `(hole, last]` down
-     * one position each, into `[hole, last)`. Whatever was at `hole` is
-     * discarded, and the counter at `last` is left zero. Mirrors a quotient
-     * filter closing the gap a removal left behind.
-     */
-    void ShiftLeftAndClear(uint64_t hole, uint64_t last) {
-        assert(hole <= last && last < CountCounters());
-        const bool candidate_discarded = has_live_tree() && min_pos_ == hole;
-        set_raw(leaf_of(hole), 0);
-        if (hole != last)
-            move_range_down(leaf_of(hole) + 1, leaf_of(last));
-        if (has_live_tree()) {
-            repair_range(leaf_of(hole), leaf_of(last));
-            if (!min_pos_stale_ && min_pos_ > hole && min_pos_ <= last)
-                min_pos_--;
-            // Unless the candidate was the counter this shift discarded, in
-            // which case there is no choice but to look for another.
-            else if (candidate_discarded)
-                min_pos_stale_ = true;
-        }
-    }
 
     /** Zeroes every counter, keeping the current tuning. */
     void Reset() {
         free_tails();
         memset(chunks_, 0, static_cast<size_t>(chunk_count_) * cache_line_size_bytes);
-        std::fill(not_pair_min_.begin(), not_pair_min_.end(), 0);
         chunks_with_tails_ = 0;
-        root_min_ = 0;
+        std::fill(tree_.begin(), tree_.end(), 0);
+        std::fill(group_applied_.begin(), group_applied_.end(), 0);
+        lazy_ = 0;
+        group_flushes_ = 0;
         min_pos_ = 0;
-        min_pos_stale_ = false;
-        pending_offset_ = 0;            // Nothing left to take an offset off.
-        offset_frontier_ = 0;
+        min_value_ = 0;
     }
-
-    /* The min segment tree. */
 
     /**
      * @returns Whether VALE's tuning is derived at run time, or was fixed when
@@ -494,196 +501,184 @@ public:
         return tunes_at_runtime;
     }
 
-    /** @returns Whether a min segment tree is laid over the counters. */
-    bool HasMinTree() const {
-        return leaf_count_ != 0;
+    /* ------------------------------------------------------------------ */
+    /* The lazy decrement.                                               */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * @returns `L`: what every count is understated by in the values this class
+     * reports, so that a count is `Get(pos) - L`.
+     */
+    uint64_t LazyDecrement() const {
+        return lazy_;
     }
 
     /**
-     * @returns The smallest non-zero counter, or 0 if every one of them is
-     * zero. The root holds it, and the root is a member, so this is one read.
+     * Takes one off every count at the cost of one increment.
+     *
+     * Nothing moves. A count is a value less `L`, so raising `L` lowers every
+     * count at once -- and the values, which are the scale the tree compares
+     * on and the scale a caller reads, are exactly where they were. The tree
+     * and the minimum cache therefore need no attention either.
+     */
+    void IncrementLazy() {
+        lazy_++;
+    }
+
+    /** @returns How much of `L` the group holding `pos` has yet to have applied. */
+    uint64_t OwedAt(uint64_t pos) const {
+        assert(tree_present_);
+        return lazy_ - group_applied_[pos >> group_shift];
+    }
+
+    /** The largest amount any group owes. Instrumentation. */
+    uint64_t MaxOwed() const {
+        uint64_t worst = 0;
+        for (uint32_t applied : group_applied_)
+            worst = std::max(worst, lazy_ - applied);
+        return worst;
+    }
+
+    uint64_t CountGroupFlushes() const {
+        return group_flushes_;
+    }
+
+    /** How far behind a group may fall before a caller touching it flushes it. */
+    uint64_t FlushThreshold() const {
+        return uint64_t{1} << (stub_size_ > flush_shift_ ? stub_size_ - flush_shift_ : 1);
+    }
+    void SetFlushShift(uint32_t shift) {
+        flush_shift_ = shift;
+    }
+
+    /**
+     * Applies the outstanding lazy decrement to the group holding `pos`, if
+     * that group has fallen more than `FlushThreshold()` behind.
+     *
+     * This is how `L` comes off the counters: not in one global pass, which was
+     * the single most expensive operation the sketch made, but on demand, one
+     * group at a time, paid for by a caller who is touching that group anyway.
+     * The counters of a group live in one or two chunks, and the whole thing is
+     * invisible to the tree -- see the note at the top of this file.
+     *
+     * @returns True if it flushed.
+     */
+    bool MaybeFlushGroup(uint64_t pos) {
+        if (!tree_present_ || counter_count_ == 0)
+            return false;
+        const uint64_t group = std::min<uint64_t>(pos, counter_count_ - 1) >> group_shift;
+        if (lazy_ - group_applied_[group] <= FlushThreshold())
+            return false;
+        flush_group(group);
+        return true;
+    }
+
+    /** Brings every group up to date, for a caller about to reshape the array. */
+    void FlushAllGroups() {
+        for (uint64_t group = 0; group < group_applied_.size(); group++)
+            flush_group(group);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* The min segment tree.                                             */
+    /* ------------------------------------------------------------------ */
+
+    /** @returns Whether a min segment tree is maintained over the counters. */
+    bool HasMinTree() const {
+        return tree_present_;
+    }
+
+    /**
+     * @returns The smallest non-empty counter's value, or 0 if every position
+     * is empty. The root of the tree is a member, so this is one read.
      */
     uint64_t MinValue() const {
-        assert(HasMinTree());
-        return root_min_;
+        assert(tree_present_);
+        return min_value_;
     }
 
     /**
-     * @returns A counter holding `MinValue()`. Meaningless if that is zero.
+     * @returns A position whose counter holds `MinValue()`. Meaningless if that
+     * is zero.
      *
-     * Finding it is a walk from the root, and it is deferred to here rather
-     * than done when a write lifts the standing candidate off the minimum. Most
-     * writes do that -- an eviction, an admission, every step of a cuckoo kick
-     * path -- and almost none of them are followed by anyone asking, so paying
-     * on the write cost a walk per write and this costs one per *question*. On
-     * kosarak at 256 KB that is 5.6M walks against a few hundred thousand.
+     * Maintained by every climb rather than searched for. The tree stores
+     * *positions*, so the climb that keeps the root right has the winner's
+     * index in hand already and there is nothing left to descend for -- where
+     * a tree of minima had to walk back down from the root to turn a value into
+     * a slot.
      */
     uint64_t MinSlot() const {
-        assert(HasMinTree());
-        if (min_pos_stale_) {
-            min_pos_ = descend_to_minimum();
-            min_pos_stale_ = false;
-        }
+        assert(tree_present_);
         return min_pos_;
     }
 
     /**
-     * @returns The smallest non-zero counter in `[lo, hi)` and a position
-     * holding it, or `{0, 0}` if every counter in the range is zero.
-     *
-     * The bottom-up loop of a segment tree: climb from both ends, folding in
-     * whichever node falls outside the shrinking range. It works for a leaf
-     * count that is not a power of two because `min` is commutative, and it is
-     * cheap only because the nodes hold minima *outright* -- the difference
-     * encoding this replaced could not answer a range query at all without
-     * walking down from the root for each end.
-     *
-     * The whole-array case is the one the root already answers, so it does not
-     * go near the loop -- which matters for more than speed: index 1 of the
-     * array is unused, the root living in a member of its own.
-     */
-    std::pair<uint64_t, uint64_t> MinInRange(uint64_t lo, uint64_t hi) const {
-        assert(HasMinTree() && lo <= hi && hi <= addressable_count_);
-        if (lo == 0 && hi >= addressable_count_)
-            return {root_min_, MinSlot()};
-        uint64_t best = 0, best_node = 0;
-        const auto fold = [&](uint64_t node) {
-            const uint64_t value = get_raw(node);
-            if (value != 0 && (best == 0 || value < best)) {
-                best = value;
-                best_node = node;
-            }
-        };
-        for (uint64_t l = lo + leaf_count_, r = hi + leaf_count_; l < r; l >>= 1, r >>= 1) {
-            if (l & 1)
-                fold(l++);
-            if (r & 1)
-                fold(--r);
-        }
-        return {best, best == 0 ? 0 : descend_from(best_node, best)};
-    }
-
-    /* Merging a uniform offset out, a few counters at a time. */
-
-    /**
-     * Starts taking `amount` off every non-zero counter, in batches.
-     *
-     * `Retune(offset)` does the same thing in one pass, which is fine when the
-     * caller can afford an `O(n)` stall and wants the tuning re-derived anyway.
-     * This is for the caller who cannot: Misra-Gries' lazy decrement has to come
-     * off periodically, and doing it at once was the single worst insertion in
-     * the whole sketch -- 624 microseconds against a 250-microsecond decrement
-     * sweep, which made the `O(log w)` eviction the tree exists for pointless.
-     *
-     * While the pass is in flight the array holds **two scales at once**:
-     * positions below `OffsetFrontier()` have had `amount` taken off and those
-     * at or above it have not. `AppliedOffsetAt` says which, `GetRebased` and
-     * `SetRebased` hide it from a caller that moves values between positions,
-     * and a caller comparing counters against something has to ask the two
-     * halves separately -- see `MinInRange`.
-     */
-    void BeginOffset(uint64_t amount) {
-        assert(!OffsetInProgress() && amount > 0);
-        pending_offset_ = amount;
-        offset_frontier_ = 0;
-    }
-
-    bool OffsetInProgress() const {
-        return pending_offset_ != 0;
-    }
-    /** Positions below this have had `OffsetAmount()` taken off them. */
-    uint64_t OffsetFrontier() const {
-        return offset_frontier_;
-    }
-    uint64_t OffsetAmount() const {
-        return pending_offset_;
-    }
-    /** How much of the pending offset position `pos` has already had taken off. */
-    uint64_t AppliedOffsetAt(uint64_t pos) const {
-        return pos < offset_frontier_ ? pending_offset_ : 0;
-    }
-
-    /**
-     * Takes the offset off the next `batch` counters.
-     *
-     * @returns The amount just finished coming off, once the pass reaches the
-     * end -- at which point the caller owes its own books the same subtraction
-     * and the array is on one scale again -- or 0 while it is still going.
-     */
-    uint64_t StepOffset(uint64_t batch) {
-        if (!OffsetInProgress())
-            return 0;
-        const uint64_t end = std::min(offset_frontier_ + batch, addressable_count_);
-        for (uint64_t pos = offset_frontier_; pos < end; pos++) {
-            const uint64_t value = get_raw(leaf_of(pos));
-            if (value == 0)
-                continue;                       // An empty position owes nothing.
-            assert(value > pending_offset_);
-            // A write *below* what is there: the climb that costs no sibling read.
-            Set(pos, value - pending_offset_, value);
-        }
-        offset_frontier_ = end;
-        if (offset_frontier_ < addressable_count_)
-            return 0;
-        const uint64_t amount = pending_offset_;
-        pending_offset_ = 0;
-        offset_frontier_ = 0;
-        return amount;
-    }
-
-    /** Runs the rest of the pass at once, for a caller about to reshape. */
-    uint64_t FinishOffset() {
-        return OffsetInProgress() ? StepOffset(addressable_count_) : 0;
-    }
-
-    /** @returns `Get(pos)` as it would read had the pass not reached it yet. */
-    uint64_t GetRebased(uint64_t pos) const {
-        const uint64_t value = Get(pos);
-        return value == 0 ? 0 : value + AppliedOffsetAt(pos);
-    }
-
-    /**
-     * `Set(pos, value)` where `value` and `old_value` are on the scale
-     * `GetRebased` reads, so that a caller moving a counter from one position
-     * to another -- a cuckoo kick -- does not have to know that the two may be
-     * on opposite sides of the frontier.
-     */
-    void SetRebased(uint64_t pos, uint64_t value, uint64_t old_value) {
-        const uint64_t applied = AppliedOffsetAt(pos);
-        Set(pos, value == 0 ? 0 : value - applied,
-                 old_value == 0 ? 0 : old_value - applied);
-    }
-
-    /**
      * Stops maintaining the tree, for a caller about to write every counter
-     * at once: one `RebuildTree` afterwards costs a single backward pass,
+     * at once: one `RebuildTree` afterwards costs a single bottom-up pass,
      * where a climb per write would cost `n log n`.
      */
     void SuspendTree() {
         tree_suspended_ = true;
     }
 
-    /** Recomputes every internal node, and resumes maintenance. */
+    /**
+     * Recomputes every node, and resumes maintenance.
+     *
+     * One decode per counter and no more: each level's winners are carried
+     * forward in a scratch buffer, so a node compares two values it already has
+     * rather than reading the two counters they came from.
+     *
+     * Note what does *not* need this. A retune re-encodes values it does not
+     * change, and the tree is a function of the values alone -- it holds
+     * positions, and positions do not move -- so retuning leaves it valid. Only
+     * a resize, which renumbers every slot, invalidates it.
+     */
     void RebuildTree() {
         tree_suspended_ = false;
-        if (!HasMinTree())
+        if (!tree_present_)
             return;
-
-        // Each node's subtree minimum, from the bottom up. A parent's index is
-        // always below its children's, so one descending pass has every child
-        // final before its parent is reached.
-        for (uint64_t x = leaf_count_ - 1; x >= 1; x--) {
-            set_raw(x, min_present(get_raw(2 * x), get_raw(2 * x + 1)));
-            if (x == 1)
-                break;
+        if (counter_count_ == 0) {
+            min_pos_ = 0;
+            min_value_ = 0;
+            return;
         }
-        root_min_ = get_raw(1);                         // Out of the array, into the member.
-        set_raw(1, 0);
-        for (uint64_t leaf = leaf_count_; leaf < 2 * leaf_count_; leaf += 2)
-            refresh_pair_bits(leaf);
-        min_pos_ = descend_to_minimum();
-        min_pos_stale_ = false;
+        if (shape_.levels == 0)             // No counters at all.
+            return;
+        std::vector<uint64_t> best_idx(shape_.size[1]), best_val(shape_.size[1]);
+        for (uint64_t j = 0; j < shape_.size[1]; j++) {
+            uint64_t idx = 2 * j, val = Get(2 * j);
+            if (2 * j + 1 < counter_count_) {
+                const uint64_t other = Get(2 * j + 1);
+                if (better(other, val)) {
+                    idx = 2 * j + 1;
+                    val = other;
+                }
+            }
+            best_idx[j] = idx;
+            best_val[j] = val;
+            if (shape_.levels > 1)
+                node_write(1, j, idx - (j << 1));
+        }
+        for (uint32_t l = 2; l <= shape_.levels; l++) {
+            for (uint64_t j = 0; j < shape_.size[l]; j++) {
+                uint64_t idx = best_idx[2 * j], val = best_val[2 * j];
+                if (2 * j + 1 < shape_.size[l - 1] && better(best_val[2 * j + 1], val)) {
+                    idx = best_idx[2 * j + 1];
+                    val = best_val[2 * j + 1];
+                }
+                best_idx[j] = idx;
+                best_val[j] = val;
+                if (l < shape_.levels)
+                    node_write(l, j, idx - (j << l));
+            }
+        }
+        min_pos_ = best_idx[0];
+        min_value_ = best_val[0];
     }
+
+    /* ------------------------------------------------------------------ */
+    /* Tuning.                                                           */
+    /* ------------------------------------------------------------------ */
 
     /**
      * Re-derives VALE's parameters from the counters' current values and
@@ -703,30 +698,21 @@ public:
     }
 
     /**
-     * Re-derives VALE's parameters and rebuilds the array under them, taking
-     * `offset` off every non-zero counter on the way.
+     * Re-derives VALE's parameters and rebuilds the array under them.
      *
      * A rebuild reads every counter out under one shape and writes it back
-     * under another, so subtracting a constant from all of them as it goes
-     * costs nothing beyond the pass that is happening anyway. A caller holding
-     * a deferred decrement -- Misra-Gries' lazy decrement counter -- gets it
-     * applied for free here rather than paying for a pass of its own, and the
-     * new tuning is derived from what the counters read *after* the
-     * subtraction, which is what they are about to hold.
+     * under another. The min tree rides across untouched: it names positions,
+     * and a rebuild changes no position and no value.
      *
-     * @param offset The amount to take off each non-zero counter. Every one of
-     * them must be strictly greater than it -- in particular, no counter may
-     * be left at zero, which a min tree would read as an empty slot.
      * @param shrank Whether the counters have got smaller since the current
      * tuning was chosen. It tells the tuning it is free to follow them
      * wherever they went, rather than only in the direction that relieves an
-     * overflow -- which is the thrash the default rule guards against. A
-     * non-zero `offset` implies it.
+     * overflow -- which is the thrash the default rule guards against.
      * @returns True if the array was rebuilt. Counters that have not shrunk,
      * with no better tuning to move to, rebuild nothing and switch further
      * retuning off rather than retrying it on every subsequent update.
      */
-    bool Retune(uint64_t offset = 0, bool shrank = false);
+    bool Retune(bool shrank = false);
 
     /**
      * Retunes if the counters now call for a strictly narrower stub than the
@@ -757,12 +743,8 @@ public:
 
     /* Size and shape. */
 
-    /** @returns The number of counters a caller can address, i.e. the leaves. */
+    /** @returns The number of counters. */
     uint64_t CountCounters() const {
-        return HasMinTree() ? addressable_count_ : counter_count_;
-    }
-    /** @returns Every counter held, the tree's internal nodes included. */
-    uint64_t CountStoredCounters() const {
         return counter_count_;
     }
     uint64_t CountChunks() const {
@@ -781,463 +763,492 @@ public:
     uint64_t SizeInBytes() const {
         return static_cast<uint64_t>(chunk_count_) * cache_line_size_bytes
              + static_cast<uint64_t>(chunks_with_tails_) * counters_per_chunk_ * sizeof(uint32_t)
-             + not_pair_min_.size() * sizeof(uint64_t);
+             + tree_.size() * sizeof(uint64_t)
+             + group_applied_.size() * sizeof(uint32_t);
     }
 
 private:
-    /** Rebuilds `other`'s counters, less `offset`, under the given tuning. */
-    VALECounters(const VALECounters& other, uint32_t counters_per_chunk, uint32_t stub_size,
-                 uint64_t offset = 0) {
-        leaf_count_ = other.leaf_count_;
-        addressable_count_ = other.addressable_count_;
-        root_min_ = other.root_min_;
-        min_pos_ = other.min_pos_;
-        min_pos_stale_ = other.min_pos_stale_;
-        pending_offset_ = other.pending_offset_;
-        offset_frontier_ = other.offset_frontier_;
-        // A uniform offset keeps every comparison between two leaves as it was,
-        // and leaves none of them at zero (the caller guarantees it), so the
-        // bits carry straight over. The root is a minimum, so it follows them.
-        not_pair_min_ = other.not_pair_min_;
-        if (offset != 0) {
-            assert(root_min_ > offset);
-            root_min_ -= offset;
-        }
+    /** Rebuilds `other`'s counters under the given tuning. */
+    VALECounters(const VALECounters& other, uint32_t counters_per_chunk, uint32_t stub_size) {
+        copy_tree_state_from(other);
         allocate_with(other.counter_count_, counters_per_chunk, stub_size);
-        copy_values_from(other, offset);
+        copy_values_from(other);
+    }
+
+    /**
+     * Takes on everything about `other` that is not the counters themselves:
+     * the tree, its shape, the minimum cache, and the lazy decrement with how
+     * much of it each group has had applied.
+     *
+     * All of it survives a rebuild verbatim. A rebuild re-encodes stored values
+     * without changing them, and every one of these is a function of the values
+     * and the positions, neither of which moves.
+     */
+    void copy_tree_state_from(const VALECounters& other) {
+        tree_present_ = other.tree_present_;
+        tree_suspended_ = other.tree_suspended_;
+        shape_ = other.shape_;
+        tree_ = other.tree_;
+        group_applied_ = other.group_applied_;
+        lazy_ = other.lazy_;
+        flush_shift_ = other.flush_shift_;
+        group_flushes_ = other.group_flushes_;
+        min_pos_ = other.min_pos_;
+        min_value_ = other.min_value_;
     }
 
     /**
      * Reads every counter of `other` out under its shape and writes it under
-     * ours, less `offset`. A counter of zero stands for one nothing is using,
-     * and stays zero rather than going negative.
-     *
-     * This copies raw indices, so a min tree comes across whole, and the
-     * offset reaches every node of it: an internal node holds a minimum of
-     * counts, and taking the same amount off every count takes it off every
-     * minimum. Nothing has to be recomputed.
+     * ours. Stored forms, not values: the groups and what they have had applied
+     * come across unchanged, so there is nothing to rebase.
      */
-    void copy_values_from(const VALECounters& other, uint64_t offset = 0) {
+    void copy_values_from(const VALECounters& other) {
         assert(counter_count_ == other.counter_count_);
         for (uint64_t i = 0; i < counter_count_; i++) {
             const uint64_t value = other.get_raw(i);
-            if (value == 0)
-                continue;
-            assert(value > offset);
-            set_raw(i, value - offset);
+            if (value != 0)
+                set_raw(i, value);
         }
     }
-
-    /**
-     * One bit per leaf, `not_pair_minimum`'s. Empty without a min tree. A whole
-     * word per 64 leaves is 1/32 of what the leaves themselves cost at a 32-bit
-     * stub, and it buys the increment path its fast case.
-     */
-    std::vector<uint64_t> not_pair_min_;
 
     uint64_t counter_count_ = 0;
     uint32_t chunk_count_ = 0;
     uint32_t chunks_with_tails_ = 0;
     uint32_t tail_retune_limit_ = 0;
-    /**
-     * The number of leaves, if a min segment tree is laid over the counters,
-     * and zero if not. With one, `counter_count_` is `2 * leaf_count_`: the
-     * leaves sit in `[leaf_count_, 2 * leaf_count_)` and the internal nodes in
-     * `[1, leaf_count_)`, with node `i`'s children at `2i` and `2i + 1`. Index
-     * zero goes unused. That is the bottom-up segment tree layout, whose root
-     * aggregates every leaf whether or not the count is a power of two -- and
-     * it never is here, since it is a quotient filter's slot capacity.
-     */
-    uint64_t leaf_count_ = 0;
-    /** How many of those leaves the caller may address; see the constructor. */
-    uint64_t addressable_count_ = 0;
-    /**
-     * The tree's root: the smallest non-zero counter, or 0 if every counter is
-     * zero. The eviction loop reads it two or three times per insertion, and
-     * reading it in the array would mean decoding a counter, so it lives here.
-     * Index 1 of the array is left unused.
-     */
-    uint64_t root_min_ = 0;
-    /** A leaf holding `MinValue()`, tracked as the counters move. */
-    mutable uint64_t min_pos_ = 0;
-    /**
-     * Set when a write has lifted `min_pos_` off the minimum and nobody has
-     * needed a new one yet. `MinSlot` is what pays for finding it.
-     */
-    mutable bool min_pos_stale_ = false;
+
+    /* The min tree, and the lazy decrement it compares values on the scale of. */
+
+    /** Whether a tree is maintained at all; see the constructor. */
+    bool tree_present_ = false;
     /** Set while a caller is writing every counter; see `SuspendTree`. */
     bool tree_suspended_ = false;
-    /** The offset being merged out a batch at a time, and how far it has got. */
-    uint64_t pending_offset_ = 0;
-    uint64_t offset_frontier_ = 0;
-
-    /** Adds one to the counter at a raw index, tree nodes included. */
-    void increment_raw(uint64_t pos) {
-        const uint64_t chunk = pos / counters_per_chunk_;
-        increment_counter(chunk, pos - chunk * counters_per_chunk_);
-    }
-    /** Takes one off the counter at a raw index, tree nodes included. */
-    void decrement_raw(uint64_t pos) {
-        const uint64_t chunk = pos / counters_per_chunk_;
-        decrement_counter(chunk, pos - chunk * counters_per_chunk_);
-    }
-
-    /** Reads the counter at a raw index, tree nodes included. */
-    uint64_t get_raw(uint64_t pos) const;
-    /** Writes the counter at a raw index, tree nodes included. */
-    void set_raw(uint64_t pos, uint64_t value);
-
-    /** @returns The counter index a caller's `pos` actually lives at. */
-    uint64_t leaf_of(uint64_t pos) const {
-        return leaf_count_ + pos;       // `leaf_count_` is zero without a tree.
-    }
-
-    bool has_live_tree() const {
-        return HasMinTree() && !tree_suspended_;
-    }
-
+    TreeShape shape_;
     /**
-     * The minimum of two subtree minima, where zero means *no entry here*
-     * rather than a count of zero. A monitored key's counter is always at
-     * least one, so zero is unambiguous, and it leaves an empty slot costing
-     * a zero stub and nothing else.
+     * The tree: one packed field per internal node, holding the position of its
+     * subtree's minimum as an offset within that subtree. Level `l`'s fields
+     * are `shape_.width[l]` bits wide -- `l` rounded up to a power of two, so
+     * that no field straddles a word -- and start at bit `shape_.start[l]`.
      */
-    static uint64_t min_present(uint64_t a, uint64_t b) {
-        if (a == 0)
-            return b;
-        if (b == 0)
-            return a;
-        return a < b ? a : b;
+    std::vector<uint64_t> tree_;
+    /**
+     * How much of `L` each group of `counters_per_group` counters has had
+     * subtracted from its stored counters. One 32-bit entry per 32 counters.
+     */
+    std::vector<uint32_t> group_applied_;
+    /** `L`, Misra-Gries' lazy decrement. Zero without a tree. */
+    uint64_t lazy_ = 0;
+    uint32_t flush_shift_ = default_flush_shift;
+    uint64_t group_flushes_ = 0;
+    /** The root: the smallest value and a position holding it. */
+    uint64_t min_pos_ = 0;
+    uint64_t min_value_ = 0;
+
+    /* ------------------------------------------------------------------ */
+    /* The scale conversions.                                            */
+    /* ------------------------------------------------------------------ */
+
+    /** @returns What a caller's `value` is stored as at `pos`. */
+    uint64_t to_stored(uint64_t pos, uint64_t value) const {
+        if (!tree_present_ || value == 0)
+            return value;
+        const uint64_t applied = group_applied_[pos >> group_shift];
+        assert(value > applied);
+        return value - applied;
     }
 
-    /** True if the counter at a raw index holds zero. */
-    bool raw_is_zero(uint64_t pos) const {
-        const uint64_t chunk = pos / counters_per_chunk_;
-        return counter_is_zero(chunk, pos - chunk * counters_per_chunk_);
-    }
+    /* ------------------------------------------------------------------ */
+    /* Applying the lazy decrement, a group at a time.                    */
+    /* ------------------------------------------------------------------ */
 
     /**
-     * True if the counter at a raw index holds exactly `value`.
+     * Subtracts everything group `group` owes -- bar one, so that a count of
+     * zero does not store the zero that means *empty* -- from its counters, and
+     * records that it has.
      *
-     * The stub is the counter's low bits, so a stub that differs settles it, and
-     * so does an extension on one side only -- and when neither side has one the
-     * stub *is* the value. Only equal stubs with an extension on both sides pay
-     * for a decode, the same trick `store_if_differs` uses.
+     * The tree is not touched. Every counter of the group comes down by the same
+     * amount and its `group_applied_` entry goes up by it, so every *value* in
+     * the group is exactly what it was, and the tree compares values.
      */
-    bool raw_equals(uint64_t pos, uint64_t value) const {
-        const uint64_t chunk = pos / counters_per_chunk_;
-        const uint32_t inter_chunk = pos - chunk * counters_per_chunk_;
-        const uint8_t *chunk_ptr_ = chunk_ptr(chunk);
-        const uint64_t *words = reinterpret_cast<const uint64_t *>(chunk_ptr_);
-        const uint64_t *read_word = reinterpret_cast<const uint64_t *>(chunk_ptr_
-                                                        + word_update_byte_offset_[inter_chunk]);
-        const uint64_t stub = (read_word[0] >> word_update_shamt_[inter_chunk]) & stub_mask_;
-        if (stub != (value & stub_mask_))
-            return false;
-        const bool overflowing = is_overflowing(words, inter_chunk);
-        if (overflowing != (value > stub_mask_))
-            return false;
-        return !overflowing || get_raw(pos) == value;
+    void flush_group(uint64_t group) {
+        const uint64_t applied = group_applied_[group];
+        if (lazy_ <= applied + 1)
+            return;
+        const uint64_t amount = lazy_ - applied - 1;
+        const uint64_t lo = group << group_shift;
+        const uint64_t hi = std::min<uint64_t>(lo + counters_per_group, counter_count_);
+        for (uint64_t pos = lo; pos < hi; pos++)
+            subtract_stored(pos, amount);
+        group_applied_[group] = static_cast<uint32_t>(applied + amount);
+        group_flushes_++;
     }
 
     /**
-     * Writes `value` at a raw index if it is not there already, and says
-     * whether it wrote.
+     * Takes `amount` off the stored form of the counter at `pos`, leaving an
+     * empty position empty.
      *
-     * One function rather than a `Get` and a `Set`, because most of the
-     * question can be answered without decoding the counter at all: the stub
-     * is its low bits, so a stub that differs settles it, and so does an
-     * overflow bit on one side only. What is left -- equal stubs with an
-     * extension on both sides -- is the only case that pays for a full read.
+     * A counter with no extension needs no borrow: it stores its count plus
+     * what its group owes, which is strictly more than `amount`, so the whole
+     * subtraction is one read-modify-write of the word its stub is in.
      */
-    bool store_if_differs(uint64_t pos, uint64_t value) {
-        const uint64_t chunk = pos / counters_per_chunk_;
-        const uint32_t inter_chunk = pos - chunk * counters_per_chunk_;
-        uint8_t *chunk_ptr_ = chunk_ptr(chunk);
-        const uint64_t *words = reinterpret_cast<const uint64_t *>(chunk_ptr_);
-        uint64_t *word = reinterpret_cast<uint64_t *>(chunk_ptr_
-                                                        + word_update_byte_offset_[inter_chunk]);
-        const uint32_t shamt = word_update_shamt_[inter_chunk];
-        const uint64_t w = word[0];
-        const uint64_t stub = (w >> shamt) & stub_mask_;
-        const bool overflowing = is_overflowing(words, inter_chunk);
-        if (!overflowing && value <= stub_mask_) {
-            // Neither side leaves the stub, so this is one word: the comparison
-            // and the write are both the load that has already happened.
-            if (stub == value)
-                return false;
-            word[0] = w ^ ((stub ^ value) << shamt);
-            return true;
-        }
-        if (stub == (value & stub_mask_) && overflowing == (value > stub_mask_)
-                && get_raw(pos) == value)
-            return false;
-        set_raw(pos, value);
-        return true;
-    }
-
-    /**
-     * Writes `value` at a raw index if what is there is larger, or is the zero
-     * that means *empty*, and says whether it wrote.
-     *
-     * The cheap negative answer is a counter with no extension holding
-     * something non-zero while `value` needs one: then what is there is below
-     * the whole range `value` lives in, and nothing has to be decoded.
-     */
-    bool store_if_smaller(uint64_t pos, uint64_t value) {
+    void subtract_stored(uint64_t pos, uint64_t amount) {
         const uint64_t chunk = pos / counters_per_chunk_;
         const uint32_t inter_chunk = pos - chunk * counters_per_chunk_;
         uint8_t *chunk_ptr_ = chunk_ptr(chunk);
         const uint64_t *words = reinterpret_cast<const uint64_t *>(chunk_ptr_);
         if (!is_overflowing(words, inter_chunk)) {
-            // What is here fits in the stub, so the load that answers the
-            // comparison is also the one the write needs.
             uint64_t *word = reinterpret_cast<uint64_t *>(chunk_ptr_
                                                         + word_update_byte_offset_[inter_chunk]);
             const uint32_t shamt = word_update_shamt_[inter_chunk];
-            const uint64_t w = word[0];
-            const uint64_t stub = (w >> shamt) & stub_mask_;
-            if (stub != 0 && (value > stub_mask_ || stub <= value))
-                return false;                   // Non-empty and below `value`.
-            if (value <= stub_mask_) {
-                word[0] = w ^ ((stub ^ value) << shamt);
-                return true;
-            }
-        }
-        const uint64_t here = get_raw(pos);
-        if (here != 0 && here <= value)
-            return false;
-        set_raw(pos, value);
-        return true;
-    }
-
-    /** The same two, for the root, which lives in a member of its own. */
-    bool store_root_if_differs(uint64_t value) {
-        if (root_min_ == value)
-            return false;
-        root_min_ = value;
-        return true;
-    }
-    bool store_root_if_smaller(uint64_t value) {
-        if (root_min_ != 0 && root_min_ <= value)
-            return false;
-        root_min_ = value;
-        return true;
-    }
-
-    /**
-     * Walks from the root to a leaf holding the smallest counter, following a
-     * child that holds the minimum. Every node holds its subtree's minimum
-     * outright, so this is one comparison per level.
-     *
-     * @returns That leaf as a caller-facing position, or 0 if nothing is
-     * stored at all.
-     */
-    uint64_t descend_to_minimum() const {
-        return root_min_ == 0 ? 0 : descend_from(1, root_min_);
-    }
-
-    /**
-     * Walks down from `node` to a leaf holding `target`, which must be the
-     * minimum of `node`'s subtree. Every node holds its subtree's minimum
-     * outright, so this is one comparison per level.
-     *
-     * @returns That leaf as a caller-facing position.
-     */
-    uint64_t descend_from(uint64_t node, uint64_t target) const {
-        uint64_t x = node;
-        while (x < leaf_count_)
-            x = get_raw(2 * x) == target ? 2 * x : 2 * x + 1;
-        return x - leaf_count_;
-    }
-
-    /**
-     * The climb for a subtree minimum that has *fallen* to `value`, which is
-     * every write of a value below what the counter held -- and an admission,
-     * which writes `L + 1` into an empty slot and `L + 1` is the least any live
-     * counter can be.
-     *
-     * A minimum that only falls cannot need the sibling: whatever the pair held
-     * before, the pair's minimum is now `value` if `value` is below it and
-     * unchanged otherwise. So each level is one `store_if_smaller`, and the
-     * first one that does not write ends the climb -- nothing above a node that
-     * did not move can have moved either.
-     */
-    void minimum_fell(uint64_t x, uint64_t value) {
-        assert(value != 0);
-        while (x != 1) {
-            if (!store_if_smaller(x, value))
-                return;
-            x >>= 1;
-        }
-        store_root_if_smaller(value);
-    }
-
-    /**
-     * The climb for a subtree minimum that has *risen*, or moved in a direction
-     * the caller does not know: clearing a leaf, or writing a value above what
-     * was there. `value` is what the subtree rooted at `x` now holds as its
-     * minimum.
-     *
-     * This is the one that costs a sibling read per level: a minimum that rises
-     * has to be replaced by whatever is now the smallest, and only the sibling
-     * knows. It still stops at the first node that does not move.
-     */
-    void minimum_changed(uint64_t x, uint64_t value) {
-        while (x != 1) {
-            if (!store_if_differs(x, value))
-                return;
-            value = min_present(value, get_raw(x ^ 1));
-            x >>= 1;
-        }
-        store_root_if_differs(value);
-    }
-
-    /**
-     * Maintains the tree and the candidate after the leaf at `pos` was written
-     * with `value`, where it held `old_value`.
-     */
-    void after_leaf_write(uint64_t pos, uint64_t old_value, uint64_t value) {
-        if (!has_live_tree())
-            return;
-        if (value != old_value) {
-            const uint64_t leaf = leaf_of(pos);
-            const uint64_t sibling = get_raw(leaf ^ 1);
-            refresh_pair_bits(leaf, value, sibling);
-            if (value != 0 && (old_value == 0 || value < old_value))
-                minimum_fell(leaf >> 1, value);
-            else
-                minimum_changed(leaf >> 1, min_present(value, sibling));
-        }
-        note_candidate(pos, value);
-    }
-
-    /**
-     * The cheap path: the leaf at `pos` has just been incremented.
-     *
-     * Nothing here reads the counter unless it has to. A pair's minimum rises
-     * only when the leaf that went up was the whole of it, and the leaf's bit
-     * says whether it was -- so the common case reads two bits and stops,
-     * without decoding the counter it just incremented, let alone the sibling,
-     * the tree or the root. That case is the common one on any skewed stream: a
-     * heavy hitter is by definition the larger of its pair, and it is heavy
-     * hitters that most increments land on. Asking the bit *before* decoding is
-     * worth 20-30% of the increment path; decoding first, as this used to, paid
-     * for a value that three increments in four never look at.
-     */
-    void after_leaf_increment(uint64_t pos) {
-        const uint64_t leaf = leaf_of(pos);
-        const uint64_t other = leaf ^ 1;
-        if (not_pair_minimum(leaf)) {
-            // The sibling is at or below this leaf, so the pair's minimum stays
-            // where it is and nothing above it moves. This leaf is not the
-            // global minimum either, so the candidate does not move.
-            if (!not_pair_minimum(other))
-                return;                     // Strictly below: both bits stand.
-            // They were level, and this leaf has just left. The sibling is now
-            // the pair's minimum on its own -- and if this leaf was the *global*
-            // minimum the sibling is holding that too, so the candidate follows
-            // it rather than being searched for again.
-            set_not_pair_minimum(other, false);
-            if (!min_pos_stale_ && pos == min_pos_)
-                min_pos_ = other - leaf_count_;
+            const uint64_t stub = (word[0] >> shamt) & stub_mask_;
+            if (stub == 0)
+                return;                     // Empty, and owes nothing.
+            assert(stub > amount);
+            word[0] -= amount << shamt;
             return;
         }
-        // This leaf was its pair's minimum, or it was empty and has just become
-        // one. Either way the pair's minimum has moved -- and it has moved *to
-        // this leaf*, which is what makes the sibling's value unnecessary.
-        //
-        // The bit being clear says the sibling is empty or strictly above what
-        // this leaf held. The leaf went up by one, so it cannot have passed the
-        // sibling: either `value <= sibling`, or the sibling is empty. So the
-        // pair's minimum is now `value`, the climb takes it as it stands, and the
-        // bits follow from two questions that never decode the sibling -- is it
-        // empty, and is it level with this leaf.
-        const uint64_t value = get_raw(leaf);
-        const bool sibling_empty = raw_is_zero(other);
-        set_not_pair_minimum(leaf, !sibling_empty && raw_equals(other, value));
-        set_not_pair_minimum(other, !sibling_empty);
-        minimum_changed(leaf >> 1, value);
-        note_candidate(pos, value);
+        const uint64_t stored = get_raw(pos);
+        assert(stored > amount);
+        set_raw(pos, stored - amount);
     }
 
-    /**
-     * Keeps `min_pos_` on a leaf that holds the minimum, or marks it stale for
-     * `MinSlot` to work out if anyone ever asks.
-     */
-    void note_candidate(uint64_t pos, uint64_t value) {
-        if (value != 0 && value == MinValue()) {
-            min_pos_ = pos;
-            min_pos_stale_ = false;
-        }
-        else if (pos == min_pos_ || min_pos_stale_) {
-            min_pos_stale_ = true;
-        }
+    /* ------------------------------------------------------------------ */
+    /* The tree's shape and its fields.                                   */
+    /* ------------------------------------------------------------------ */
+
+    /** @returns `l` rounded up to a power of two: the field width of level `l`. */
+    static uint32_t width_for_level(uint32_t l) {
+        uint32_t width = 1;
+        while (width < l)
+            width <<= 1;
+        return width;
     }
 
-    /**
-     * Repairs the tree after a shift moved every leaf in `[lo, hi]`. Shifting
-     * is a quotient filter's business -- a cuckoo table moves one entry at a
-     * time -- so this has no caller in the tree, and is written for clarity:
-     * the pair bits of the range, then every level of ancestors, bottom up.
-     * Every node reads children that are already final, so the order within a
-     * level does not matter -- which is what holding minima outright buys over
-     * holding differences, where a node had to be rewritten before its parent
-     * could be read.
-     */
-    void repair_range(uint64_t lo, uint64_t hi) {
-        for (uint64_t leaf = lo & ~1ULL; leaf <= hi; leaf += 2)
-            refresh_pair_bits(leaf);
-        for (uint64_t low = lo >> 1, high = hi >> 1; ; low >>= 1, high >>= 1) {
-            for (uint64_t x = high; x >= low; x--) {
-                const uint64_t value = min_present(get_raw(2 * x), get_raw(2 * x + 1));
-                if (x == 1)
-                    root_min_ = value;
-                else
-                    set_raw(x, value);
-                if (x == 1)
-                    break;
-            }
-            if (low <= 1)
+    /** Sizes the tree and the group table for `counter_count_` counters. */
+    void setup_tree() {
+        shape_ = TreeShape{};
+        tree_.clear();
+        group_applied_.clear();
+        if (!tree_present_ || counter_count_ == 0)
+            return;
+        group_applied_.assign((counter_count_ + counters_per_group - 1) >> group_shift, 0);
+        shape_.size[0] = counter_count_;
+        uint64_t bits = 0;
+        for (uint32_t l = 1; l < max_levels; l++) {
+            shape_.size[l] = (shape_.size[l - 1] + 1) / 2;
+            if (shape_.size[l] == 1) {
+                // One node: this level is the root, and the root is a member.
+                shape_.levels = l;
                 break;
+            }
+            const uint32_t width = width_for_level(l);
+            assert(width <= 32);
+            shape_.width[l] = static_cast<uint8_t>(width);
+            bits = (bits + width - 1) / width * width;      // So no field straddles a word.
+            shape_.start[l] = bits;
+            bits += shape_.size[l] * width;
         }
-        min_pos_stale_ = true;
+        tree_.assign((bits + 63) / 64, 0);
     }
 
-    /* The per-leaf "not my pair's minimum" bits. */
+    bool has_live_tree() const {
+        return tree_present_ && !tree_suspended_;
+    }
+
+    /** @returns The field of node `j` at level `l`. */
+    uint64_t node_get(uint32_t l, uint64_t j) const {
+        const uint32_t width = shape_.width[l];
+        const uint64_t at = shape_.start[l] + j * width;
+        return (tree_[at >> 6] >> (at & 63)) & ((uint64_t{1} << width) - 1);
+    }
 
     /**
-     * @returns Whether incrementing `leaf` leaves its pair's minimum where it
-     * is, which is the case exactly when its sibling is non-empty and no larger
-     * than it. Reading this instead of the sibling's *value* is what makes an
-     * increment of anything but a pair's minimum cost no counter read at all --
-     * and a skewed stream's increments are overwhelmingly of the larger of a
-     * pair, because that is what being a heavy hitter means.
+     * Replaces that field, told what is in it. XOR-ing in the difference is one
+     * read-modify-write of the word; clearing the field and then filling it is
+     * two, the second waiting on the first.
      */
-    bool not_pair_minimum(uint64_t leaf) const {
-        const uint64_t i = leaf - leaf_count_;       // Leaves start at `leaf_count_`.
-        return (not_pair_min_[i >> 6] >> (i & 63)) & 1;
+    void node_xor(uint32_t l, uint64_t j, uint64_t old_field, uint64_t field) {
+        const uint32_t width = shape_.width[l];
+        const uint64_t at = shape_.start[l] + j * width;
+        tree_[at >> 6] ^= (old_field ^ field) << (at & 63);
     }
 
-    void set_not_pair_minimum(uint64_t leaf, bool value) {
-        const uint64_t i = leaf - leaf_count_;
-        const uint64_t bit = 1ULL << (i & 63);
-        if (value)
-            not_pair_min_[i >> 6] |= bit;
+    /** The same, reading what is there itself. For the bulk rebuild. */
+    void node_write(uint32_t l, uint64_t j, uint64_t field) {
+        const uint32_t width = shape_.width[l];
+        const uint64_t at = shape_.start[l] + j * width;
+        const uint64_t mask = (uint64_t{1} << width) - 1;
+        tree_[at >> 6] = (tree_[at >> 6] & ~(mask << (at & 63))) | (field << (at & 63));
+    }
+
+    /**
+     * @returns The position of the minimum of the subtree rooted at node `j` of
+     * level `l`. Level 0 is a leaf, which is its own minimum.
+     */
+    uint64_t subtree_min(uint32_t l, uint64_t j) const {
+        return l == 0 ? j : (j << l) + node_get(l, j);
+    }
+
+    /**
+     * @returns The position the node covering `pos` at level `l` names as its
+     * minimum -- the root's cache once `l` reaches the top.
+     */
+    uint64_t named_at(uint32_t l, uint64_t pos) const {
+        return l == shape_.levels ? min_pos_ : subtree_min(l, pos >> l);
+    }
+
+    /**
+     * Which of two values is the smaller, where zero means *no counter here*
+     * rather than a value of zero. A monitored key's counter is always at least
+     * `L + 1`, so zero is unambiguous, and it leaves an empty position costing
+     * a zero stub and nothing else -- where a `+inf` sentinel would give every
+     * one of them an extension or a tails entry.
+     */
+    static bool better(uint64_t value, uint64_t than) {
+        return value != 0 && (than == 0 || value < than);
+    }
+
+    /**
+     * @returns Whether the counter at `pos` can be shown *not* to hold the
+     * value `value`, from the word its stub is in and nothing else.
+     *
+     * The stub is the counter's low bits, so values that differ there differ
+     * outright -- and both sides have to be brought onto the same scale first,
+     * which for the low `stub_size` bits is one addition. Cheap where the
+     * alternative is not: decoding an overflowing counter is a rank and a
+     * select into its chunk's extension pool.
+     */
+    bool provably_differs(uint64_t pos, uint64_t value) const {
+        const uint64_t chunk = pos / counters_per_chunk_;
+        const uint32_t inter_chunk = pos - chunk * counters_per_chunk_;
+        const uint64_t *word = reinterpret_cast<const uint64_t *>(chunk_ptr(chunk)
+                                                        + word_update_byte_offset_[inter_chunk]);
+        const uint64_t stub = (word[0] >> word_update_shamt_[inter_chunk]) & stub_mask_;
+        return ((stub + group_applied_[pos >> group_shift]) & stub_mask_) != (value & stub_mask_);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* The climbs.                                                        */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * Maintains the tree after the counter at `pos` was written with `value`,
+     * where it held `old_value`. Both are on the public scale, zero meaning
+     * *nothing here*.
+     */
+    void after_write(uint64_t pos, uint64_t old_value, uint64_t value) {
+        if (value == old_value)
+            return;
+        if (value != 0 && (old_value == 0 || value < old_value))
+            climb_fell(pos, value);
         else
-            not_pair_min_[i >> 6] &= ~bit;
+            climb<false>(pos, value, old_value);
     }
 
-    /** Recomputes both bits of a pair from the two values. */
-    void refresh_pair_bits(uint64_t leaf, uint64_t value, uint64_t sibling) {
-        const uint64_t other = leaf ^ 1;
-        set_not_pair_minimum(leaf, sibling != 0 && sibling <= value);
-        set_not_pair_minimum(other, value != 0 && value <= sibling);
+    /**
+     * The climb for a counter whose value *fell* -- every write below what was
+     * there, and every admission into an empty position, which writes `L + 1`
+     * and `L + 1` is the least any live counter can be.
+     *
+     * A minimum that can only fall never needs the sibling: whatever a node
+     * named before, it names this position now if the new value is below what
+     * the node's minimum was and the same one otherwise. So each level is one
+     * field read and at most one decode, and the first node that does not move
+     * ends the climb -- nothing above a node that did not move can have moved.
+     */
+    void climb_fell(uint64_t pos, uint64_t value) {
+        assert(value != 0);
+        if (min_value_ == 0 || value <= min_value_) {
+            // Below everything there is, which is the common case and the
+            // cheapest: every node from here to the root names this position,
+            // and not one of them has to be compared against anything. So the
+            // climb decodes no counter at all, and its writes do not even
+            // depend on each other -- where the loop below walks a chain of
+            // dependent loads, a node read and then the counter it names.
+            //
+            // Misra-Gries admits at `L + 1`, which is the least a live counter
+            // can be, so nearly every admission comes through here.
+            for (uint32_t l = 1; l < shape_.levels; l++) {
+                const uint64_t j = pos >> l;
+                node_write(l, j, pos - (j << l));
+            }
+            min_pos_ = pos;
+            min_value_ = value;
+            return;
+        }
+        for (uint32_t l = 1; l <= shape_.levels; l++) {
+            if (l == shape_.levels)
+                break;
+            const uint64_t j = pos >> l;
+            const uint64_t field = node_get(l, j);
+            const uint64_t named = (j << l) + field;
+            if (named == pos)
+                continue;           // Already the subtree's minimum, and it only fell.
+            if (!better(value, Get(named)))
+                return;             // The subtree's minimum is unchanged, and so is everything above.
+            node_xor(l, j, field, pos - (j << l));
+        }
+        if (min_pos_ == pos || better(value, min_value_)) {
+            min_pos_ = pos;
+            min_value_ = value;
+        }
     }
 
-    /** The same, reading both values itself. */
-    void refresh_pair_bits(uint64_t leaf) {
-        refresh_pair_bits(leaf, get_raw(leaf), get_raw(leaf ^ 1));
+    /**
+     * The climb for a counter whose value did not *fall*: one that rose, one
+     * cleared, or one written with a value above what was there. `value` is
+     * what the counter at `pos` now holds, zero if it is now empty, and
+     * `old_value` is what it held before.
+     *
+     * Two facts do all the work here, and both follow from the value not having
+     * fallen:
+     *
+     *  - **Only the nodes naming `pos` have anything to recompute.** A node
+     *    whose minimum sits elsewhere has it at a position whose value has not
+     *    moved, and that position was at or below what `pos` held, so it is
+     *    still the smallest. The nodes naming `pos` are the ones from the bottom
+     *    up to the first that does not, so the climb ends at that one -- reading
+     *    one field to find out, and decoding nothing.
+     *  - **Once the replacement is level with what `pos` held, no sibling above
+     *    can beat it.** A node naming `pos` says every leaf beneath it is at or
+     *    above what `pos` held, and every sibling subtree the climb has yet to
+     *    fold is beneath one of those nodes. So the moment the running best
+     *    equals `old_value` the folding stops, and the rest of the climb is a
+     *    field read and a field write per level.
+     *
+     * The second is what makes an eviction affordable, and an eviction is what
+     * this configuration does most. Misra-Gries evicts the smallest counter, so
+     * every eviction clears a position that every one of its ancestors names --
+     * a climb to the root, and without the shortcut a decoded counter at every
+     * level of it. But a decrement empties *every* entry that was at one, which
+     * on a skewed stream is hundreds of them at a time, so the replacement is
+     * almost always level with what was cleared and almost always found in the
+     * first level or two. Measured on kosarak at 16 KB: 10.7 decoded counters
+     * per eviction before, 1.3 after.
+     *
+     * With `rose` the caller is promising the value went up by exactly one,
+     * which buys one more thing: where the node still names `pos`, the two were
+     * in that order, so proving the sibling's minimum merely *different* from
+     * what `pos` held proves it was the larger and that one more still fits.
+     * That is a stub read rather than a decode. See `provably_differs`.
+     */
+    template <bool rose>
+    void climb(uint64_t pos, uint64_t value, uint64_t old_value) {
+        if (shape_.levels == 0)             // No counters at all.
+            return;
+        // Splitting on whether this was the smallest counter in the array is
+        // worth a function: if it was, every ancestor's minimum is the value it
+        // held, so the climb reaches the root and not one field has to be read
+        // to find that out. Misra-Gries evicts the smallest counter, so that is
+        // the case nearly every eviction takes.
+        if (pos == min_pos_)
+            climb_from_minimum<rose>(pos, value, old_value);
+        else
+            climb_above_minimum<rose>(pos, value, old_value);
+    }
+
+    /** The climb above, for a position the root does not name. */
+    template <bool rose>
+    void climb_above_minimum(uint64_t pos, uint64_t value, uint64_t old_value) {
+        uint64_t best_pos = pos, best_value = value;
+        bool settled = false;
+        for (uint32_t l = 1; l <= shape_.levels; l++) {
+            const bool at_root = (l == shape_.levels);
+            const uint64_t j = pos >> l;
+            const uint64_t field = at_root ? 0 : node_get(l, j);
+            if ((at_root ? min_pos_ : (j << l) + field) != pos)
+                return;                     // This node's minimum was never `pos`.
+            if (!settled) {
+                fold_sibling<rose>(pos, l, old_value, best_pos, best_value);
+                settled = (best_value == old_value);
+            }
+            if (at_root) {
+                min_pos_ = best_pos;
+                min_value_ = best_value;
+                return;
+            }
+            if (best_pos != pos)
+                node_xor(l, j, field, best_pos - (j << l));
+        }
+    }
+
+    /**
+     * The climb above, for the position the root names -- an eviction, almost
+     * always.
+     *
+     * Nothing is read to decide where to stop, because there is nowhere to stop:
+     * every ancestor of the smallest counter has that counter's value as its own
+     * minimum, so every one of them has to be rewritten. Which also means the
+     * old fields are of no interest, so the writes are plain rather than the
+     * usual exchange, and none of them waits on a read.
+     *
+     * A node may have been naming some *other* position tied with this one, and
+     * that is not a problem: what goes in is a position holding the subtree's
+     * minimum, which is all a node ever claims.
+     */
+    template <bool rose>
+    void climb_from_minimum(uint64_t pos, uint64_t value, uint64_t old_value) {
+        uint64_t best_pos = pos, best_value = value;
+        bool settled = false;
+        for (uint32_t l = 1; l <= shape_.levels; l++) {
+            if (!settled) {
+                fold_sibling<rose>(pos, l, old_value, best_pos, best_value);
+                settled = (best_value == old_value);
+            }
+            if (l == shape_.levels)
+                break;
+            const uint64_t j = pos >> l;
+            node_write(l, j, best_pos - (j << l));
+        }
+        min_pos_ = best_pos;
+        min_value_ = best_value;
+    }
+
+    /**
+     * Folds the minimum of the other child at level `l` into the running best.
+     *
+     * Where the node still names `pos` and the caller has promised the value
+     * only went up by one, the two were in that order, so proving the sibling's
+     * minimum merely *different* from what `pos` held proves it was the larger
+     * and that one more still fits -- a stub read rather than a decode. See
+     * `provably_differs`.
+     */
+    template <bool rose>
+    __attribute__((always_inline))
+    void fold_sibling(uint64_t pos, uint32_t l, uint64_t old_value,
+                      uint64_t& best_pos, uint64_t& best_value) const {
+        const uint64_t sibling = (pos >> (l - 1)) ^ 1;
+        if (sibling >= shape_.size[l - 1])
+            return;
+        const uint64_t other = subtree_min(l - 1, sibling);
+        if (rose && best_pos == pos && provably_differs(other, old_value))
+            return;
+        const uint64_t other_value = Get(other);
+        if (better(other_value, best_value)) {
+            best_pos = other;
+            best_value = other_value;
+        }
+    }
+
+    /** Adds one to the counter at `pos`, leaving the tree alone. */
+    void increment_raw(uint64_t pos) {
+        const uint64_t chunk = pos / counters_per_chunk_;
+        increment_counter(chunk, pos - chunk * counters_per_chunk_);
+    }
+    /** Takes one off the counter at `pos`, leaving the tree alone. */
+    void decrement_raw(uint64_t pos) {
+        const uint64_t chunk = pos / counters_per_chunk_;
+        decrement_counter(chunk, pos - chunk * counters_per_chunk_);
+    }
+
+    /** Reads the stored form of the counter at `pos`. */
+    uint64_t get_raw(uint64_t pos) const;
+    /** Writes the stored form of the counter at `pos`. */
+    void set_raw(uint64_t pos, uint64_t value);
+
+    /** True if the counter at `pos` is empty. */
+    bool raw_is_zero(uint64_t pos) const {
+        const uint64_t chunk = pos / counters_per_chunk_;
+        return counter_is_zero(chunk, pos - chunk * counters_per_chunk_);
     }
 
     /*
@@ -1420,65 +1431,6 @@ private:
 
     void increment_counter(uint64_t chunk, uint32_t inter_chunk);
     void decrement_counter(uint64_t chunk, uint32_t inter_chunk);
-
-    /*
-     * ------------------------------------------------------------------
-     * Bulk bit moves, the primitives the shifting paths are built on.
-     * ------------------------------------------------------------------
-     */
-
-    /** @returns The `len` bits of the chunk starting at bit `pos`. `len <= 64`. */
-    __attribute__((always_inline))
-    static uint64_t read_chunk_bits(const uint64_t *words, uint32_t pos, uint32_t len) {
-        const uint32_t word = pos / 64, offset = pos % 64;
-        uint64_t res = words[word] >> offset;
-        if (offset && word + 1 < cache_line_size_words)
-            res |= words[word + 1] << (64 - offset);
-        return res & BITMASK(len);
-    }
-
-    /** Writes `len` bits of `value` into the chunk at bit `pos`. `len <= 64`. */
-    __attribute__((always_inline))
-    static void write_chunk_bits(uint64_t *words, uint32_t pos, uint32_t len, uint64_t value) {
-        const uint32_t word = pos / 64, offset = pos % 64;
-        const uint64_t mask = BITMASK(len);
-        value &= mask;
-        words[word] = (words[word] & ~(mask << offset)) | (value << offset);
-        if (offset + len > 64) {
-            const uint32_t rest = offset + len - 64;
-            words[word + 1] = (words[word + 1] & ~BITMASK(rest)) | (value >> (64 - offset));
-        }
-    }
-
-    /**
-     * Moves the bits of a chunk in `[start, end)` up by `shamt`, zeroing the
-     * `shamt` bits they vacate at `start`. Everything at or above `end + shamt`
-     * is left alone -- which is what keeps the extension pool, sitting just
-     * above the stubs, out of the way.
-     */
-    static void shift_chunk_bits_up(uint64_t *words, uint32_t start, uint32_t end, uint32_t shamt);
-
-    /** The mirror image of `shift_chunk_bits_up`, moving `[start, end)` down. */
-    static void shift_chunk_bits_down(uint64_t *words, uint32_t start, uint32_t end, uint32_t shamt);
-
-    /**
-     * Moves the counters at the chunk-local positions `[lo, hi]` up one
-     * position, leaving `lo` zero. Touches only the stubs, the overflows
-     * bitmap, and the tails array if there is one: the extension pool orders
-     * its entries by the position of the counters they belong to, and this
-     * move leaves that order alone.
-     */
-    void shift_within_chunk_up(uint64_t chunk, uint32_t lo, uint32_t hi);
-
-    /** The mirror image of `shift_within_chunk_up`, moving `[lo, hi]` down. */
-    void shift_within_chunk_down(uint64_t chunk, uint32_t lo, uint32_t hi);
-
-    /** Moves the counters in `[first, last]` up one position, leaving `first` zero. */
-    void move_range_up(uint64_t first, uint64_t last);
-
-    /** Moves the counters in `[first, last]` down one position, leaving `last` zero. */
-    void move_range_down(uint64_t first, uint64_t last);
-
     /*
      * ------------------------------------------------------------------
      * Tuning.
@@ -1503,10 +1455,9 @@ private:
      * `length_histogram_size` entries.
      */
     static constexpr uint32_t length_histogram_size = 8 * sizeof(uint64_t) + 1;
-    void compute_counter_len_cnt(uint32_t *counter_len_cnt, uint64_t offset = 0) const {
+    void compute_counter_len_cnt(uint32_t *counter_len_cnt) const {
         for (uint64_t i = 0; i < counter_count_; i++) {
-            const uint64_t raw = get_raw(i);
-            const uint64_t value = raw > offset ? raw - offset : 0;
+            const uint64_t value = get_raw(i);
             counter_len_cnt[value ? highbit_pos(value) + 1 : 0]++;
         }
     }
@@ -1654,19 +1605,11 @@ inline void VALECounters::free_tails() {
 }
 
 
-inline bool VALECounters::Retune(uint64_t offset, bool shrank) {
-    if constexpr (!tunes_at_runtime) {
-        // Nothing to re-derive, but the offset still has to come off, and a
-        // rebuild under the same shape is the pass that does it.
-        if (offset == 0)
-            return false;
-        VALECounters rebuilt(*this, counters_per_chunk_, stub_size_, offset);
-        *this = std::move(rebuilt);
-        return true;
-    }
-    shrank |= (offset != 0);
+inline bool VALECounters::Retune(bool shrank) {
+    if constexpr (!tunes_at_runtime)
+        return false;               // There is nothing to re-derive.
     uint32_t counter_len_cnt[length_histogram_size] = {};
-    compute_counter_len_cnt(counter_len_cnt, offset);
+    compute_counter_len_cnt(counter_len_cnt);
     auto [counters_per_chunk, stub_size] = tune_params(counter_len_cnt);
     if (counters_per_chunk > max_counter_per_cache_line) {
         // No candidate pair met the tail-probability bound, so fall back.
@@ -1693,17 +1636,16 @@ inline bool VALECounters::Retune(uint64_t offset, bool shrank) {
             tail_retune_limit_ = chunk_count_ + 1;
             return false;
         }
-        // The offset still has to come off, and this is the pass that does
-        // it. Counters the caller already shrank are rebuilt under the same
-        // shape too, which re-derives the tail bookkeeping against the values
-        // they now hold.
+        // Counters the caller already shrank are rebuilt under the same shape
+        // anyway, which re-derives the tail bookkeeping against the values they
+        // now hold.
         counters_per_chunk = counters_per_chunk_;
         stub_size = stub_size_;
     }
 
     // The two shapes disagree about where everything lives, so the rebuild
     // reads each counter out under the old one and writes it back under the new.
-    VALECounters rebuilt(*this, counters_per_chunk, stub_size, offset);
+    VALECounters rebuilt(*this, counters_per_chunk, stub_size);
     *this = std::move(rebuilt);
     return true;
 }
@@ -2131,124 +2073,6 @@ inline void VALECounters::decrement_counter(uint64_t chunk, uint32_t inter_chunk
             set_overflowing_to_0(words, inter_chunk, extensions_depleted);
         }
         write_extensions(words, extensions);
-    }
-}
-
-
-/******************************************************************
- * Shifting.                                                      *
- ******************************************************************/
-
-inline void VALECounters::shift_chunk_bits_up(uint64_t *words, uint32_t start, uint32_t end,
-                                              uint32_t shamt) {
-    // Walk the range from the top down in word-sized bites, so that every
-    // write lands above what the next read still needs.
-    for (uint32_t done = 0, len = end - start; done < len; ) {
-        const uint32_t take = std::min<uint32_t>(64, len - done);
-        const uint32_t src = end - done - take;
-        write_chunk_bits(words, src + shamt, take, read_chunk_bits(words, src, take));
-        done += take;
-    }
-    write_chunk_bits(words, start, shamt, 0);
-}
-
-
-inline void VALECounters::shift_chunk_bits_down(uint64_t *words, uint32_t start, uint32_t end,
-                                                uint32_t shamt) {
-    for (uint32_t done = 0, len = end - start; done < len; ) {
-        const uint32_t take = std::min<uint32_t>(64, len - done);
-        const uint32_t src = start + done;
-        write_chunk_bits(words, src - shamt, take, read_chunk_bits(words, src, take));
-        done += take;
-    }
-    write_chunk_bits(words, end - shamt, shamt, 0);
-}
-
-
-inline void VALECounters::shift_within_chunk_up(uint64_t chunk, uint32_t lo, uint32_t hi) {
-    assert(lo <= hi && hi + 1 < counters_per_chunk_);
-    uint64_t *words = chunk_words(chunk);
-    // The stubs, then the overflows bitmap. Both are contiguous bit ranges,
-    // and both stay clear of the extension pool above them.
-    shift_chunk_bits_up(words, counters_per_chunk_ + lo * stub_size_,
-                        counters_per_chunk_ + (hi + 1) * stub_size_, stub_size_);
-    shift_chunk_bits_up(words, lo, hi + 1, 1);
-    // The extension pool needs no attention: it is ordered by the position of
-    // the counters its entries belong to, and that order just survived. A
-    // tails array is indexed by position, though, so it does have to move.
-    if (has_tails_array(words)) {
-        uint64_t extensions[max_extension_words];
-        read_extensions(words, extensions);
-        uint32_t *ptr = get_tails_ptr(extensions);
-        memmove(ptr + lo + 1, ptr + lo, (hi - lo + 1) * sizeof(uint32_t));
-        ptr[lo] = 0;
-    }
-}
-
-
-inline void VALECounters::shift_within_chunk_down(uint64_t chunk, uint32_t lo, uint32_t hi) {
-    assert(lo <= hi && lo > 0);
-    uint64_t *words = chunk_words(chunk);
-    shift_chunk_bits_down(words, counters_per_chunk_ + lo * stub_size_,
-                          counters_per_chunk_ + (hi + 1) * stub_size_, stub_size_);
-    shift_chunk_bits_down(words, lo, hi + 1, 1);
-    if (has_tails_array(words)) {
-        uint64_t extensions[max_extension_words];
-        read_extensions(words, extensions);
-        uint32_t *ptr = get_tails_ptr(extensions);
-        memmove(ptr + lo - 1, ptr + lo, (hi - lo + 1) * sizeof(uint32_t));
-        ptr[hi] = 0;
-    }
-}
-
-
-inline void VALECounters::move_range_up(uint64_t first, uint64_t last) {
-    const uint32_t cpc = counters_per_chunk_;
-    const uint64_t first_chunk = first / cpc, last_chunk = last / cpc;
-
-    // From the top down, so that a counter crossing out of a chunk finds the
-    // slot it is headed for already vacated.
-    for (uint64_t c = last_chunk + 1; c-- > first_chunk; ) {
-        const uint32_t lo = (c == first_chunk ? first - c * cpc : 0);
-        const uint32_t hi = (c == last_chunk ? last - c * cpc : cpc - 1);
-
-        uint32_t hi_shift = hi;
-        if (hi == cpc - 1) {
-            // The chunk's last counter is headed for the next chunk. Taking it
-            // out of this pool and putting it into that one is the only
-            // extension work the whole shift does.
-            const uint64_t crossing = get_raw(c * cpc + cpc - 1);
-            set_raw(c * cpc + cpc - 1, 0);
-            set_raw((c + 1) * cpc, crossing);
-            if (lo == cpc - 1)
-                continue;           // That counter was the only one to move.
-            hi_shift = cpc - 2;
-        }
-        shift_within_chunk_up(c, lo, hi_shift);
-    }
-}
-
-
-inline void VALECounters::move_range_down(uint64_t first, uint64_t last) {
-    const uint32_t cpc = counters_per_chunk_;
-    const uint64_t first_chunk = first / cpc, last_chunk = last / cpc;
-
-    for (uint64_t c = first_chunk; c <= last_chunk; c++) {
-        const uint32_t lo = (c == first_chunk ? first - c * cpc : 0);
-        const uint32_t hi = (c == last_chunk ? last - c * cpc : cpc - 1);
-
-        uint32_t lo_shift = lo;
-        if (lo == 0) {
-            // Symmetrically, the chunk's first counter is headed for the
-            // previous chunk, which has already been shifted.
-            const uint64_t crossing = get_raw(c * cpc);
-            set_raw(c * cpc, 0);
-            set_raw(c * cpc - 1, crossing);
-            if (hi == 0)
-                continue;
-            lo_shift = 1;
-        }
-        shift_within_chunk_down(c, lo_shift, hi);
     }
 }
 
