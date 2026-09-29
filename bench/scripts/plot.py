@@ -915,7 +915,7 @@ def plot_mg_accuracy(result_dir, output_dir):
 
 
 def plot_mg_tail_latency(result_dir, output_dir):
-    """One row: the worst insertion any single update suffered.
+    """The worst insertion any single update suffered, and a companion quantile.
 
     Mirrors the insert-latency row of the Sublime_MG accuracy figure -- same
     sketches, same budgets, same panel geometry -- but from `mg_tail_latency`'s
@@ -923,7 +923,27 @@ def plot_mg_tail_latency(result_dir, output_dir):
     a thing to do to a run whose *average* latency anyone will read. The y-axis
     is logarithmic: an `O(w)` decrement sweep and an `O(log w)` eviction are two
     orders of magnitude apart, which is the point of the figure.
+
+    **Fig. 19 is the max**, which is where that gap shows: the sweep's worst
+    insertion is its decrement pass and scales with the summary, while the min
+    tree's does not. The companion is `p9999`, and it is emitted because the max
+    is only trustworthy where it is *reproducible*. It is on caida and webdocs,
+    where it climbs monotonically over six budgets; it is not on kosarak, where
+    the summary is rarely full, nobody does enough work to rise above the
+    machine's noise floor, and five repeats of one binary span a factor of 16.
+    The quantile is stable everywhere -- but it can only see the sweep's pass
+    where passes are more frequent than one insertion in 10,000, which on these
+    runs is kosarak at 16 KB and nowhere else. Neither panel tells the whole
+    story on its own, which is why both are drawn.
     """
+    _plot_mg_tail_row(result_dir, output_dir, "max_i", "Max Insert [ns]",
+                      "mg_tail_latency_(Fig_19).pdf")
+    _plot_mg_tail_row(result_dir, output_dir, "p9999_i", "P99.99 Insert [ns]",
+                      "mg_tail_latency_p9999.pdf")
+
+
+def _plot_mg_tail_row(result_dir, output_dir, metric, y_label, file_name):
+    """One row of per-dataset panels of `metric`, for `plot_mg_tail_latency`."""
     LEGEND_FONT_SIZE = 10
     LABEL_FONT_SIZE = 10
     # One row of the accuracy figure's panels: that figure is WIDTH 7.75 over
@@ -955,16 +975,17 @@ def plot_mg_tail_latency(result_dir, output_dir):
                 if len(contents) == 0:
                     continue
                 result = json.loads("[" + fix_file_contents(contents[:-2]) + "]")[-1]
-                if "max_i" not in result:               # Not a tail-latency run.
+                if metric not in result:                # Not a tail-latency run.
                     continue
-                worst[sketch].append((result["size"], result["max_i"]))
+                worst[sketch].append((result["size"], result[metric]))
         for sketch in sketches:
             if not worst[sketch]:
                 continue
             result_found = True
             axes[i].plot(*zip(*worst[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
     if not result_found:
-        logging.info(inspect.stack()[0][3][5:] + ": Figure not generated due to no benchmark results being found to include")
+        logging.info(f"mg_tail_latency ({metric}): Figure not generated due to no "
+                     "benchmark results being found to include")
         return
 
     memory_footprint_labels = {w: [f"${2 ** (p - 20)}$" if p >= 20 else f"$1/{2 ** (20 - p)}$"
@@ -981,13 +1002,13 @@ def plot_mg_tail_latency(result_dir, output_dir):
         axes[i].set_xticks(memory_footprints[workload])
         axes[i].set_xticklabels(memory_footprint_labels[workload], fontsize=LABEL_FONT_SIZE - 2)
         axes[i].set_xlim(memory_footprints[workload][0] / 1.1, 1.1 * memory_footprints[workload][-1])
-    axes[0].set_ylabel("Max Insert [ns]", fontsize=LABEL_FONT_SIZE)
+    axes[0].set_ylabel(y_label, fontsize=LABEL_FONT_SIZE)
     fig.subplots_adjust(wspace=0.25)
 
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
     axes[1].legend(legend_lines, legend_labels, loc="lower center", bbox_to_anchor=(0.5, 1.18),
                    fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE, frameon=False)
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_19).pdf"), bbox_inches="tight", pad_inches=0.01)
+    fig.savefig(output_dir / file_name, bbox_inches="tight", pad_inches=0.01)
 
 
 def plot_mg_expansion(result_dir, output_dir):
