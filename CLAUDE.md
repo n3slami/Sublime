@@ -338,6 +338,16 @@ minimum outright at full width, plus a per-leaf "not my pair's minimum" bit, plu
   tree is 1.5-2.5x *worse* because its ordinary insertion costs more. The one point where `p9999`
   does see a pass is kosarak at 16 KB, and there the tree is **11.4x better** (2,687 ns against
   30,719).
+- **Repeat a max before believing it.** The distinction that matters is whether a max is
+  *reproducible*, and the two configurations differ exactly there. Five runs of the same binary and
+  seed on kosarak at 256 KB: the sweep reports 385, 384, 347, 388, 387 microseconds -- its one
+  decrement pass over the stream, stable to 12% -- while the tree reports 172, 18, 27, 167, 285,
+  varying 16x with no stable value, which is what it looks like when the algorithmic tail is
+  *below* the machine's noise floor. `p9999` is stable for both (tree 895-1023 ns, sweep 463-479),
+  and at that budget the sweep's is the better of the two, because its pass happens once in 8M
+  insertions and so never reaches the quantile. The kosarak column of Fig. 19's max row is
+  therefore noise for every sketch -- Waving, which has no `O(w)` operation at all, reports 1502
+  microseconds at 128 KB -- and nothing should be read into it.
 - **What the tree buys shows in `max`, and it is not noise there**, even though max is a poor
   statistic in general (see the note under "Fig. 19"): the sweep's worst insertion **scales with the
   summary** and the tree's does not. On webdocs the sweep's max runs 1.42, 0.64, 1.31, 2.32, 4.35,
@@ -345,6 +355,12 @@ minimum outright at full width, plus a per-leaf "not my pair's minimum" bit, plu
   runs 1.27 ... **8.32 ms** against the tree's 133-324. That is 39x at webdocs 4 MB and 43x at
   caida 4 MB, and it is `O(w)` against `O(log w)` drawn in six points on two datasets rather than
   one measurement that might have been a scheduler hiccup.
+- **Against the other baselines, `max` sorts the five sketches into two groups**, and the tree is in
+  the right one. The two that sweep -- Sublime_MG's sweep and `MG` -- have a max that climbs with
+  capacity; the three that do not -- the tree, `SpaceSaving`, `Waving` -- sit flat in a 120-800
+  microsecond band with no trend. At 4 MB on webdocs that is 10979 and 2953 against 278, 285 and
+  289. `MG`'s line sits about 3x below Sublime_MG's while scaling the same way, because its
+  decrement pass scans a plain `uint32` array where VALE's has to ask `DecrementIsZero` per counter.
 
 
 ### When it grows: the size function
