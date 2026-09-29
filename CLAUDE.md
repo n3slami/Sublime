@@ -537,8 +537,19 @@ figure) for both measures, each labelled with its power. **The mult is shared be
 measures at each power** -- `W(N) = (N/mult)^power` -- which is what guarantees `error <= total`: error-inducing insertions
 are a subset of all insertions, so the same size function never expands error more than total.
 (Per-measure mults break that, and with it shared the two power-0.5 lines come out identical.)
-On WebDocs at power 1.0, `<error>` reaches AAE 3.2 at 7.1 MB while `<total>` needs 155 MB for
-AAE 0.011 -- ~22x less memory. Panels are AAE and
+On WebDocs at power 1.0, `<error>` reaches AAE 3.2 at 6.4 MB while `<total>` needs 144 MB for
+AAE 0.009 -- ~22x less memory (results `2026-09-29.14:12:05`; CAIDA, which the figure does not
+plot, is 6.1 at 2.2 MB against 0.42 at 13.8 MB, ~6x).
+
+**Read that as "the same size function expands the error measure less", not as a better
+memory-for-accuracy trade**, which is a claim the data does not support. Plotting the two measures'
+end points as (bytes per key, AAE) puts them on essentially *one* curve: on WebDocs `<error>` at
+power 1.0 lands at 0.0214 B/key and AAE 3.21, and `<total>` at power 0.75 lands at 0.0214 B/key and
+AAE 3.31 -- the same place. What the measure changes is *where on that curve* a given `W` puts you,
+which is the point (the error measure grows the summary only as fast as the stream is actually
+giving it trouble), but a reader comparing the two at their own best power will find them level.
+
+Panels are AAE and
 Memory[B/key] vs number of keys.
 
 **Dense-start expand workloads.** Because the harness snapshots the whole ground-truth map at every
