@@ -16,8 +16,8 @@ function print_help_message_exit() {
     echo "      - l2_size_function:  measures the effects of expanding based on the l2-norm of the stream for Sublime_CS     (Fig. - in the paper)"
     echo "      - join_size:         measures the accuracy of the sketches in estimating the size of a join of TPC-H tables  (Fig. - in the paper)"
     echo "      - mg_accuracy:       compares Sublime_MG against Misra-Gries, Space-Saving, and Waving on real datasets      (Fig. 17)"
-    echo "      - mg_tail_latency:   measures the worst single insertion of each MG-family sketch, in runs of its own        (Fig. 19)"
-    echo "      - mg_expansion:      shows Sublime_MG improving across expansions and the memory win of the error measure    (Fig. 18)"
+    echo "      - mg_tail_latency:   measures the worst single insertion of each MG-family sketch, in runs of its own        (Fig. 18)"
+    echo "      - mg_expansion:      shows Sublime_MG improving across expansions and the memory win of the error measure    (Fig. 19)"
     echo "By default, all figures are generated"
     exit $1
 }

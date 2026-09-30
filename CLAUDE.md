@@ -345,11 +345,11 @@ minimum outright at full width, plus a per-leaf "not my pair's minimum" bit, plu
   varying 16x with no stable value, which is what it looks like when the algorithmic tail is
   *below* the machine's noise floor. `p9999` is stable for both (tree 895-1023 ns, sweep 463-479),
   and at that budget the sweep's is the better of the two, because its pass happens once in 8M
-  insertions and so never reaches the quantile. The kosarak column of Fig. 19's max row is
+  insertions and so never reaches the quantile. The kosarak column of Fig. 18's max row is
   therefore noise for every sketch -- Waving, which has no `O(w)` operation at all, reports 1502
   microseconds at 128 KB -- and nothing should be read into it.
 - **What the tree buys shows in `max`, and it is not noise there**, even though max is a poor
-  statistic in general (see the note under "Fig. 19"): the sweep's worst insertion **scales with the
+  statistic in general (see the note under "Fig. 18"): the sweep's worst insertion **scales with the
   summary** and the tree's does not. On webdocs the sweep's max runs 1.42, 0.64, 1.31, 2.32, 4.35,
   **10.98 ms** across the six budgets while the tree's stays at 275-295 microseconds; on caida it
   runs 1.27 ... **8.32 ms** against the tree's 133-324. That is 39x at webdocs 4 MB and 43x at
@@ -528,7 +528,7 @@ Glue rules that bite (all handled in the committed benches):
   is what the Fig. 17 VALE table is built from, plus `lost_entries` — the entries the cuckoo
   table's kick paths gave up on, which is silent accuracy loss and wants watching.
 
-**`mg_expansion` (Fig. 18)** shows Sublime_MG improving accuracy across expansions and the memory
+**`mg_expansion` (Fig. 19)** shows Sublime_MG improving accuracy across expansions and the memory
 win of the error-inducing measure. It plots `SublimeMG<error>` and `SublimeMG<total>` (both
 expanding from a small budget with the default **32-bit fingerprints**, `r = 4`, a fixed
 `--seed`) against a fixed-size `MG` that just ingests to the end of the stream. The
@@ -572,7 +572,7 @@ of 14-19k at 128 KB -- so `Sublime_MG`'s 1.43x capacity over `MG` shows up as an
 and a **34% better top-k AAE**. The gap on the all-keys row widens with budget as capacity closes
 on the key count (53% at 4 MB), which is the same effect arriving late.
 
-**`mg_tail_latency` (Fig. 19)** is the *worst* insertion rather than the average one: one row,
+**`mg_tail_latency` (Fig. 18)** is the *worst* insertion rather than the average one: one row,
 the same three datasets and budgets as Fig. 17's insert row, on a log axis. It is a **separate
 benchmark because it needs separate runs**: `--tail-latency` times every single insertion, which
 costs about as much as a cuckoo-table insertion itself, so the average latency such a run reports
@@ -581,11 +581,19 @@ eviction sweep against tens of nanoseconds of two clock reads -- which is what m
 work. All five MG-family benches take the flag; `bench_template.hpp` keeps the histogram (16
 buckets an octave) and emits `max_i`, `p99_i`, `p999_i` and `p9999_i` in nanoseconds.
 
+**The figure does not draw the same statistic in every panel**, and the panel titles say which:
+CAIDA and WebDocs are the max, Kosarak is `p9999`. The reasoning is in the two bullets under
+"Insertion: the min segment tree" above -- a max is evidence only where it repeats, and on Kosarak
+it does not, while a quantile can only see the sweep's decrement pass where passes are more
+frequent than one insertion in 10,000, which is Kosarak at 16 KB and nowhere else. So each panel
+gets its own scale, and `plot_mg_tail_latency` emits `mg_tail_latency_p9999.pdf` beside the figure,
+drawing the quantile everywhere, for checking what the mixed panel row is standing on.
+
 Both experiments are wired through the pipeline like the paper figures: `mg_accuracy_bench` /
 `mg_expansion_bench` in `run_benchmarks.py` (the latter runs only on `*_mg_expand` workloads;
 both pin a fixed `--seed` on the sketches that support it), `plot_mg_accuracy` (Fig. 17, plus two
 companion `.tex` tables -- a P99 table and a VALE `(c, s)` tuning table like the CMS accuracy
-figure's) / `plot_mg_expansion` (Fig. 18) in `plot.py`, and `mg_accuracy` / `mg_expansion` figure
+figure's) / `plot_mg_expansion` (Fig. 19) in `plot.py`, and `mg_accuracy` / `mg_expansion` figure
 options in `generate_datasets.sh` and `evaluate.sh`. `mg_accuracy` reuses the `real` workloads via
 the `*"accuracy"*` substring guard; `mg_expansion` triggers generation of the dense-start
 workloads under the `*"expansion"*` guard. Error is reported over all distinct keys; P99 goes to
