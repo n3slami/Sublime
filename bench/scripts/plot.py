@@ -454,17 +454,24 @@ def plot_expansion(result_dir, output_dir):
         logging.info(inspect.stack()[0][3][5:] + ": Figure not generated due to no benchmark results being found to include")
         return
     for sketch in sublime_power_names + [sketches[1]] + sketches[2:]:
+        if not aae_data[sketch]:
+            continue
         axes[0].plot(*zip(*aae_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
         axes[1].plot(*zip(*mem_data[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
 
+    # Each line is labelled with its size-function power, at the end of the line
+    # -- so a series with no results has nowhere to put the label, and asking
+    # for its last point raises rather than drawing the figure at all.
     annotation_off_x = [1 / 1.77 for i in range(len(sublime_power_names))]
     annotation_off_y = [1 / 4.5, 1 / 3.4, 1 / 3]
     for i, (power, sketch) in enumerate(zip(size_function_powers, sublime_power_names)):
-        axes[0].annotate(power, (aae_data[sketch][-1][0] * annotation_off_x[i], aae_data[sketch][-1][1] * annotation_off_y[i]), fontsize=0.8*XLABEL_FONT_SIZE)
+        if aae_data[sketch]:
+            axes[0].annotate(power, (aae_data[sketch][-1][0] * annotation_off_x[i], aae_data[sketch][-1][1] * annotation_off_y[i]), fontsize=0.8*XLABEL_FONT_SIZE)
     annotation_off_x = [1 / 2 for i in range(len(sublime_power_names))]
     annotation_off_y = [2, 1.1, 1.5]
     for i, (power, sketch) in enumerate(zip(size_function_powers, sublime_power_names)):
-        axes[1].annotate(power, (mem_data[sketch][-1][0] * annotation_off_x[i], mem_data[sketch][-1][1] * annotation_off_y[i]), fontsize=0.8*XLABEL_FONT_SIZE)
+        if mem_data[sketch]:
+            axes[1].annotate(power, (mem_data[sketch][-1][0] * annotation_off_x[i], mem_data[sketch][-1][1] * annotation_off_y[i]), fontsize=0.8*XLABEL_FONT_SIZE)
 
     for ax in axes.flatten():
         ax.autoscale_view()

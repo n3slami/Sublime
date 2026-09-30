@@ -1,4 +1,4 @@
-import argparse, shutil, itertools, subprocess, inspect, os
+import argparse, itertools, subprocess, inspect, os, sys, traceback
 from pathlib import Path
 from datetime import datetime
 
@@ -129,8 +129,15 @@ def skew_bench():
 
     workload_path = Path(f"{workload_dir}/synthetic")
     for workload in workload_path.iterdir():
+        char_exp = workload.name[5:]
+        # `generate_synthetic` makes eight Zipfian workloads and this figure
+        # plots six of them -- `plot_skew_vale_tuning`'s `char_exps` is the same
+        # six listed above. The other two (0.60 and 1.00) have no budget here,
+        # and indexing the dict with them used to raise a KeyError that took the
+        # whole run down with it. They are simply not part of this figure.
+        if char_exp not in sketchbook_memory_footprints:
+            continue
         for sketch in sketches:
-            char_exp = workload.name[5:]
             if sketch in SKETCHES_WITH_VALE:
                 execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, sketchbook_memory_footprints[char_exp],
                                   override_size=MEMORY_FOOTPRINT)
@@ -439,7 +446,14 @@ if __name__ == "__main__":
     try:
         for benchmark in (RUNNERS if "all" in args.benchmarks else args.benchmarks):
             RUNNERS[benchmark]()
-    except Exception as e:
-        print(f"Received exception: {str(e)}, cleaning up output and closing")
-        shutil.rmtree(output_prefix)
+    except Exception:
+        # Keep whatever finished. This used to `shutil.rmtree(output_prefix)`,
+        # which threw away every completed benchmark because a later one raised
+        # -- on a run of this length that is hours of work destroyed by a
+        # KeyError, and the results of the figures that *did* finish are still
+        # worth having. It also used to swallow the exception and exit 0, so
+        # `evaluate.sh` carried on to the plotter and drew stale results.
+        traceback.print_exc()
+        print(f"\nBenchmarks failed. What completed is kept in {output_prefix}")
+        sys.exit(1)
 
