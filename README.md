@@ -16,6 +16,45 @@ memory footprint lower bound for sketches that adapt to the stream's length,
 showing that Sublime gives rise to sketches that use the optimal amount of
 space for their accuracy guarantee.
 
+# Reproducing the Paper's Results
+
+Everything — building, fetching the datasets, running the benchmarks, drawing
+every figure and table — is one command.
+
+```Bash
+git clone https://github.com/---/Sublime.git
+cd Sublime
+./evaluate.sh
+```
+
+Or, without installing anything but Docker:
+
+```Bash
+git clone https://github.com/---/Sublime.git
+cd Sublime
+docker build -t sublime_eval .
+mkdir -p ../paper_results
+docker run --user "$(id -u):$(id -g)" \
+           -v "$(cd .. && pwd)/paper_results":/usr/local/paper_results \
+           sublime_eval
+```
+
+Either way the figures and tables land in `paper_results/figures/<timestamp>/`,
+in a `paper_results` directory **next to** the clone, numbered as in the paper.
+
+Useful options, which both forms take:
+
+| | |
+|---|---|
+| `--quick` | A few minutes instead of hours, to check the setup works before committing a machine. One dataset, two memory budgets. The numbers are *not* the paper's. |
+| `--with-mg` | Also run the Sublime\textsubscript{MG} figures of the journal extension (Fig. 17-19). Roughly triples the time. |
+| `-f accuracy,skew` | Run only the named figures. `./evaluate.sh --help` lists them. |
+| `--skip-tests` | Skip the unit tests, which otherwise run first. |
+
+Before it starts, `evaluate.sh` checks that everything it needs is installed and
+that there is enough disk, and names anything missing. A full run needs about
+**12 GB of free disk** and **16 GB of RAM**; `--quick` needs about 3 GB of disk.
+
 # Getting Started
 To use Sublime in developing your own project, simply add the files in the
 `include` directory and include the header file corresponding to the desired
@@ -46,59 +85,57 @@ The file `example.cpp` in the `examples` directory illustrates the usage of
 these APIs. All other operations such as auto-tuning VALE are transparently
 handled by Sublime and therefore do not have APIs.
 
-# Quick Reproducibility
-This repository contains an `evaluate.sh` script. This script downloads the
-relevant datasets, compiles the different versions of Sublime, sets the
-benchmarks up, runs them, and produces the figures and tables. To ease the
-reproducibility process, we provide a Dockerfile that spins up an Ubuntu Docker
-container with the requirements installed and runs `evaluate.sh` to gather the
-results. One may choose to run the experiments in Docker, or to run the
-experiments natively. Both methods take ~1 hour to complete, and we provide
-instructions on how to do either. We advise using a machine with at least 16 GB
-of RAM.
+# Reproducibility in Detail
 
-*Note*: We exclude the full CAIDA 2018 dataset used in our evaluation and only
-use a 10% slice of the dataset. This exclusion is due to the CAIDA dataset
-requiring approval for use in research projects. We repeat this slice of the
-dataset 10 times to create a workload of the same size as when using
-the full CAIDA dataset. Nevertheless, it is still possible to reproduce the
-exact results in our paper by adding the remaining 90% of the dataset, i.e.,
-the files 1.dat to 10.dat, to the `paper_results/real_datasets` directory
-before running the `evaluate.sh` script in either the dockerized version or the
-native version of our benchmarks.
+`evaluate.sh` compiles every version of Sublime and the baselines, runs the unit
+tests, downloads the datasets, generates the workloads, runs the benchmarks and
+draws the figures and tables. The Dockerfile builds an image with the
+dependencies already installed and uses the same script, so the two paths run
+identical code; pick whichever suits the machine.
 
-## Executing with Docker
-Running the following commands clones Sublime and evaluates it:
-```Bash
-git clone https://github.com/---/Sublime.git
-cd Sublime
-docker build -t sublime_eval .
-mkdir -p ../paper_results/figures/ && docker run -v ../paper_results/figures:/usr/local/paper_results/figures -it sublime_eval
-```
-The above creates a **directory next to the cloned repository** named
-`paper_results` and puts the generated figures and tables in the
-`paper_results/figures` subdirectory within. The figures and tables will be
-numbered to match the paper.
+Sublime is deliberately **not** compiled into the image. The build happens when
+the container runs, so that `-march=native` sees the CPU the benchmarks will
+actually run on. The image is therefore portable, and picks up BMI2, LZCNT and
+AVX-512 wherever the host provides them.
 
-## Executing Natively
-To use the `evaluate.sh` script, ensure that the following dependencies are
-satisfied:
+**Hardware.** Any x86-64 machine. Sublime uses BMI2 for rank and select and
+AVX-512 for Sublime_CS's l2-norm estimator where they are available, and falls
+back to portable code where they are not, so the results reproduce on a machine
+without them — though the timings will not be comparable to the paper's, which
+were measured on a machine with both. A full run needs about 12 GB of free disk
+and 16 GB of RAM.
 
-- Make >=3.30.8 (Used to compile the baselines)
-- python3-venv >=3.13.5 (Used to plot the experimental results only)
-- Python 3 >=3.7 (Used to plot the experimental results only)
-- LaTeX full (Used to plot the experimental results only)
+**Dependencies, for a native run.** `evaluate.sh` checks for all of these before
+it starts and names any that are missing:
 
-Then, running
-```Bash
-git clone https://github.com/---/Sublime.git
-cd Sublime
-bash evaluate.sh
-```
-reproduces the results in the paper, creating a `paper_results` directory
-**next to the cloned repository** in the process. It places the generated
-figures and tables in the `paper_results/figures` subdirectory, numbering them
-to match the paper.
+- CMake 3.5 or later, GNU Make, and GCC 11 or later
+- Git, wget, curl, and Bash 4.4 or later
+- Python 3.8 or later, with the `venv` module (`python3-venv` on Debian and
+  Ubuntu). `evaluate.sh` creates a virtualenv and installs matplotlib into it,
+  unless matplotlib is already importable.
+- A LaTeX installation, used to typeset the figures' text. `texlive-latex-base`,
+  `texlive-latex-recommended` and `texlive-fonts-recommended` are enough on
+  Debian and Ubuntu — a full TeX Live is not needed.
+
+**The datasets** are downloaded to `paper_results/real_datasets` and checked
+against recorded SHA-256 checksums, so a truncated or replaced download is
+caught rather than quietly producing different numbers. They are fetched once
+and reused by later runs.
+
+*Note on CAIDA*: we exclude the full CAIDA 2018 dataset used in our evaluation
+and only use a 10% slice of it, because the full dataset requires approval for
+use in research projects. We repeat this slice 10 times to create a workload of
+the same size as when using the full dataset. It is still possible to reproduce
+the exact results in our paper by adding the remaining 90%, i.e. the files
+`1.dat` to `10.dat`, to the `paper_results/real_datasets` directory before
+running `evaluate.sh`, in either the dockerized or the native version.
+
+## Sublime_MG, the journal extension
+
+The three Sublime_MG figures (17, 18 and 19) belong to the journal extension
+rather than to the conference paper, and are **off by default**. Add `--with-mg`
+to run them as well, or name them individually with `-f`. They roughly triple
+the running time.
 
 # Building
 The following lists the dependencies required for building Sublime and its
@@ -116,9 +153,13 @@ tests, and benchmarks, navigate to the project's root directory and execute the
 commands
 ```Bash
 mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 make -j8
 ```
+`CMAKE_POLICY_VERSION_MINIMUM` is needed only with CMake 4 or later, and is
+harmless before it: the unit tests fetch doctest, which still declares
+`cmake_minimum_required(VERSION 3.0)`, and CMake 4 refuses that outright. Drop
+it if you are also passing `-DBUILD_TESTS=0`.
 You can control which parts are configured and compiled with the following
 CMake options:
 - `BUILD_TESTS`: Builds the tests.

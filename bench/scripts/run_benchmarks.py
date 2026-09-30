@@ -1,10 +1,26 @@
-import argparse, shutil, itertools, subprocess, inspect
+import argparse, shutil, itertools, subprocess, inspect, os
 from pathlib import Path
 from datetime import datetime
 
 global build_dir
 global workload_dir
 global output_prefix
+
+# Set by `--quick`, which runs one memory budget per workload instead of the
+# whole sweep. Paired with the same flag in `generate_datasets.sh`, which
+# generates only the smallest dataset, it takes the pipeline end to end in
+# minutes -- enough to show that everything works, not enough to reproduce a
+# number from the paper.
+QUICK = False
+
+
+def budgets(footprints):
+    """The memory budgets to sweep for one workload, honouring `--quick`.
+
+    Two rather than one: the figures plot error against memory on log axes, and
+    a single point per series leaves them with nothing to scale.
+    """
+    return footprints[:2] if QUICK else footprints
 
 SKETCHES_WITH_VALE = {"SublimeCMS",
                       "SublimeCS"}
@@ -85,15 +101,15 @@ def accuracy_bench():
             continue
 
         sketch = "SublimeCMSNoTuning"
-        for memory_footprint, (c, s) in zip(memory_footprints[workload.name], vale_params[workload.name]):
+        for memory_footprint, (c, s) in zip(budgets(memory_footprints[workload.name]), vale_params[workload.name]):
             rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir, workload, sketch, memory_footprint)
 
         if workload.name == "caida":
             sketch = "SublimeCMSNoTuningMorris"
-            for memory_footprint, (c, s, p) in zip(memory_footprints[workload.name], morris_params):
+            for memory_footprint, (c, s, p) in zip(budgets(memory_footprints[workload.name]), morris_params):
                 rebuild_execute_benchmark(build_dir, output_base, c, s, p, workload_subdir, workload, sketch, memory_footprint)
         
-        for sketch, memory_footprint in itertools.product(sketches, memory_footprints[workload.name]):
+        for sketch, memory_footprint in itertools.product(sketches, budgets(memory_footprints[workload.name])):
             execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint)
 
 
@@ -192,10 +208,10 @@ def accuracy_unbiased_bench():
             continue
 
         sketch = "SublimeCSNoTuning"
-        for memory_footprint, (c, s) in zip(memory_footprints, vale_params):
+        for memory_footprint, (c, s) in zip(budgets(memory_footprints), vale_params):
             rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir, workload, sketch, memory_footprint)
 
-        for sketch, memory_footprint in itertools.product(sketches, memory_footprints):
+        for sketch, memory_footprint in itertools.product(sketches, budgets(memory_footprints)):
             execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint)
 
 
@@ -284,13 +300,13 @@ def mg_accuracy_bench():
         if workload.name not in memory_footprints:
             continue
         for (sketch, label, extra_args), memory_footprint in \
-                itertools.product(baselines, memory_footprints[workload.name]):
+                itertools.product(baselines, budgets(memory_footprints[workload.name])):
             execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint,
                               extra_args=extra_args, label=label)
         for label, flags in sublime_flags.items():
             params = vale_params[(workload.name, label)]
             assert len(params) == len(memory_footprints[workload.name])
-            for memory_footprint, (c, s) in zip(memory_footprints[workload.name], params):
+            for memory_footprint, (c, s) in zip(budgets(memory_footprints[workload.name]), params):
                 rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir,
                                           workload, "SublimeMGNoTuning", memory_footprint,
                                           extra_args=flags, label=label,
@@ -337,13 +353,13 @@ def mg_tail_latency_bench():
         if workload.name not in memory_footprints:
             continue
         for (sketch, label, extra_args), memory_footprint in \
-                itertools.product(baselines, memory_footprints[workload.name]):
+                itertools.product(baselines, budgets(memory_footprints[workload.name])):
             execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch, memory_footprint,
                               extra_args=f"{extra_args} --tail-latency", label=label)
         for label, flags in sublime_flags.items():
             params = vale_params[(workload.name, label)]
             assert len(params) == len(memory_footprints[workload.name])
-            for memory_footprint, (c, s) in zip(memory_footprints[workload.name], params):
+            for memory_footprint, (c, s) in zip(budgets(memory_footprints[workload.name]), params):
                 rebuild_execute_benchmark(build_dir, output_base, c, s, None, workload_subdir,
                                           workload, "SublimeMGNoTuning", memory_footprint,
                                           extra_args=f"{flags} --tail-latency", label=label,
@@ -405,8 +421,11 @@ if __name__ == "__main__":
     parser.add_argument("workload_dir", type=Path, help="The directory containing the generated workloads")
     parser.add_argument("-b", "--benchmarks", nargs="+", choices=["all",] + list(RUNNERS.keys()),
                         default=["all"], type=str, help="The benchmarks to run")
+    parser.add_argument("--quick", action="store_true",
+                        help="One memory budget per workload, for checking the pipeline works")
 
     args = parser.parse_args()
+    QUICK = args.quick or os.environ.get("SUBLIME_QUICK") == "1"
     build_dir = args.build_dir
     workload_dir = args.workload_dir
 

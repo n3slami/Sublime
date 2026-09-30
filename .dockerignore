@@ -1,0 +1,15 @@
+# The build tree is rebuilt inside the container, against its own toolchain.
+build/
+# Private CAIDA data. The full 2018 trace needs approval for research use and is
+# never published; the image uses the public 10% slice that download_datasets.sh
+# fetches. Keep this exclusion.
+caida_tmp/
+# History is not needed: setup_includes.sh vendors the baseline submodules at
+# image build time and falls back to pinned clones when there is no .git.
+.git/
+.gitignore
+.gitmodules
+__pycache__/
+**/__pycache__/
+*.pyc
+.claude/

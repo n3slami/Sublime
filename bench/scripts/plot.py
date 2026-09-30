@@ -126,6 +126,22 @@ def fix_file_contents(contents):
     return contents
 
 
+
+def save_figure(fig, path):
+    """Writes `fig`, after blanking any panel that ended up with nothing in it.
+
+    A figure draws one panel per dataset, but a reviewer may well have results
+    for only some of them -- `evaluate.sh --quick` generates kosarak alone, and
+    `-f` can name a single experiment. An empty panel then reaches `savefig`
+    with a log scale and no positive data on it, and matplotlib raises rather
+    than drawing anything at all, losing the panels that *do* have results.
+    """
+    for ax in fig.axes:
+        if not ax.lines and not ax.patches and not ax.collections:
+            ax.set_visible(False)
+    fig.savefig(path, bbox_inches="tight", pad_inches=0.01)
+
+
 def plot_accuracy(result_dir, output_dir):
     TITLE_FONT_SIZE = 11
     LEGEND_FONT_SIZE = 11
@@ -245,7 +261,7 @@ def plot_accuracy(result_dir, output_dir):
     legend_lines, legend_labels = axes[0][2].get_legend_handles_labels()
     axes[0][2].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-2.75, 1.75),
                       fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE, frameon=False)
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_10).pdf"), bbox_inches="tight", pad_inches=0.01)
+    save_figure(fig, output_dir / (inspect.stack()[0][3][5:] + "_(Fig_10).pdf"))
 
     with open(output_dir / f"{inspect.stack()[0][3][5:]}_table_(Fig_10).tex", 'w') as accuracy_table:
         accuracy_table.writelines(["\\begin{tabular}[b]{" + 'c' * (2 * len(workloads) + 1) + "} \n",
@@ -258,8 +274,12 @@ def plot_accuracy(result_dir, output_dir):
             memory_label = f"{2 ** (memory_power - 20)}" if memory_power >= 20 else f"1/{2 ** (20 - memory_power)}"
             new_line = f"{memory_label}"
             for workload in workloads:
-                new_line += f" & {tuning_params[workload][memory_footprint][0] if memory_footprint in memory_footprints[workload] else '-'}"
-                new_line += f" & {tuning_params[workload][memory_footprint][1] if memory_footprint in memory_footprints[workload] else '-'}"
+                # A budget the run did not cover -- which is every budget but
+                # the first two under `--quick`, and any dataset a reviewer did
+                # not generate -- leaves the cell empty rather than raising.
+                tuning = tuning_params.get(workload, {}).get(memory_footprint)
+                new_line += f" & {tuning[0] if tuning is not None else '-'}"
+                new_line += f" & {tuning[1] if tuning is not None else '-'}"
             new_line += " \\\\ \n"
             accuracy_table.write(new_line)
         accuracy_table.writelines(["\\bottomrule \n",
@@ -364,7 +384,7 @@ def plot_skew_vale_tuning(result_dir, output_dir):
     legend_sep.set_clip_on(False)
     axes[0].add_line(legend_sep)
 
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_11).pdf"), bbox_inches="tight", pad_inches=0.01)
+    save_figure(fig, output_dir / (inspect.stack()[0][3][5:] + "_(Fig_11).pdf"))
 
 
 def plot_expansion(result_dir, output_dir):
@@ -467,7 +487,7 @@ def plot_expansion(result_dir, output_dir):
     legend_labels = [legend_labels[0], ] + legend_labels[3:]
     axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.05, 1.5),
                    fancybox=True, shadow=False, ncol=3, fontsize=LEGEND_FONT_SIZE, frameon=False)
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_12).pdf"), bbox_inches="tight", pad_inches=0.01)
+    save_figure(fig, output_dir / (inspect.stack()[0][3][5:] + "_(Fig_12).pdf"))
 
 
 def plot_contraction(result_dir, output_dir):
@@ -535,7 +555,7 @@ def plot_contraction(result_dir, output_dir):
     legend_labels = legend_labels[:len(sketches)]
     axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.375, 1.3),
                    fancybox=True, shadow=False, ncol=2, fontsize=LEGEND_FONT_SIZE, frameon=False)
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_13).pdf"), bbox_inches="tight", pad_inches=0.01)
+    save_figure(fig, output_dir / (inspect.stack()[0][3][5:] + "_(Fig_13).pdf"))
 
 
 def plot_accuracy_unbiased(result_dir, output_dir):
@@ -624,7 +644,7 @@ def plot_accuracy_unbiased(result_dir, output_dir):
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
     axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(0.2, 1.33),
                       fancybox=True, shadow=False, ncol=6, fontsize=LEGEND_FONT_SIZE, frameon=False)
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_14).pdf"), bbox_inches="tight", pad_inches=0.01)
+    save_figure(fig, output_dir / (inspect.stack()[0][3][5:] + "_(Fig_14).pdf"))
 
     with open(output_dir / f"{inspect.stack()[0][3][5:]}_table_(Fig_14).tex", 'w') as accuracy_table:
         accuracy_table.writelines(["\\begin{tabular}[b]{ccc} \n",
@@ -704,7 +724,7 @@ def plot_l2_size_function(result_dir, output_dir):
     axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(-0.055, 1.08),
                    fancybox=True, shadow=False, ncol=1, fontsize=LEGEND_FONT_SIZE, frameon=False)
 
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_15).pdf"), bbox_inches="tight", pad_inches=0.01)
+    save_figure(fig, output_dir / (inspect.stack()[0][3][5:] + "_(Fig_15).pdf"))
 
 
 
@@ -779,7 +799,7 @@ def plot_join_size(result_dir, output_dir):
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
     axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(3.75, 1.03),
                       fancybox=True, shadow=False, ncol=1, fontsize=LEGEND_FONT_SIZE, frameon=False)
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_16).pdf"), bbox_inches="tight", pad_inches=0.01)
+    save_figure(fig, output_dir / (inspect.stack()[0][3][5:] + "_(Fig_16).pdf"))
 
 def plot_mg_accuracy(result_dir, output_dir):
     LEGEND_FONT_SIZE = 10
@@ -886,7 +906,7 @@ def plot_mg_accuracy(result_dir, output_dir):
     fig.legend(legend_lines, legend_labels, loc="lower center",
                bbox_to_anchor=(0.5, fig.subplotpars.top + LEGEND_GAP_IN / HEIGHT),
                fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE, frameon=False)
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_17).pdf"), bbox_inches="tight", pad_inches=0.01)
+    save_figure(fig, output_dir / (inspect.stack()[0][3][5:] + "_(Fig_17).pdf"))
 
     with open(output_dir / f"{inspect.stack()[0][3][5:]}_p99_table_(Fig_17).tex", 'w') as table:
         table.writelines(["\\begin{tabular}{cc" + 'c' * len(sketches) + "} \n", "\\toprule \n",
@@ -1021,7 +1041,7 @@ def _plot_mg_tail_row(result_dir, output_dir, metric, y_label, file_name):
     fig.legend(legend_lines, legend_labels, loc="lower center",
                bbox_to_anchor=(0.5, fig.subplotpars.top + LEGEND_GAP_IN / HEIGHT),
                fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE, frameon=False)
-    fig.savefig(output_dir / file_name, bbox_inches="tight", pad_inches=0.01)
+    save_figure(fig, output_dir / file_name)
 
 
 def plot_mg_expansion(result_dir, output_dir):
@@ -1163,7 +1183,7 @@ def plot_mg_expansion(result_dir, output_dir):
     fig.legend(legend_lines, legend_labels, loc="lower center",
                    bbox_to_anchor=(0.5, 1.0 + 2.0 / axes_h_pt),
                    fancybox=True, shadow=False, ncol=3, fontsize=LEGEND_FONT_SIZE, frameon=False)
-    fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_19).pdf"), bbox_inches="tight", pad_inches=0.01)
+    save_figure(fig, output_dir / (inspect.stack()[0][3][5:] + "_(Fig_19).pdf"))
 
 
 PLOTTERS = {plot_accuracy.__name__[5:]: plot_accuracy,

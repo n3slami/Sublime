@@ -86,6 +86,19 @@ done
 
 OUT_PATH=$(realpath ./workloads)
 
+# `evaluate.sh --quick` exports SUBLIME_QUICK=1. Quick runs generate only the
+# small kosarak-derived workloads and two of the synthetic ones -- enough to
+# take the pipeline end to end in minutes. The CAIDA and WebDocs workloads are
+# where the time and the disk go: `webdocs_expand` alone is 2.6 GB.
+QUICK=${SUBLIME_QUICK:-0}
+skip_when_quick() {
+    if [[ "${QUICK}" == "1" ]]; then
+        echo "    [--] skipping $1 (--quick)"
+        return 0
+    fi
+    return 1
+}
+
 generate_synthetic() {
     if ! test -f zipf_0.00; then
         echo "    [++] generating zipf_0.00"
@@ -95,6 +108,9 @@ generate_synthetic() {
     fi
 
     exps=("0.20" "0.40" "0.60" "0.80" "1.00" "1.60" "3.20")
+    if [[ "${QUICK}" == "1" ]]; then
+        exps=("1.60")
+    fi
     for x in "${exps[@]}"; do
         if ! test -f zipf_${x}; then
             echo "    [++] generating zipf_${x}"
@@ -106,7 +122,7 @@ generate_synthetic() {
 }
 
 generate_real() {
-    if ! test -f caida; then
+    if ! skip_when_quick caida && ! test -f caida; then
         echo "    [++] generating caida"
         if test -f $REAL_DATASETS_PATH/1.dat; then
             $WORKLOAD_GEN_PATH -t standard_string --fdist real $REAL_DATASETS_PATH/0.dat \
@@ -139,7 +155,7 @@ generate_real() {
         echo "    [--] caida already generated"
     fi
 
-    if ! test -f caida_repeat; then
+    if ! skip_when_quick caida_repeat && ! test -f caida_repeat; then
         echo "    [++] generating caida_repeat"
         if test -f $REAL_DATASETS_PATH/1.dat; then
             $WORKLOAD_GEN_PATH -t standard_string --fdist real $REAL_DATASETS_PATH/0.dat \
@@ -223,7 +239,7 @@ generate_real() {
         echo "    [--] kosarak already generated"
     fi
 
-    if ! test -f webdocs; then
+    if ! skip_when_quick webdocs && ! test -f webdocs; then
         echo "    [++] generating webdocs"
         $WORKLOAD_GEN_PATH -t standard --fdist real $REAL_DATASETS_PATH/webdocs.dat --key-len-binary 0 -o webdocs
     else 
@@ -232,7 +248,7 @@ generate_real() {
 }
 
 generate_expand() {
-    if ! test -f caida_expand; then
+    if ! skip_when_quick caida_expand && ! test -f caida_expand; then
         echo "    [++] generating caida_expand "
         if test -f $REAL_DATASETS_PATH/1.dat; then
             $WORKLOAD_GEN_PATH -t expand --measurement-period 200000 --fdist real $REAL_DATASETS_PATH/0.dat \
@@ -264,7 +280,7 @@ generate_expand() {
     else 
         echo "    [--] caida_expand already generated"
     fi
-    if ! test -f webdocs_expand; then
+    if ! skip_when_quick webdocs_expand && ! test -f webdocs_expand; then
         echo "    [++] generating webdocs_expand "
         $WORKLOAD_GEN_PATH -t expand --measurement-period 5000000 --fdist real $REAL_DATASETS_PATH/webdocs.dat --key-len-binary 0 -o webdocs_expand
     else
@@ -283,13 +299,13 @@ generate_expand() {
                 caida_fdist="$caida_fdist real $REAL_DATASETS_PATH/0.dat"
             fi
         done
-        if ! test -f caida_mg_expand; then
+        if ! skip_when_quick caida_mg_expand && ! test -f caida_mg_expand; then
             echo "    [++] generating caida_mg_expand "
             $WORKLOAD_GEN_PATH -t expand --measurement-period 200000 --fdist $caida_fdist --dense-start -o caida_mg_expand
         else
             echo "    [--] caida_mg_expand already generated"
         fi
-        if ! test -f webdocs_mg_expand; then
+        if ! skip_when_quick webdocs_mg_expand && ! test -f webdocs_mg_expand; then
             echo "    [++] generating webdocs_mg_expand "
             $WORKLOAD_GEN_PATH -t expand --measurement-period 5000000 --fdist real $REAL_DATASETS_PATH/webdocs.dat --key-len-binary 0 --dense-start -o webdocs_mg_expand
         else
@@ -299,7 +315,7 @@ generate_expand() {
 }
 
 generate_delete() {
-    if ! test -f caida_delete; then
+    if ! skip_when_quick caida_delete && ! test -f caida_delete; then
         echo "    [++] generating caida_delete"
         if test -f $REAL_DATASETS_PATH/1.dat; then
             $WORKLOAD_GEN_PATH -t delete --fdist real $REAL_DATASETS_PATH/0.dat \
@@ -335,7 +351,7 @@ generate_delete() {
 
 
 generate_join_size() {
-    if ! test -f join_size; then
+    if ! skip_when_quick join_size && ! test -f join_size; then
         echo "    [++] generating join_size"
         $WORKLOAD_GEN_PATH -t join_size --fdist real $REAL_DATASETS_PATH/lineitem_ext.tbl \
                                                 real $REAL_DATASETS_PATH/orders_ext.tbl \

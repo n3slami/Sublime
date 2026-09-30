@@ -1,0 +1,9 @@
+# The plotting environment. `evaluate.sh` installs this into a virtualenv it
+# creates beside the results, so nothing is needed system-wide but Python and
+# a LaTeX installation.
+#
+# Pinned to a lower bound rather than an exact version: matplotlib's figure
+# output is stable across these, and pinning exactly would stop a reviewer on
+# a platform with no wheel for one specific build. The versions this artifact
+# was last drawn with are noted beside each.
+matplotlib>=3.8          # drawn with 3.11.2

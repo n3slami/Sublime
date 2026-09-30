@@ -1,7 +1,16 @@
 #!/bin/bash
-
+#
+# Fetches the real datasets the benchmarks replay, into ./real_datasets.
+#
 # Script adapted from https://github.com/marcocosta97/grafite/blob/main/bench/scripts/download_datasets.sh.
+#
+# Every download is checked against a SHA-256 recorded here. A dataset that
+# arrives truncated or replaced -- the Google Drive links in particular are not
+# stable forever -- otherwise flows straight into workload generation and comes
+# out the far end as plausible-looking numbers that are not the paper's.
+#
 
+set -uo pipefail
 trap "exit" SIGINT
 
 if ((BASH_VERSINFO[0] < 4)); then
@@ -11,56 +20,111 @@ fi
 
 DIR_DATA="real_datasets"
 
-# Set download urls
 declare -A urls
 urls["kosarak"]="http://fimi.uantwerpen.be/data/kosarak.dat"
 urls["webdocs"]="http://fimi.uantwerpen.be/data/webdocs.dat.gz"
 urls["caida"]="https://github.com/StingySketch/Stingy-Sketch/raw/refs/heads/main/src/Frequency%20Estimation/0.dat"
-declare -A google_drive_file_ids
-google_drive_file_ids["lineitem_ext"]="1wxyFeLXhBV_hMFfrXqX296ZaEGNz169r"
-google_drive_file_ids["orders_ext"]="1TSbpDMZ7RR5mCdLEgD9P-6VGa2RPyGqr"
 urls["lineitem_ext"]="https://drive.usercontent.google.com"
 urls["orders_ext"]="https://drive.usercontent.google.com"
 
+declare -A google_drive_file_ids
+google_drive_file_ids["lineitem_ext"]="1wxyFeLXhBV_hMFfrXqX296ZaEGNz169r"
+google_drive_file_ids["orders_ext"]="1TSbpDMZ7RR5mCdLEgD9P-6VGa2RPyGqr"
+
+# The file each download is expected to leave behind. CAIDA's is `0.dat` rather
+# than `caida.dat`: it is the first tenth of the 2018 trace, and the workload
+# generator reads `0.dat` .. `10.dat` by those names. Checking for the wrong one
+# is why this used to re-fetch it on every run and leave `0.dat.1`, `0.dat.2`
+# and so on lying around.
+declare -A targets
+targets["kosarak"]="kosarak.dat"
+targets["webdocs"]="webdocs.dat"
+targets["caida"]="0.dat"
+targets["lineitem_ext"]="lineitem_ext.tbl"
+targets["orders_ext"]="orders_ext.tbl"
+
+declare -A sha256
+sha256["kosarak"]="b7855ba155567d52390aa2a9eb09bb91ca27b5c737d358010501038f42d13dcf"
+sha256["webdocs"]="ab0f87cd26b9ecdce9a3e08a78e2f1609bf30cb71fa6c11f59d11a00663dc7cd"
+sha256["caida"]="b86bc9c5b5daf38a3e3528f846dda545e7f6fe92e964fdf8bf83757cf067bd26"
+sha256["lineitem_ext"]="89b781eac94bb142d654bf6e240f13f1adf049da46dd4c08a386c22b0328a7a0"
+sha256["orders_ext"]="21b010d14cc2ac5c0eb10f7e0aa0ebdaf9bc67a6c81f1d5f35170802919b7d68"
+
+# Fetches one dataset to a temporary name and moves it into place only once it
+# is complete, so an interrupted run cannot leave a half file that the next run
+# mistakes for a finished one.
 download() {
-    DATASET=$1
-    URL=${urls[${DATASET}]}
-    echo "Downloading '${DATASET}'..."
-    if [[ "$DATASET" == *"_ext"* ]]; then
-        curl -c ./cookie.txt -s -L "https://drive.google.com/uc?export=download&id=${google_drive_file_ids[$DATASET]}" > /dev/null
-        curl -Lb ./cookie.txt "https://drive.usercontent.google.com/download?id=${google_drive_file_ids[$DATASET]}&confirm=$(awk '/download/ {print $NF}' ./cookie.txt)" -o ./${DIR_DATA}/${DATASET}.tbl
-        rm ./cookie.txt
+    local dataset=$1
+    local target="${DIR_DATA}/${targets[$dataset]}"
+    echo "Downloading '${dataset}'..."
+    if [[ "${dataset}" == *"_ext"* ]]; then
+        local id=${google_drive_file_ids[$dataset]}
+        curl -c ./cookie.txt -s -L "https://drive.google.com/uc?export=download&id=${id}" > /dev/null || return 1
+        curl -fsSL -b ./cookie.txt \
+             "https://drive.usercontent.google.com/download?id=${id}&confirm=$(awk '/download/ {print $NF}' ./cookie.txt)" \
+             -o "${target}.part" || { rm -f ./cookie.txt; return 1; }
+        rm -f ./cookie.txt
+    elif [[ "${dataset}" == "webdocs" ]]; then
+        wget -q --show-progress -O "${target}.gz.part" "${urls[$dataset]}" || return 1
+        mv "${target}.gz.part" "${target}.gz"
+        echo "Decompressing '${target}.gz'..."
+        gzip -d "${target}.gz" || return 1
+        return 0
     else
-        wget -q --progress=bar ${URL} -P ./${DIR_DATA}
+        wget -q --show-progress -O "${target}.part" "${urls[$dataset]}" || return 1
     fi
-    return $?
+    mv "${target}.part" "${target}"
 }
 
-decompress() {
-    FILE=$1
-    echo "Decompressing '${FILE}'..."
-    gzip -d ${FILE}
-    return $?
+verify() {
+    local dataset=$1
+    local target="${DIR_DATA}/${targets[$dataset]}"
+    local want=${sha256[$dataset]}
+    local got
+    got=$(sha256sum "${target}" | cut -d' ' -f1)
+    if [[ "${got}" != "${want}" ]]; then
+        echo "  !! '${target}' does not match its recorded checksum."
+        echo "     expected ${want}"
+        echo "     got      ${got}"
+        echo "     Delete it and re-run to try again; if it keeps failing, the"
+        echo "     source has changed and the results will not be the paper's."
+        return 1
+    fi
+    return 0
 }
 
-# Create data directory
-if [ ! -d "${DIR_DATA}" ]; then
-    mkdir -p "${DIR_DATA}";
+mkdir -p "${DIR_DATA}"
+
+# `evaluate.sh --quick` generates only the kosarak-derived workloads, so there
+# is no reason to pull the other gigabyte and a half down first.
+wanted=("${!urls[@]}")
+if [[ "${SUBLIME_QUICK:-0}" == "1" ]]; then
+    wanted=("kosarak")
+    echo "Quick run: fetching kosarak only."
 fi
 
-# Download datasets
-for dataset in ${!urls[@]}; do
-    FILE_DAT=${DIR_DATA}/${dataset}.dat
-    if [ -f ${FILE_DAT} ]; then
-        echo "File '${FILE_DAT}' already exists."
-    else 
-        download ${dataset}
-        if [ $? -neq 0 ]; then
-            echo "Download failed. Please try again."
+failed=0
+for dataset in "${wanted[@]}"; do
+    target="${DIR_DATA}/${targets[$dataset]}"
+    if [ -f "${target}" ]; then
+        if verify "${dataset}"; then
+            echo "File '${target}' already exists."
+            continue
         fi
-        if [[ "${dataset}" == "webdocs" ]]; then
-            decompress ${FILE_DAT}.gz
-        fi
+        failed=1
+        continue
     fi
+    if ! download "${dataset}"; then
+        echo "  !! Download of '${dataset}' failed. Check your network and re-run."
+        rm -f "${target}.part" "${target}.gz.part"
+        failed=1
+        continue
+    fi
+    verify "${dataset}" || failed=1
 done
 
+if [[ ${failed} -ne 0 ]]; then
+    echo "One or more datasets could not be fetched or did not verify."
+    exit 1
+fi
+echo "All datasets present and verified."
