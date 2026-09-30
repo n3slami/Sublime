@@ -781,10 +781,11 @@ repo**, not inside it:
    during this work — every path under it 404s and its index is now a stub — and kosarak and
    webdocs were re-pointed at Mohammed Zaki's copies at RPI. The checksums are what established
    that those are byte-for-byte the files the results were produced with, rather than merely
-   plausible substitutes. Note kosarak is served there *as* `kosarak.dat` while actually being a
-   gzip stream, with no `.gz` suffix and no `Content-Encoding`; taking the name at face value
-   leaves the workload generator reading compressed bytes as text, which it does without
-   complaining. `gzipped[...]` in the script is what says otherwise.
+   plausible substitutes. Both arrive gzipped and are decompressed on the way in. Take the
+   `kosarak.dat.gz` URL, not the `kosarak.dat` one in the same directory: the latter is the same
+   gzip stream served *under the wrong name*, with no `.gz` suffix and no `Content-Encoding`, and
+   the workload generator reads compressed bytes as text without complaining, so a run completes
+   and produces numbers that mean nothing.
 2. `generate_datasets.sh <build> <real_datasets>` → `paper_results/workloads/` via `workload_gen`.
 3. `run_benchmarks.py <build> <workloads> -b <names>` → `paper_results/results/<timestamp>/<bench>/<Sketch>_<bytes>_<workload>.json`.
 4. `plot.py -f <names>` → `paper_results/figures/<timestamp>/*_(Fig_NN).pdf` (needs LaTeX; `text.usetex=True`).

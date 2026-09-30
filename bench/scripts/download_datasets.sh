@@ -27,17 +27,19 @@ declare -A urls
 # -- which is not a claim to take on trust, and is not taken on trust: both are
 # checked against the SHA-256s below, recorded from the copies the paper's
 # results were produced with.
-urls["kosarak"]="https://www.cs.rpi.edu/~zaki/Workshops/FIMI/data/kosarak.dat"
+urls["kosarak"]="https://www.cs.rpi.edu/~zaki/Workshops/FIMI/data/kosarak.dat.gz"
 urls["webdocs"]="https://www.cs.rpi.edu/~zaki/Workshops/FIMI/data/webdocs.dat.gz"
 urls["caida"]="https://github.com/StingySketch/Stingy-Sketch/raw/refs/heads/main/src/Frequency%20Estimation/0.dat"
 urls["lineitem_ext"]="https://drive.usercontent.google.com"
 urls["orders_ext"]="https://drive.usercontent.google.com"
 
-# Downloads that arrive gzipped. Note kosarak: it is served *as* `kosarak.dat`
-# with no .gz suffix and no Content-Encoding, but the bytes are a gzip stream
-# (Content-Type: application/x-gzip). Taking the name at face value leaves a
-# compressed file where the workload generator expects text, and it reads it as
-# garbage rather than failing -- so this is worth being explicit about.
+# Downloads that arrive gzipped, and so are decompressed into `targets[...]`
+# once they land. Note that the same kosarak file is also served from the same
+# directory as plain `kosarak.dat` -- which is a gzip stream *despite the name*,
+# with no .gz suffix and no Content-Encoding. Use the .gz URL below rather than
+# that one: taking the other at face value leaves a compressed file where the
+# workload generator expects text, and it reads it as garbage rather than
+# failing, so a whole run completes and produces numbers that mean nothing.
 declare -A gzipped
 gzipped["kosarak"]=1
 gzipped["webdocs"]=1
