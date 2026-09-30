@@ -581,13 +581,14 @@ eviction sweep against tens of nanoseconds of two clock reads -- which is what m
 work. All five MG-family benches take the flag; `bench_template.hpp` keeps the histogram (16
 buckets an octave) and emits `max_i`, `p99_i`, `p999_i` and `p9999_i` in nanoseconds.
 
-**The figure does not draw the same statistic in every panel**, and the panel titles say which:
-CAIDA and WebDocs are the max, Kosarak is `p9999`. The reasoning is in the two bullets under
-"Insertion: the min segment tree" above -- a max is evidence only where it repeats, and on Kosarak
-it does not, while a quantile can only see the sweep's decrement pass where passes are more
-frequent than one insertion in 10,000, which is Kosarak at 16 KB and nowhere else. So each panel
-gets its own scale, and `plot_mg_tail_latency` emits `mg_tail_latency_p9999.pdf` beside the figure,
-drawing the quantile everywhere, for checking what the mixed panel row is standing on.
+**The figure is the max, and `plot_mg_tail_latency` emits `mg_tail_latency_p9999.pdf` beside it**
+for the quantile. Which of the two a claim should rest on depends on the panel, and the two bullets
+under "Insertion: the min segment tree" above say why: a max is evidence only where it repeats,
+which is CAIDA and WebDocs but not Kosarak, while a quantile can only see the sweep's decrement
+pass where passes are more frequent than one insertion in 10,000, which is Kosarak at 16 KB and
+nowhere else. Drawing the quantile in the Kosarak panel alone was tried and dropped: two statistics
+in one row need two y-labels, and the second lands in the gap between panels on top of the tick
+labels already there, which only a wider figure than Fig. 17's would fix.
 
 Both experiments are wired through the pipeline like the paper figures: `mg_accuracy_bench` /
 `mg_expansion_bench` in `run_benchmarks.py` (the latter runs only on `*_mg_expand` workloads;

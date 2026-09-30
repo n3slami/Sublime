@@ -91,6 +91,10 @@ SKETCHES_STYLE_NO_MARKER_KWARGS = {"SublimeCMS": {"color": "fuchsia", "zorder": 
                                    "CodingC": {"color": "C1", "label": "Coding\\textsubscript{CS}"},
                                    "SEADC": {"color": "darkkhaki", "label": "SEAD\\textsubscript{CS}"}}
 LINES_STYLE = {"markersize": 4, "linewidth": 0.7, "fillstyle": "none"}
+# How far above the top row of panels a figure-wide legend sits, in inches. A
+# physical gap rather than a fraction, so that it clears the panel titles by the
+# same amount whether the figure is one row tall or four.
+LEGEND_GAP_IN = 0.185
 DATASET_NAMES = {"unif": r"$\textsc{Uniform}$", 
                  "zipf": r"$\textsc{Zipfian}$", 
                  "real": r"$\textsc{Real}$", 
@@ -879,8 +883,9 @@ def plot_mg_accuracy(result_dir, output_dir):
     fig.subplots_adjust(hspace=0.12, wspace=0.25)
 
     legend_lines, legend_labels = axes[0][0].get_legend_handles_labels()
-    fig.legend(legend_lines, legend_labels, loc="lower center", bbox_to_anchor=(0.5, 1.0),
-                      fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE, frameon=False)
+    fig.legend(legend_lines, legend_labels, loc="lower center",
+               bbox_to_anchor=(0.5, fig.subplotpars.top + LEGEND_GAP_IN / HEIGHT),
+               fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE, frameon=False)
     fig.savefig(output_dir / (inspect.stack()[0][3][5:] + "_(Fig_17).pdf"), bbox_inches="tight", pad_inches=0.01)
 
     with open(output_dir / f"{inspect.stack()[0][3][5:]}_p99_table_(Fig_17).tex", 'w') as table:
@@ -924,36 +929,27 @@ def plot_mg_tail_latency(result_dir, output_dir):
     is logarithmic: an `O(w)` decrement sweep and an `O(log w)` eviction are two
     orders of magnitude apart, which is the point of the figure.
 
-    **Fig. 18 draws the max on caida and webdocs and the quantile on kosarak**,
-    and mixing them is deliberate. The max is where the gap shows -- the sweep's
-    worst insertion is its decrement pass and scales with the summary, the
-    segment tree's does not -- but a max is only evidence where it *repeats*. It
-    does on caida and webdocs, climbing monotonically over six budgets. It does
-    not on kosarak: the summary is rarely full there, nobody does enough work to
-    rise above the machine's noise floor, and five repeats of one binary span a
-    factor of 16. So that panel draws `p9999`, which is stable, and which on
-    kosarak at 16 KB is also the one place a quantile can see the sweep's pass
-    at all -- elsewhere passes are rarer than one insertion in 10,000 and it
-    reports ordinary ones. The two statistics live orders of magnitude apart, so
-    the kosarak panel keeps a scale and a label of its own.
-
-    A companion drawing `p9999` everywhere is emitted beside it, for checking
-    what the mixed figure is standing on.
+    **Fig. 18 is the max**, which is where that gap shows: the sweep's worst
+    insertion is its decrement pass and scales with the summary, while the
+    segment tree's does not. A max is only evidence where it *repeats*, though,
+    and it does not everywhere -- on caida and webdocs it climbs monotonically
+    over six budgets, but on kosarak the summary is rarely full, nobody does
+    enough work to rise above the machine's noise floor, and five repeats of one
+    binary span a factor of 16. So a companion drawing `p9999` is emitted beside
+    the figure. That one is stable everywhere, but it can only see the sweep's
+    decrement pass where passes are more frequent than one insertion in 10,000,
+    which on these runs is kosarak at 16 KB and nowhere else; elsewhere it
+    reports ordinary insertions. Neither is the whole story, which is why both
+    are drawn.
     """
-    # Kosarak is the quantile and the other two are the max; see above.
-    _plot_mg_tail_row(result_dir, output_dir,
-                      lambda w: "p9999_i" if w == "kosarak" else "max_i",
+    _plot_mg_tail_row(result_dir, output_dir, "max_i", "Max Insert [ns]",
                       "mg_tail_latency_(Fig_18).pdf")
-    _plot_mg_tail_row(result_dir, output_dir, lambda w: "p9999_i",
+    _plot_mg_tail_row(result_dir, output_dir, "p9999_i", "P99.99 Insert [ns]",
                       "mg_tail_latency_p9999.pdf")
 
 
-def _plot_mg_tail_row(result_dir, output_dir, metric_for, file_name):
-    """One row of per-dataset panels, for `plot_mg_tail_latency`.
-
-    `metric_for` picks the statistic per dataset, because the figure does not
-    draw the same one everywhere: see the note there.
-    """
+def _plot_mg_tail_row(result_dir, output_dir, metric, y_label, file_name):
+    """One row of per-dataset panels of `metric`, for `plot_mg_tail_latency`."""
     LEGEND_FONT_SIZE = 10
     LABEL_FONT_SIZE = 10
     # Panels of the same proportions as the accuracy figure's, which is WIDTH
@@ -970,21 +966,12 @@ def _plot_mg_tail_row(result_dir, output_dir, metric_for, file_name):
     sketches = ["SublimeMG", "SublimeMG_tree", "MG", "SpaceSaving", "Waving"]
     memory_powers = {"caida": range(17, 23), "kosarak": range(14, 19), "webdocs": range(17, 23)}
     memory_footprints = {w: [2 ** i for i in memory_powers[w]] for w in workloads}
-    metrics = {w: metric_for(w) for w in workloads}
-    # Which statistic a panel draws goes in its title rather than beside its
-    # axis: a second y-label would land in the gap between panels, on top of
-    # the tick labels already there, and widening that gap would take the
-    # panels out of proportion with the accuracy figure's.
-    metric_names = {"max_i": "Max", "p9999_i": "P99.99"}
 
     fig, axes = plt.subplots(nrows=1, ncols=3, sharex="col", figsize=(WIDTH, HEIGHT))
-    # One scale across the datasets drawing the same statistic, with the labels
-    # kept on each. A panel drawing a different one gets its own scale, since
-    # the two live orders of magnitude apart.
-    for i in range(1, 3):
-        if metrics[workloads[i]] == metrics[workloads[0]]:
-            axes[i].sharey(axes[0])
-            axes[i].tick_params(labelleft=True)
+    axes[1].sharey(axes[0])                              # One scale across datasets...
+    axes[2].sharey(axes[0])
+    axes[1].tick_params(labelleft=True)                  # ...with the labels kept on each.
+    axes[2].tick_params(labelleft=True)
 
     result_found = False
     for i, workload in enumerate(workloads):
@@ -998,17 +985,17 @@ def _plot_mg_tail_row(result_dir, output_dir, metric_for, file_name):
                 if len(contents) == 0:
                     continue
                 result = json.loads("[" + fix_file_contents(contents[:-2]) + "]")[-1]
-                if metrics[workload] not in result:     # Not a tail-latency run.
+                if metric not in result:                # Not a tail-latency run.
                     continue
-                worst[sketch].append((result["size"], result[metrics[workload]]))
+                worst[sketch].append((result["size"], result[metric]))
         for sketch in sketches:
             if not worst[sketch]:
                 continue
             result_found = True
             axes[i].plot(*zip(*worst[sketch]), **SKETCHES_STYLE_KWARGS[sketch], **LINES_STYLE)
     if not result_found:
-        logging.info("mg_tail_latency: Figure not generated due to no benchmark "
-                     "results being found to include")
+        logging.info(f"mg_tail_latency ({metric}): Figure not generated due to no "
+                     "benchmark results being found to include")
         return
 
     memory_footprint_labels = {w: [f"${2 ** (p - 20)}$" if p >= 20 else f"$1/{2 ** (20 - p)}$"
@@ -1019,20 +1006,20 @@ def _plot_mg_tail_row(result_dir, output_dir, metric_for, file_name):
         axes[i].margins(0.04)
         axes[i].yaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10, numticks=15))
         axes[i].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(base=10, numticks=15, subs="auto"))
-        axes[i].set_title(f"{DATASET_NAMES[workload]} ({metric_names[metrics[workload]]})",
-                          fontsize=LABEL_FONT_SIZE + 1)
+        axes[i].set_title(DATASET_NAMES[workload], fontsize=LABEL_FONT_SIZE + 1)
         axes[i].set_xlabel("Memory [MB]", fontsize=LABEL_FONT_SIZE)
         axes[i].xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
         axes[i].set_xticks(memory_footprints[workload])
         axes[i].set_xticklabels(memory_footprint_labels[workload], fontsize=LABEL_FONT_SIZE - 2)
         axes[i].set_xlim(memory_footprints[workload][0] / 1.1, 1.1 * memory_footprints[workload][-1])
-    axes[0].set_ylabel("Insert [ns]", fontsize=LABEL_FONT_SIZE)
+    axes[0].set_ylabel(y_label, fontsize=LABEL_FONT_SIZE)
     fig.subplots_adjust(wspace=0.25)
 
     # Centred on the *figure*, not on the middle panel: the panels sit inside
     # margins that are not symmetric, so their centre is not the figure's.
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
-    fig.legend(legend_lines, legend_labels, loc="lower center", bbox_to_anchor=(0.5, 1.0),
+    fig.legend(legend_lines, legend_labels, loc="lower center",
+               bbox_to_anchor=(0.5, fig.subplotpars.top + LEGEND_GAP_IN / HEIGHT),
                fancybox=True, shadow=False, ncol=4, fontsize=LEGEND_FONT_SIZE, frameon=False)
     fig.savefig(output_dir / file_name, bbox_inches="tight", pad_inches=0.01)
 
