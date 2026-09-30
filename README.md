@@ -19,15 +19,16 @@ space for their accuracy guarantee.
 # Reproducing the Paper's Results
 
 Everything — building, fetching the datasets, running the benchmarks, drawing
-every figure and table — is one command.
+every figure and table — is one command, and there are two ways to run it.
 
-```Bash
-git clone https://github.com/---/Sublime.git
-cd Sublime
-./evaluate.sh
-```
+## With Docker (recommended)
 
-Or, without installing anything but Docker:
+Reproducing these results natively means putting a C++ toolchain, a Python
+environment and a **LaTeX installation** on your machine. The last of those is
+not a small thing to add to a system you did not otherwise want to change. The
+image carries all of it: the only thing you install is Docker, nothing else
+touches your system, and deleting the image afterwards leaves no trace of any of
+it behind.
 
 ```Bash
 git clone https://github.com/---/Sublime.git
@@ -39,21 +40,42 @@ docker run --user "$(id -u):$(id -g)" \
            sublime_eval
 ```
 
-Either way the figures and tables land in `paper_results/figures/<timestamp>/`,
-in a `paper_results` directory **next to** the clone, numbered as in the paper.
+The figures and tables come back out onto your machine, in
+`paper_results/figures/<timestamp>/`, owned by you rather than by root.
 
-Useful options, which both forms take:
+Sublime is deliberately compiled when the container *runs*, not when the image
+is built, so that `-march=native` sees your CPU. The container measures the
+machine it runs on, not the one the image was built on.
+
+## Natively
+
+If you would rather not use Docker, or already have the dependencies:
+
+```Bash
+git clone https://github.com/---/Sublime.git
+cd Sublime
+./evaluate.sh
+```
+
+This is the same script the container runs, so the two paths do identical work.
+It checks that everything it needs is installed before it starts and names
+anything missing; "Reproducibility in Detail" below lists the dependencies.
+
+## Options
+
+Both forms take the same options, and put their output in the same place — a
+`paper_results` directory **next to** the clone, with the figures and tables
+numbered as in the paper.
 
 | | |
 |---|---|
 | `--quick` | A few minutes instead of hours, to check the setup works before committing a machine. One dataset, two memory budgets. The numbers are *not* the paper's. |
-| `--with-mg` | Also run the Sublime\textsubscript{MG} figures of the journal extension (Fig. 17-19). Roughly triples the time. |
+| `--with-mg` | Also run the Sublime_MG figures of the journal extension (Fig. 17-19). Roughly triples the time. |
 | `-f accuracy,skew` | Run only the named figures. `./evaluate.sh --help` lists them. |
 | `--skip-tests` | Skip the unit tests, which otherwise run first. |
 
-Before it starts, `evaluate.sh` checks that everything it needs is installed and
-that there is enough disk, and names anything missing. A full run needs about
-**12 GB of free disk** and **16 GB of RAM**; `--quick` needs about 3 GB of disk.
+A full run needs about **12 GB of free disk** and **16 GB of RAM**; `--quick`
+needs about 3 GB of disk.
 
 # Getting Started
 To use Sublime in developing your own project, simply add the files in the
@@ -89,21 +111,16 @@ handled by Sublime and therefore do not have APIs.
 
 `evaluate.sh` compiles every version of Sublime and the baselines, runs the unit
 tests, downloads the datasets, generates the workloads, runs the benchmarks and
-draws the figures and tables. The Dockerfile builds an image with the
-dependencies already installed and uses the same script, so the two paths run
-identical code; pick whichever suits the machine.
-
-Sublime is deliberately **not** compiled into the image. The build happens when
-the container runs, so that `-march=native` sees the CPU the benchmarks will
-actually run on. The image is therefore portable, and picks up BMI2, LZCNT and
-AVX-512 wherever the host provides them.
+draws the figures and tables. The Dockerfile installs the dependencies and then
+runs that same script, which is why the two paths produce the same work.
 
 **Hardware.** Any x86-64 machine. Sublime uses BMI2 for rank and select and
 AVX-512 for Sublime_CS's l2-norm estimator where they are available, and falls
 back to portable code where they are not, so the results reproduce on a machine
 without them — though the timings will not be comparable to the paper's, which
-were measured on a machine with both. A full run needs about 12 GB of free disk
-and 16 GB of RAM.
+were measured on a machine with both. Because the container compiles Sublime at
+run time rather than at image build time, it picks up whichever of these your
+CPU provides.
 
 **Dependencies, for a native run.** `evaluate.sh` checks for all of these before
 it starts and names any that are missing:
