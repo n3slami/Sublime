@@ -21,11 +21,26 @@ fi
 DIR_DATA="real_datasets"
 
 declare -A urls
-urls["kosarak"]="http://fimi.uantwerpen.be/data/kosarak.dat"
-urls["webdocs"]="http://fimi.uantwerpen.be/data/webdocs.dat.gz"
+# The FIMI repository these two came from (fimi.uantwerpen.be) is gone: every
+# path under it now 404s and its index is a stub. These are Mohammed Zaki's
+# copies at RPI, which host the FIMI workshop data. Byte-for-byte the same files
+# -- which is not a claim to take on trust, and is not taken on trust: both are
+# checked against the SHA-256s below, recorded from the copies the paper's
+# results were produced with.
+urls["kosarak"]="https://www.cs.rpi.edu/~zaki/Workshops/FIMI/data/kosarak.dat"
+urls["webdocs"]="https://www.cs.rpi.edu/~zaki/Workshops/FIMI/data/webdocs.dat.gz"
 urls["caida"]="https://github.com/StingySketch/Stingy-Sketch/raw/refs/heads/main/src/Frequency%20Estimation/0.dat"
 urls["lineitem_ext"]="https://drive.usercontent.google.com"
 urls["orders_ext"]="https://drive.usercontent.google.com"
+
+# Downloads that arrive gzipped. Note kosarak: it is served *as* `kosarak.dat`
+# with no .gz suffix and no Content-Encoding, but the bytes are a gzip stream
+# (Content-Type: application/x-gzip). Taking the name at face value leaves a
+# compressed file where the workload generator expects text, and it reads it as
+# garbage rather than failing -- so this is worth being explicit about.
+declare -A gzipped
+gzipped["kosarak"]=1
+gzipped["webdocs"]=1
 
 declare -A google_drive_file_ids
 google_drive_file_ids["lineitem_ext"]="1wxyFeLXhBV_hMFfrXqX296ZaEGNz169r"
@@ -64,14 +79,14 @@ download() {
              "https://drive.usercontent.google.com/download?id=${id}&confirm=$(awk '/download/ {print $NF}' ./cookie.txt)" \
              -o "${target}.part" || { rm -f ./cookie.txt; return 1; }
         rm -f ./cookie.txt
-    elif [[ "${dataset}" == "webdocs" ]]; then
-        wget -q --show-progress -O "${target}.gz.part" "${urls[$dataset]}" || return 1
-        mv "${target}.gz.part" "${target}.gz"
-        echo "Decompressing '${target}.gz'..."
-        gzip -d "${target}.gz" || return 1
-        return 0
     else
         wget -q --show-progress -O "${target}.part" "${urls[$dataset]}" || return 1
+    fi
+    if [[ "${gzipped[$dataset]:-0}" == "1" ]]; then
+        echo "Decompressing '${dataset}'..."
+        mv "${target}.part" "${target}.gz"
+        gzip -d -f "${target}.gz" || return 1      # Leaves ${target}.
+        return 0
     fi
     mv "${target}.part" "${target}"
 }
