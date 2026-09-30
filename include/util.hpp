@@ -155,26 +155,54 @@ static inline uint32_t bit_rank(uint64_t val, uint32_t i) {
 }
 
 
+/*
+ * `tzcnt` and `lzcnt` are BMI1 and LZCNT instructions, and the builtins that
+ * name them directly will not compile for a target without those extensions --
+ * which is every `-march` below `x86-64-v3`. The portable builtins say the same
+ * thing where they are defined, but they are *undefined* at zero, where the
+ * instructions answer with the operand width. That difference is load-bearing:
+ * `VALECounters::get_extension_length` reads `highbit_pos(0) + 1` back as a
+ * length of zero, which needs the wrap to `(uint32_t) -1` that subtracting a
+ * count of 64 produces. So the zero case is spelled out rather than left to the
+ * builtin.
+ */
+
 __attribute__((always_inline))
 static inline uint32_t lowbit_pos(uint64_t val) {
+#ifdef __BMI__
     return __builtin_ia32_tzcnt_u64(val);
+#else
+    return val ? __builtin_ctzll(val) : 8 * sizeof(val);
+#endif
 }
 
 
 __attribute__((always_inline))
 static inline uint32_t lowbit_pos(uint32_t val) {
+#ifdef __BMI__
     return __builtin_ia32_tzcnt_u32(val);
+#else
+    return val ? __builtin_ctz(val) : 8 * sizeof(val);
+#endif
 }
 
 
 __attribute__((always_inline))
 static inline uint32_t highbit_pos(uint64_t val) {
+#ifdef __LZCNT__
     return 8 * sizeof(val) - __builtin_ia32_lzcnt_u64(val) - 1;
+#else
+    return val ? 8 * sizeof(val) - __builtin_clzll(val) - 1 : static_cast<uint32_t>(-1);
+#endif
 }
 
 __attribute__((always_inline))
 static inline uint32_t highbit_pos(uint32_t val) {
+#ifdef __LZCNT__
     return 8 * sizeof(val) - __builtin_ia32_lzcnt_u32(val) - 1;
+#else
+    return val ? 8 * sizeof(val) - __builtin_clz(val) - 1 : static_cast<uint32_t>(-1);
+#endif
 }
 
 

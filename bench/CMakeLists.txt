@@ -107,7 +107,10 @@ function(compile_bench ds)
         add_library(WavingLib STATIC ./sketches_benchmark/include/waving_sketch/include/Waving.h ./sketches_benchmark/include/waving_sketch/include/bitset.h)
         target_include_directories(WavingLib PUBLIC ./sketches_benchmark/include/waving_sketch/include/)
         set_target_properties(WavingLib PROPERTIES LINKER_LANGUAGE CXX)
-        target_compile_options(WavingLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+        # WavingSketch uses `usleep` without including <unistd.h>; newer glibc
+        # and musl do not pull it in transitively. Forced here rather than
+        # patched into the submodule, which kept it dirty in `git status`.
+        target_compile_options(WavingLib PUBLIC ${BITHACKING_COMPILE_FLAGS} -include unistd.h)
         target_link_libraries(bench_${ds} WavingLib)
     elseif (ds STREQUAL "SublimeMG")
         target_link_libraries(bench_${ds} SublimeMGLib)
