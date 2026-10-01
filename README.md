@@ -75,7 +75,10 @@ numbered as in the paper.
 | `--skip-tests` | Skip the unit tests, which otherwise run first. |
 
 A full run needs about **12 GB of free disk** and **16 GB of RAM**; `--quick`
-needs about 3 GB of disk.
+needs about 3 GB of disk. Reproducing the conference paper's eight figures takes
+a little over two hours of benchmarking, plus the one-off dataset download and
+workload generation on the first run; `--with-mg` adds the three journal-extension
+figures to that.
 
 # Getting Started
 To use Sublime in developing your own project, simply add the files in the

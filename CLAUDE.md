@@ -795,7 +795,10 @@ The benchmark names are the same set at every stage — `accuracy`, `skew`, `val
 `*_bench` function names in `run_benchmarks.py::RUNNERS` and the `plot_*` functions in
 `plot.py::PLOTTERS` (where `skew` and `vale_tuning` share one plotter).
 A new experiment needs a matching entry in `generate_datasets.sh`, `run_benchmarks.py`, and
-`plot.py`. To iterate on one figure without the ~1h full run:
+`plot.py`. **A full run is about 2h20m** of building, testing, benchmarking and plotting with the
+workloads already present (measured 2026-09-30, all eleven figures, `--with-mg`, on this machine
+with the private full CAIDA). A first run adds the dataset download and the generation of ~19 GB
+of workloads on top of that. To iterate on one figure without paying any of it:
 
 ```bash
 bash evaluate.sh -f expansion
