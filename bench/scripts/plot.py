@@ -362,11 +362,14 @@ def plot_skew_vale_tuning(result_dir, output_dir):
         ax.set_xlabel(f"{DATASET_NAMES['zipf']} Exponent", fontsize=XLABEL_FONT_SIZE)
         ax.set_xticks([3.2 * i / (len(char_exps) - 1) for i in range(len(char_exps))], [float(char_exp) for char_exp in char_exps])
 
-    axes[0].text(0, 1e5, "_")
-
     axes[0].set_yscale("log")
     axes[0].yaxis.set_minor_locator(matplotlib.ticker.LogLocator(numticks=10, subs="auto"))
     axes[0].set_yticks(YTICKS)
+    # Reach at least the top of YTICKS, so the ticks asked for above are all on
+    # a part of the axis that exists. This used to be `text(0, 1e5, "_")` -- an
+    # underscore drawn into the panel to drag autoscale up, which also drew a
+    # visible stray dash in the top-left corner of the figure.
+    axes[0].set_ylim(top=max(axes[0].get_ylim()[1], YTICKS[-1]))
     axes[0].set_ylabel("AAE", fontsize=YLABEL_FONT_SIZE)
     axes[0].text(0.05, 1.5e-2, f"Memory={str(MEMORY_FOOTPRINT // 2 ** 20) + 'MB' if MEMORY_FOOTPRINT >= 2 ** 20 else str(MEMORY_FOOTPRINT // 2 ** 10) + 'KB'}", fontsize=TITLE_FONT_SIZE - 1)
     axes[1].set_ylabel("Memory [MB]", fontsize=YLABEL_FONT_SIZE)
