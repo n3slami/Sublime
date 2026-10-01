@@ -139,7 +139,12 @@ def save_figure(fig, path):
     for ax in fig.axes:
         if not ax.lines and not ax.patches and not ax.collections:
             ax.set_visible(False)
-    fig.savefig(path, bbox_inches="tight", pad_inches=0.01)
+    # `pad_inches` was 0.01, which is tight enough that a glyph sitting exactly
+    # on the computed boundary can be dropped by the PDF writer -- which is how
+    # "P-99 Absolute Error" came out of Fig. 15 as "P-99 Absolute Erro". A
+    # hundredth of an inch more costs nothing in a paper and keeps labels off
+    # the edge.
+    fig.savefig(path, bbox_inches="tight", pad_inches=0.02)
 
 
 def plot_accuracy(result_dir, output_dir):
@@ -721,8 +726,6 @@ def plot_l2_size_function(result_dir, output_dir):
         ax.margins(0.04)
         ax.set_xlabel(f"{DATASET_NAMES['zipf']} Exponent", fontsize=XLABEL_FONT_SIZE)
         ax.set_xticks([i / (len(char_exps) - 1) for i in range(len(char_exps))], [float(char_exp) for char_exp in char_exps])
-
-    axes[0].text(0, 6.38, "_")
 
     axes[0].yaxis.set_minor_locator(matplotlib.ticker.MultipleLocator(YTICKS_MINOR_ERROR))
     axes[0].set_ylabel("P-99 Absolute Error", fontsize=YLABEL_FONT_SIZE)
