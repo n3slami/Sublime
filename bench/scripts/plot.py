@@ -95,6 +95,12 @@ LINES_STYLE = {"markersize": 4, "linewidth": 0.7, "fillstyle": "none"}
 # physical gap rather than a fraction, so that it clears the panel titles by the
 # same amount whether the figure is one row tall or four.
 LEGEND_GAP_IN = 0.185
+# The same, for a figure whose panels carry no titles. Most of the gap above is
+# the room a title needs, and a legend's own bounding box already carries
+# padding below its text, so without a title no further offset is wanted: this
+# measures 0.09in of white between legend and panel against the titled figures'
+# 0.08in, which is a pixel and a half apart at print resolution.
+LEGEND_GAP_IN_UNTITLED = 0.0
 DATASET_NAMES = {"unif": r"$\textsc{Uniform}$", 
                  "zipf": r"$\textsc{Zipfian}$", 
                  "real": r"$\textsc{Real}$", 
@@ -385,10 +391,23 @@ def plot_skew_vale_tuning(result_dir, output_dir):
     legend_lines_vale_tuning, legend_labels_vale_tuning = axes[1].get_legend_handles_labels()
     legend_lines = legend_lines_skew + legend_lines_vale_tuning
     legend_labels = legend_labels_skew + legend_labels_vale_tuning
-    axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(2.35, 0.9),
+    legend = axes[0].legend(legend_lines, legend_labels, loc="upper left", bbox_to_anchor=(2.35, 0.9),
                    fancybox=True, shadow=False, ncol=3, fontsize=LEGEND_FONT_SIZE, frameon=False)
 
-    legend_sep = matplotlib.lines.Line2D([14.90, 14.90], [1.0e-1, 5.0e3], linestyle=':', color="grey")
+    # The dotted rule separating the two legend blocks. Its height is taken from
+    # the legend itself rather than guessed in data coordinates, so it stays
+    # centred on the entries however they wrap: x in data coordinates (where it
+    # was placed by eye, between the second and third columns), y in axes
+    # coordinates spanning the legend's own extent.
+    fig.canvas.draw()
+    legend_box = legend.get_window_extent(fig.canvas.get_renderer())
+    to_axes = axes[0].transAxes.inverted()
+    (_, sep_bottom), (_, sep_top) = to_axes.transform([(legend_box.x0, legend_box.y0),
+                                                       (legend_box.x0, legend_box.y1)])
+    legend_sep = matplotlib.lines.Line2D(
+            [14.90, 14.90], [sep_bottom, sep_top], linestyle=':', color="grey",
+            transform=matplotlib.transforms.blended_transform_factory(
+                    axes[0].transData, axes[0].transAxes))
     legend_sep.set_clip_on(False)
     axes[0].add_line(legend_sep)
 
@@ -1192,9 +1211,10 @@ def plot_mg_expansion(result_dir, output_dir):
     fig.subplots_adjust(wspace=0.4)
 
     legend_lines, legend_labels = axes[0].get_legend_handles_labels()
-    axes_h_pt = fig.get_size_inches()[1] * axes[0].get_position().height * 72
+    # Sits on the panels the way the accuracy figure's does. These panels have
+    # no titles, so the clearance a title would need comes off the gap.
     fig.legend(legend_lines, legend_labels, loc="lower center",
-                   bbox_to_anchor=(0.5, 1.0 + 2.0 / axes_h_pt),
+                   bbox_to_anchor=(0.5, fig.subplotpars.top + LEGEND_GAP_IN_UNTITLED / HEIGHT),
                    fancybox=True, shadow=False, ncol=3, fontsize=LEGEND_FONT_SIZE, frameon=False)
     save_figure(fig, output_dir / (inspect.stack()[0][3][5:] + "_(Fig_19).pdf"))
 
