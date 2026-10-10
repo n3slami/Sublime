@@ -6,27 +6,29 @@ To maintain accurate estimates in the face of stream growth, Sublime expands its
 In doing so, it sublinearly bounds both the error and the memory footprint and establishes a Pareto frontier of trade-offs to choose from.
 
 Our paper describes Sublime in detail and provides an in-depth theoretical analysis of its memory footprint and accuracy guarantees.
-It also proves a memory footprint lower bound for sketches that adapt to the stream's length, showing that Sublime gives rise to sketches that use the optimal amount of space for their accuracy guarantee.
+It also proves a memory footprint lower bound for sketches that adapt to the stream's length, showing that Sublime gives rise to sketches that use close to the optimal amount of space for their accuracy guarantee.
 
 # Reproducing the Paper's Results
 
-Building the project, fetching datasets, running benchmarks, and generating all figures and tables can be done with a single command.
-This command also produces a new PDF of the paper that includes the newly generated figures.
+Building the project, downloading datasets, running benchmarks, and generating all figures and tables can be done with a single command.
+With the `--with-paper` option, this command also produces a new PDF of the paper containing the regenerated figures.
 
 There are two ways to run this command:
-1. using Docker, which avoids polluting the host machine with dependencies, or
-2. natively, which is useful when all required dependencies are already installed.
+1. **Using Docker**, which avoids installing dependencies on the host machine.
+2. **Natively**, which is useful when all required dependencies are already installed.
 
-Both methods place their output in a `paper_results` directory **next to** the clone of Sublime's repository. 
-They also support the same runtime options.
-The most important option is `--quick`, which runs the benchmarks on smaller datasets and generates example figures for sanity checking before running the full benchmark suite.
+Both methods support x86 and ARM architectures and can be used on Linux, macOS, and Windows.
+They save their output to a `paper_results` directory **next to** the cloned Sublime repository and support the same runtime options.
+
+The most important runtime option is `--quick`, which runs a reduced set of benchmarks on smaller datasets and generates example figures to verify that the setup works before running the full benchmark suite.
 All runtime options are described below.
 
 ## With Docker (Recommended)
 
 Reproducing the paper's results natively requires a C++ toolchain, a Python environment, and a LaTeX installation.
-To avoid installing these dependencies on the host machine, we provide a Dockerfile that builds an image with all required dependencies:
-```Bash
+To avoid installing these dependencies on the host machine, we provide a Dockerfile that builds an image containing all required dependencies:
+
+```bash
 git clone https://github.com/---/Sublime.git
 cd Sublime
 docker build -t sublime_eval .
@@ -36,24 +38,36 @@ docker run --user "$(id -u):$(id -g)" \
            sublime_eval
 ```
 
-The generated figures and tables are saved on the host machine under `paper_results/figures/<timestamp>/` and numbered to match their corresponding figures and tables in the paper.
+The generated figures and tables are saved on the host machine under `paper_results/figures/<timestamp>/` and numbered to match their counterparts in the paper.
 
-Sublime is intentionally compiled when the container runs rather than when the image is built, allowing `-march=native` to optimize for the host CPU.
-The image is built natively for the host's architecture, so the same commands work on x86-64 and ARM64 machines, including Apple Silicon Macs.
-On Windows, the same commands work under Docker Desktop.
-*We note that Sublime relies on efficient implementations of rank and select using Intel's BMI2 instructions, and as such, may not perform as well on platform lacking these instructions.*
+To also generate a new PDF of the paper containing the regenerated figures, build the image with the additional LaTeX packages required by the paper (which increase the image size by approximately 2.2 GB) and pass `--with-paper` when running the container:
+
+```bash
+docker build --build-arg WITH_PAPER=1 -t sublime_eval .
+docker run --user "$(id -u):$(id -g)" \
+           -v "$(cd .. && pwd)/paper_results":/usr/local/paper_results \
+           sublime_eval --with-paper
+```
+
+Sublime is intentionally compiled when the container runs rather than when the image is built, allowing `-march=native` to optimize the executable for the host CPU.
+The Docker image is built for the host's architecture, so the same commands work on both x86-64 and ARM64 machines, including Apple Silicon Macs.
+On Windows, these commands can be run under WSL2 with Docker Desktop.
+
+*Note that Sublime relies on efficient implementations of rank and select using Intel's BMI2 instructions.
+Consequently, performance measurements on platforms without these instructions may differ from those reported in the paper.*
 
 ## Natively
 
-If the dependencies are already installed on the host machine, the paper can be evaluated natively by running the same script as the Docker container:
-```Bash
+If the required dependencies are already installed on the host machine, the paper's results can be reproduced natively by running the same script used by the Docker container:
+
+```bash
 git clone https://github.com/---/Sublime.git
 cd Sublime
 ./evaluate.sh
 ```
 
-This script checks that all dependencies are installed before it starts and names any missing ones.
-We present the exact list of dependencies under "Reproducibility in Detail" below.
+Before starting, the script checks for all required dependencies and reports any that are missing.
+The complete list of dependencies is provided in the "Reproducibility in Detail" section below.
 
 ## Runtime Options
 
@@ -65,32 +79,11 @@ Both methods above support the same runtime options.
 | `--with-mg` | Also generates the Sublime_MG figures, which appear only in the journal version of the paper (Figs. 17--19). This option roughly triples the benchmarking time. |
 | `-f accuracy,skew` | Runs only the benchmarks needed to generate the specified figures. The command `./evaluate.sh --help` lists the figure names. |
 | `--skip-tests` | Skips the unit tests, which otherwise run before the benchmarks. |
+| `--with-paper` | Also produces a new PDF of the paper containing the regenerated figures, saved as `paper.pdf` next to them. This option is off by default and requires additional LaTeX packages, listed under "Reproducibility in Detail" below. |
 
 A full run requires approximately **12 GB of free disk space** and **16 GB of RAM**. Using `--quick` reduces the required disk space to approximately **3 GB**.
 
 Reproducing the eight figures from the conference paper takes a little over two hours of benchmarking, in addition to the one-time cost of downloading the datasets and generating the workloads on the first run. Using `--with-mg` additionally generates the three figures from the journal extension.
-
-# Getting Started
-To use Sublime in your own project, simply add the files in the `include` directory and include the header file corresponding to the desired version of Sublime.
-
-The file `SublimeCMS.hpp` implements Sublime when applied to the Count-Min Sketch, complete with VALE's auto-tuning features.
-The file `SublimeCMSNoTuning.hpp.in` fixes VALE's tuning and allows the compiler to apply intrusive optimizations to significantly improve insertion, deletion, and query performance.
-Moreover, `SublimeCMSNoTuningMorris.hpp.in` probabilistically increments each counter during insertions to enable a fair comparison with Tailored Sketch.
-
-Similarly, the file `SublimeCS.hpp` implements Sublime applied to the Count Sketch, and the file `SublimeCSNoTuning.hpp.in` fixes VALE's tuning in this case to enable higher performance.
-
-All versions of Sublime provide the following APIs:
-- `Insert`: Inserts the provided key into the sketch.
-- `Delete`: Deletes the provided key from the sketch.
-- `Query`: Returns an estimate of the provided key's frequency.
-- `Size`: Returns the size of the sketch.
-- `FlushPrefetchQueue`: Flushes all updates whose requests for chunks are
-  in-flight. This ensures queries take into account all updates previously made
-  to the sketch.
-
-The file `example.cpp` in the `examples` directory illustrates the usage of
-these APIs. All other operations such as auto-tuning VALE are transparently
-handled by Sublime and therefore do not have APIs.
 
 # Platform Support
 
@@ -117,13 +110,15 @@ On machines other than the one we used, which supports BMI2 and AVX-512, the tim
 The `evaluate.sh` script compiles every version of Sublime and the baselines, runs the unit tests, downloads the datasets, generates the workloads, runs the benchmarks and draws the figures and tables.
 The Dockerfile installs the dependencies and then runs that same script.
 
-**Hardware.** 
+## Hardware
+
 Any 64-bit x86 or ARM machine running Linux or macOS, or Windows through Docker or the Windows Subsystem for Linux.
 "Platform Support" above lists which baselines each platform runs.
 Our results were produced on an x86-64 machine supporting BMI2 and AVX-512; Sublime falls back to portable code where these are unavailable, at the cost of timings that are not comparable to the paper's.
 Because the container compiles Sublime at run time rather than at image build time, it picks up whichever of these the machine's CPU supports.
 
-**Dependencies for a Native Run.**
+## Dependencies for a Native Run
+
 The `evaluate.sh` script checks for the following dependencies before it starts and names any that are missing:
 - CMake 3.5 or later, Make, and GCC 11 or later or Clang (on macOS, Apple Clang from the Xcode command-line tools)
 - Git, curl, and Bash 3.2 or later, which is the version macOS ships
@@ -132,58 +127,101 @@ The `evaluate.sh` script checks for the following dependencies before it starts 
 - A LaTeX installation, used to typeset the figures' text.
   The packages `texlive-latex-base`, `texlive-latex-recommended` and `texlive-fonts-recommended` are sufficient on Debian and Ubuntu.
 
+## Regenerating the Paper
+
+With `--with-paper`, the paper's source is fetched from the `camera_ready` branch of [its repository](https://github.com/n3slami/Sketchbook_Draft/tree/camera_ready), each figure of the paper that the run generated replaces the published one, and the paper is compiled into `paper_results/figures/<timestamp>/paper.pdf`.
+A figure that the run did not generate, e.g., when using `-f`, keeps its published version, and the script lists which ones.
+The figures of the Sublime_MG journal extension are not part of this paper.
+The paper's repository includes the ACM document class it uses, so it compiles with TeX Live 2022 or later, given a few additional packages, all of which `evaluate.sh` checks for before it starts:
+- On Debian and Ubuntu: `texlive-fonts-extra`, `texlive-plain-generic`, and `texlive-latex-extra`.
+- On macOS: the full MacTeX distribution, as installed below.
+- With Docker: `--build-arg WITH_PAPER=1`, as shown above.
+
 On macOS, the compiler comes with the Xcode command-line tools (`xcode-select --install`), and the rest can be installed with [Homebrew](https://brew.sh):
 ```Bash
 brew install cmake python git curl
 brew install --cask mactex-no-gui    # The full TeX distribution, about 5 GB.
 ```
 
-**Datasets.**
-The datasets are downloaded to `paper_results/real_datasets` and checked against recorded SHA-256 checksums.
-They are fetched once and reused by later runs.
+## Datasets
 
-*Note on CAIDA*: 
-We exclude the full CAIDA 2018 dataset used in our evaluation and only use a 10% slice of it, because the full dataset requires approval for use in research projects.
-We repeat this slice 10 times to create a workload of the same size as when using the full dataset.
-It is still possible to reproduce the exact results in our paper by adding the remaining 90%, i.e. the files `1.dat` to `10.dat`, to the `paper_results/real_datasets` directory before running `evaluate.sh`, in either the Dockerized or the native version.
+### Default Datasets
 
-## Benchmarking Your Own Stream
+The datasets used in the paper are downloaded to `paper_results/real_datasets` and verified against recorded SHA-256 checksums.
+They are downloaded only once and reused in subsequent runs.
 
-Any stream stored as a text file can be replayed through every sketch in the suite.
-The workload generator turns the file into a workload, and each sketch's benchmark replays the workload, reporting the error of the sketch against the exact frequencies along with its size and update and query times as JSON.
-From the `build` directory:
-```Bash
+**Note on CAIDA:**
+We cannot distribute the full CAIDA 2018 dataset used in our evaluation because its use requires explicit approval from CAIDA.
+Instead, we include a 10% subset and repeat it 10 times to construct a workload of the same size as the original.
+The exact results reported in the paper can still be reproduced by adding the remaining data (files `1.dat` through `10.dat`) to `paper_results/real_datasets` before running `evaluate.sh`, using either Docker or the native setup.
+
+### Custom Datasets
+
+Any stream stored as a text file can be used to benchmark the sketches in our suite.
+The workload generator converts the file into a workload that can be replayed by each sketch's benchmark.
+Each benchmark reports the sketch's estimation error relative to the exact frequencies, memory consumption, and update and query times in JSON format.
+
+From the `build` directory, run:
+
+```bash
 ./bench/workload_gen -t standard --fdist real my_stream.txt --key-len-binary 0 -o my_stream
-./bench/bench_SublimeCMS 1048576 -w my_stream     # A memory budget of 1 MB.
+./bench/bench_SublimeCMS 1048576 -w my_stream     # 1 MB memory budget
 ./bench/bench_CMS 1048576 -w my_stream
 ```
-By default, every whitespace-separated token of the file is a key.
-With `--text-keys lines`, every non-empty line is a key instead, which suits keys containing spaces such as flow identifiers.
-If every key is an unsigned 64-bit integer written without a sign or leading zeros, the workload uses integer keys; otherwise, every key is kept as the exact bytes it was written as.
-Files with Windows line endings are read the same way as any other.
 
-The `-t` option selects the kind of workload, all of which accept text files:
-- `standard`: inserts the whole stream, then measures every sketch once.
-- `standard_string`: the same, with the keys always treated as strings.
-- `expand`: inserts the stream in periods of `--measurement-period` keys, measuring after each, for sketches that grow with the stream, e.g., `bench_SublimeCMS` with `--size-function-power` and `--size-function-mult`. Keys past the last full period are not replayed.
-- `delete`: inserts the stream, then deletes up to `--n-deletes` of its keys in periods of `--measurement-period`, measuring after each, for sketches that support deletions.
+By default, each whitespace-separated token in the input file is treated as a key.
+Alternatively, `--text-keys lines` treats each non-empty line as a key, which is useful for keys containing spaces, such as flow identifiers.
+Keys are interpreted as unsigned 64-bit integers if they contain only a decimal integer without a sign or leading zeros.
+Otherwise, they are preserved as their original byte sequences.
 
-Several files given as `--fdist real a.txt real b.txt` are treated as one stream.
-Binary streams of fixed-length keys are read with `--key-len-binary` set to the key length in bytes.
-By default, the order of the stream is shuffled with the seed given by `--seed`, which is how every workload in the paper was generated.
-To replay the stream in the order the file holds it instead, e.g., to study the effects of temporal locality, add `--no-shuffle`:
-```Bash
+The `-t` option selects the workload type, all of which support text files:
+
+- `standard`: Inserts the entire stream, then measures the sketch once.
+- `standard_string`: Same as `standard`, but always treats keys as strings.
+- `expand`: Inserts the stream in periods of `--measurement-period` keys, measuring after each period. This is useful for sketches that expand as the stream grows, such as `bench_SublimeCMS` with `--size-function-power` and `--size-function-mult`. Keys beyond the last complete period are not replayed.
+- `delete`: Inserts the entire stream, then deletes up to `--n-deletes` keys in periods of `--measurement-period`, measuring after each period. This workload is intended for sketches that support deletions.
+
+Multiple files can be combined into a single stream using `--fdist real a.txt real b.txt`.
+For binary streams containing fixed-length keys, set `--key-len-binary` to the key length in bytes.
+
+By default, the workload generator shuffles the stream using the seed specified by `--seed`, as was done for all workloads in the paper.
+To preserve the original stream order, for example, to study the effects of temporal locality, use `--no-shuffle`:
+
+```bash
 ./bench/workload_gen -t expand --fdist real my_stream.txt --key-len-binary 0 --measurement-period 100000 --no-shuffle -o my_stream_ordered
 ```
-Several files given as `--fdist real a.txt real b.txt` are then replayed one after the other, in the order they are given.
-With `-t delete`, the keys are deleted starting from the end of the stream.
+
+With `--no-shuffle`, multiple input files are replayed sequentially in the order specified.
+For `-t delete`, keys are deleted in reverse stream order.
 
 ## Sublime_MG, the Journal Extension
 
 The three Sublime_MG figures (17, 18 and 19) belong to the journal extension rather than to the conference paper, and are **not generated by default**.
 Adding `--with-mg` generates them as well, which roughly triples the running time of the benchmarks.
 
-# Building
+# Developing with Sublime
+To use Sublime in your own project, simply add the files in the `include` directory and include the header file corresponding to the desired version of Sublime.
+
+The file `SublimeCMS.hpp` implements Sublime when applied to the Count-Min Sketch, complete with VALE's auto-tuning features.
+The file `SublimeCMSNoTuning.hpp.in` fixes VALE's tuning and allows the compiler to apply intrusive optimizations to significantly improve insertion, deletion, and query performance.
+Moreover, `SublimeCMSNoTuningMorris.hpp.in` probabilistically increments each counter during insertions to enable a fair comparison with Tailored Sketch.
+
+Similarly, the file `SublimeCS.hpp` implements Sublime applied to the Count Sketch, and the file `SublimeCSNoTuning.hpp.in` fixes VALE's tuning in this case to enable higher performance.
+
+All versions of Sublime provide the following APIs:
+- `Insert`: Inserts the provided key into the sketch.
+- `Delete`: Deletes the provided key from the sketch.
+- `Query`: Returns an estimate of the provided key's frequency.
+- `Size`: Returns the size of the sketch.
+- `FlushPrefetchQueue`: Flushes all updates whose requests for chunks are
+  in-flight. This ensures queries take into account all updates previously made
+  to the sketch.
+
+The file `example.cpp` in the `examples` directory illustrates the usage of
+these APIs. All other operations such as auto-tuning VALE are transparently
+handled by Sublime and therefore do not have APIs.
+
+# Building Sublime
 To build the different versions of Sublime along with their examples, unit tests, and benchmarks, navigate to the project's root directory and execute the commands
 ```Bash
 mkdir build && cd build

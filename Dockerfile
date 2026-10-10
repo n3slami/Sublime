@@ -4,12 +4,25 @@
 #   mkdir -p ../paper_results
 #   docker run -v "$(cd .. && pwd)/paper_results":/usr/local/paper_results sublime_eval
 #
+# To also build a version of the paper with the new figures, build the image with
+# the paper's TeX packages and pass --with-paper through to evaluate.sh:
+#
+#   docker build --build-arg WITH_PAPER=1 -t sublime_eval .
+#   docker run -v ... sublime_eval --with-paper
+#
 # Alpine, so the image is far smaller than the `ubuntu` + `texlive-full` it
 # replaced. The TeX set is the minimum that actually renders these figures,
 # arrived at by trying it: `texlive` for latex, `texlive-dvi` for dvipng and
 # dvips, `texmf-dist-fontsrecommended` for mathpazo (the plots are set in
 # Palatino), and `texmf-dist-latexextra`, without which matplotlib's usetex
 # preamble fails to typeset.
+#
+# The paper itself needs two more TeX collections -- the ACM class comes with its
+# source: `fontsextra`, for ACM's Libertine, Biolinum and Inconsolata, without
+# which acmart quietly falls back to Computer Modern; and `plaingeneric`, for
+# binhex.tex, which the class's hyperxmp needs. Each was found necessary by
+# leaving it out. They add 2.2 GB, nearly all of it fontsextra, against the 0.9 GB
+# the figures need, so they are installed only when asked for.
 #
 # Note that Sublime is *not* compiled here. The build happens when the container
 # runs, so that `-march=native` sees the CPU the benchmarks will run on -- which
@@ -25,6 +38,11 @@ RUN apk add --no-cache \
         build-base cmake make g++ \
         python3 py3-pip \
         texlive texlive-dvi texmf-dist-fontsrecommended texmf-dist-latexextra ghostscript
+
+ARG WITH_PAPER=0
+RUN if [ "${WITH_PAPER}" = "1" ]; then \
+        apk add --no-cache texmf-dist-fontsextra texmf-dist-plaingeneric; \
+    fi
 
 # matplotlib at image build time, so that running the container needs the
 # network only for the datasets.

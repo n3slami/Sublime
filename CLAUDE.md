@@ -869,6 +869,20 @@ repo**, not inside it:
 2. `generate_datasets.sh <build> <real_datasets>` → `paper_results/workloads/` via `workload_gen`.
 3. `run_benchmarks.py <build> <workloads> -b <names>` → `paper_results/results/<timestamp>/<bench>/<Sketch>_<bytes>_<workload>.json`.
 4. `plot.py -f <names>` → `paper_results/figures/<timestamp>/*_(Fig_NN).pdf` (needs LaTeX; `text.usetex=True`).
+5. Optionally, `--with-paper` (off by default): `build_paper.sh` fetches the paper's source from the
+   `camera_ready` branch of `n3slami/Sketchbook_Draft` (public), swaps every `<name>_(Fig_NN).pdf`
+   the run drew in for the draft's `figures/<name>_camera_ready.pdf` (seven conference figures;
+   the MG ones are not in it), compiles with pdflatex + bibtex, and writes `paper.pdf` beside the
+   figures. The draft bundles its own acmart (v2.20, with the matching `.bst`, since 2026-10-10;
+   the v1.70 it had before could not build its own `\setcopyright{cc}`), so any TeX Live from 2022
+   on builds it -- Debian 12, Ubuntu 24.04, Alpine's 2024 and 2026 all checked. `build_paper.sh
+   --check` runs during preflight and looks for one file per package a minimal install lacks,
+   validated by leaving each documented package out: Alpine `fontsextra plaingeneric` (the
+   Dockerfile's `WITH_PAPER=1` build arg, +2.2 GB, nearly all fonts); Debian/Ubuntu
+   `texlive-fonts-extra texlive-plain-generic texlive-latex-extra` (`latex-extra` pulls in
+   `pictures`). Without the fonts acmart falls back to Computer Modern *silently*, which is why the
+   check looks for `libertine.sty` itself. Test the package set one build at a time: a parallel
+   attempt once mistook download failures for missing packages.
 
 The benchmark names are the same set at every stage — `accuracy`, `skew`, `vale_tuning`,
 `expansion`, `contraction`, `accuracy_unbiased`, `l2_size_function`, `join_size` — keyed by the

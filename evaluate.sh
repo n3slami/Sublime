@@ -28,6 +28,7 @@ FIGURE_OPTIONS=("${PAPER_FIGURES[@]}" "${MG_FIGURES[@]}")
 
 FIGURES=""
 WITH_MG=0
+WITH_PAPER=0
 QUICK=0
 RUN_TESTS=1
 
@@ -47,6 +48,10 @@ Options:
                       before committing a machine to the full run. The numbers
                       it produces are NOT the paper's.
       --skip-tests    Do not run the unit tests first.
+      --with-paper    Also build a version of the paper with the newly drawn
+                      figures, from the camera-ready source on GitHub. Needs
+                      more of TeX Live than the figures do; under Docker, build
+                      the image with --build-arg WITH_PAPER=1. Off by default.
   -h, --help          This message.
 
 Figures of the paper:
@@ -86,6 +91,7 @@ while [[ $# -gt 0 ]]; do
         --with-mg)  WITH_MG=1;    shift ;;
         --quick)    QUICK=1;      shift ;;
         --skip-tests) RUN_TESTS=0; shift ;;
+        --with-paper) WITH_PAPER=1; shift ;;
         -h|--help)  print_help_message_exit 0 ;;
         *)          echo "Unknown option $1"; print_help_message_exit 1 ;;
     esac
@@ -159,6 +165,9 @@ if [[ ${#missing[@]} -gt 0 ]]; then
 fi
 
 project_root=$(pwd)
+if [[ ${WITH_PAPER} -eq 1 ]]; then
+    bash "${project_root}/bench/scripts/build_paper.sh" --check
+fi
 results_parent=$(dirname "${project_root}")
 # The full run downloads ~1.5 GB of datasets and writes ~8 GB of workloads.
 needed_gb=$([[ ${QUICK} -eq 1 ]] && echo 3 || echo 12)
@@ -248,11 +257,16 @@ python3 "${project_root}/bench/scripts/run_benchmarks.py" "${project_root}/build
 announce "drawing the figures"
 python3 "${project_root}/bench/scripts/plot.py" -f ${FIGURES//,/ }
 [[ ${USING_VENV} -eq 1 ]] && deactivate
+latest=$(ls -1t figures | head -1)
+
+if [[ ${WITH_PAPER} -eq 1 ]]; then
+    announce "building the paper with the new figures"
+    bash "${project_root}/bench/scripts/build_paper.sh" "figures/${latest}" paper
+fi
 
 # --------------------------------------------------------------------------
 trap - ERR
 elapsed=$(( $(date +%s) - started ))
-latest=$(ls -1t figures | head -1)
 echo
 echo "=============================================================="
 printf " Done in %dh %02dm %02ds.\n" $((elapsed/3600)) $(((elapsed%3600)/60)) $((elapsed%60))
@@ -260,6 +274,10 @@ echo
 echo " Figures and tables:"
 echo "   $(cd figures/"${latest}" && pwd)"
 ls -1 "figures/${latest}" | sed 's/^/     /'
+if [[ ${WITH_PAPER} -eq 1 ]]; then
+    echo
+    echo " The paper, with these figures: $(cd figures/"${latest}" && pwd)/paper.pdf"
+fi
 if [[ ${QUICK} -eq 1 ]]; then
     echo
     echo " This was --quick: one dataset and one memory budget per figure."
