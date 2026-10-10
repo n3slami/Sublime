@@ -11,10 +11,19 @@
 
 set -euo pipefail
 
+# Runs on Linux and macOS: bash 3.2 (what macOS ships as /bin/bash) and the BSD
+# userland, so nothing below uses a GNU-only flag or a bash 4 feature.
+OS=$(uname -s)
+
+# The number of CPUs, which neither platform spells the same way.
+cpu_count() {
+    getconf _NPROCESSORS_ONLN 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4
+}
+
 # The figures of the paper proper.
 PAPER_FIGURES=("accuracy" "skew" "vale_tuning" "expansion" "contraction" "accuracy_unbiased" "l2_size_function" "join_size")
 # Sublime_MG, which is the journal extension, and is off unless asked for.
-MG_FIGURES=("mg_accuracy" "mg_tail_latency" "mg_expansion")
+MG_FIGURES=("mg_accuracy" "mg_tail_latency" "mg_expansion" "mg_join_size")
 FIGURE_OPTIONS=("${PAPER_FIGURES[@]}" "${MG_FIGURES[@]}")
 
 FIGURES=""
@@ -54,6 +63,8 @@ Sublime_MG, the journal extension (--with-mg, or name them with -f):
   - mg_accuracy:       Sublime_MG against Misra-Gries, Space-Saving and Waving                 (Fig. 17)
   - mg_tail_latency:   the worst single insertion of each, in runs of its own                  (Fig. 18)
   - mg_expansion:      Sublime_MG across expansions, and what the error measure saves          (Fig. 19)
+  - mg_join_size:      the join-size figure with MG and Sublime_MG added; draws its CMS and   (Fig. 20)
+                       CS lines from join_size, which has to run alongside it
 EOF
     exit $1
 }
@@ -117,9 +128,14 @@ announce() {
 # --------------------------------------------------------------------------
 announce "checking dependencies"
 missing=()
-for tool in cmake make g++ git python3 wget curl; do
+for tool in cmake make git python3 curl; do
     command -v "${tool}" > /dev/null 2>&1 || missing+=("${tool}")
 done
+# Any C++ compiler CMake can find; on macOS `g++` is Apple Clang under that name.
+if ! command -v c++ > /dev/null 2>&1 && ! command -v g++ > /dev/null 2>&1 \
+        && ! command -v clang++ > /dev/null 2>&1; then
+    missing+=("a C++17 compiler")
+fi
 if ! python3 -c "import venv" > /dev/null 2>&1; then
     missing+=("python3-venv (the 'venv' module)")
 fi
@@ -130,9 +146,15 @@ if [[ ${#missing[@]} -gt 0 ]]; then
     echo "Missing dependencies:"
     printf '  - %s\n' "${missing[@]}"
     echo
-    echo "On Debian or Ubuntu:"
-    echo "  sudo apt-get install build-essential cmake git python3 python3-venv wget curl \\"
-    echo "                       texlive-latex-base texlive-latex-recommended texlive-fonts-recommended"
+    if [[ "${OS}" == "Darwin" ]]; then
+        echo "On macOS (with Homebrew, after \`xcode-select --install\` for the compiler):"
+        echo "  brew install cmake python git curl"
+        echo "  brew install --cask mactex-no-gui     # the full TeX distribution, about 5 GB"
+    else
+        echo "On Debian or Ubuntu:"
+        echo "  sudo apt-get install build-essential cmake git python3 python3-venv curl \\"
+        echo "                       texlive-latex-base texlive-latex-recommended texlive-fonts-recommended"
+    fi
     exit 1
 fi
 
@@ -140,17 +162,36 @@ project_root=$(pwd)
 results_parent=$(dirname "${project_root}")
 # The full run downloads ~1.5 GB of datasets and writes ~8 GB of workloads.
 needed_gb=$([[ ${QUICK} -eq 1 ]] && echo 3 || echo 12)
-available_gb=$(df -BG --output=avail "${results_parent}" | tail -1 | tr -dc '0-9')
+# POSIX `df -P -k` reads the same on Linux and macOS: 1K blocks, free in column 4.
+available_gb=$(df -P -k "${results_parent}" | awk 'NR == 2 { print int($4 / 1048576) }')
 if [[ ${available_gb} -lt ${needed_gb} ]]; then
     echo "Only ${available_gb} GB free at ${results_parent}; this needs about ${needed_gb} GB."
     exit 1
 fi
 echo "     toolchain ok, ${available_gb} GB free at ${results_parent}"
-if ! grep -q avx512 /proc/cpuinfo 2>/dev/null; then
-    echo "     note: no AVX-512 on this CPU. Everything builds and runs -- Sublime_CS's"
-    echo "           l2-norm estimator falls back to scalar code -- but the timings will"
-    echo "           not be comparable to the paper's."
-fi
+# The paper's numbers come from an x86 machine with AVX-512. Anything else runs
+# the portable fallbacks (see include/portability.hpp), which give the same
+# answers -- bar Sublime_CS's l2-norm estimator, whose AVX-512 and scalar paths
+# have never agreed -- but not the same timings.
+case "$(uname -m)" in
+    x86_64|amd64)
+        if [[ "${OS}" == "Darwin" ]]; then
+            cpu_flags=$(sysctl -n machdep.cpu.leaf7_features 2> /dev/null || true)
+        else
+            cpu_flags=$(grep -m1 '^flags' /proc/cpuinfo 2> /dev/null || true)
+        fi
+        if ! echo "${cpu_flags}" | grep -qi avx512; then
+            echo "     note: no AVX-512 on this CPU. Everything builds and runs, but the"
+            echo "           timings will not be comparable to the paper's."
+        fi
+        ;;
+    *)
+        echo "     note: not an x86 machine. Sublime and the baselines run on portable code"
+        echo "           paths, except SALSA, which is x86-only: it is skipped, and the"
+        echo "           figures are drawn without it."
+        echo "           Timings are not comparable to the paper's."
+        ;;
+esac
 
 # --------------------------------------------------------------------------
 # Build.
@@ -161,7 +202,7 @@ mkdir -p build && cd build
 # which still declares cmake_minimum_required(VERSION 3.0); CMake 4 refuses that
 # outright. Ignored, with a warning, by CMake 3.
 cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-make -j"$(nproc)"
+make -j"$(cpu_count)"
 cd "${project_root}"
 
 if [[ ${RUN_TESTS} -eq 1 ]]; then

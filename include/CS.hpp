@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <random>
 #include <vector>
 
@@ -27,8 +28,8 @@ public:
         n = 0;
         col_count = init_col_count;
         expansion_lim = expansion_f(col_count);
-        contraction_lim = (__builtin_popcountll(init_col_count) > 1 ? 0 : expansion_f(col_count / 2.0));
-        init_col_count_lg = highbit_pos(init_col_count) + (__builtin_popcountll(init_col_count) > 1);
+        contraction_lim = (popcount64(init_col_count) > 1 ? 0 : expansion_f(col_count / 2.0));
+        init_col_count_lg = highbit_pos(init_col_count) + (popcount64(init_col_count) > 1);
         col_count_lg = init_col_count_lg;
         init_counter_count = row_count * col_count;
         if (using_tof_hashing) {
@@ -36,7 +37,7 @@ public:
                 init_counter_count = (1ULL << highbit_pos(init_counter_count));
         }
         counter_count = init_counter_count;
-        init_counter_count_lg = highbit_pos(counter_count) + (__builtin_popcountll(counter_count) > 1);
+        init_counter_count_lg = highbit_pos(counter_count) + (popcount64(counter_count) > 1);
         counter_count_lg = init_counter_count_lg;
 
         // Setup Tof Hashing
@@ -130,7 +131,20 @@ public:
     }
 
     T Query(const char *elem, const uint32_t length) const {
+        // One estimate a row: a variable-length array where the compiler has
+        // them, and elsewhere a stack buffer for any realistic row count.
+#if defined(SUBLIME_GNU_BUILTINS)
         int64_t res[row_count];
+#else
+        constexpr size_t max_stack_rows = 64;
+        int64_t stack_res[max_stack_rows];
+        std::unique_ptr<int64_t[]> heap_res;
+        int64_t *res = stack_res;
+        if (row_count > max_stack_rows) {
+            heap_res.reset(new int64_t[row_count]);
+            res = heap_res.get();
+        }
+#endif
         T * sketch = reinterpret_cast<T *>(sketches.back());
         if (using_tof_hashing) {
             uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);

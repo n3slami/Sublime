@@ -13,13 +13,37 @@ message(STATUS "Sublime fixed tuning VALE parameters: c=${FIXED_TUNING_C} s=${FI
 set(LOG_REC_INC_PROB "3" CACHE STRING "The base-2 logarithm of the reciprocal of the increment probability used in the version of Sublime that uses Morris counters")
 
 set(CMAKE_CXX_STANDARD 17)
+
+# Tune for the build machine where the compiler can: `-march=native` on GCC and
+# Clang (x86 and AArch64 alike), `-mcpu=native` for the Clangs that take only
+# that on ARM, and nothing on MSVC, which has no equivalent and gets its own
+# flags below. The code has a fallback for every instruction-set extension
+# these turn on, so the build works whichever is found -- see `portability.hpp`.
+include(CheckCXXCompilerFlag)
+set(NATIVE_FLAG "")
+if (NOT MSVC)
+    check_cxx_compiler_flag(-march=native SUBLIME_HAS_MARCH_NATIVE)
+    if (SUBLIME_HAS_MARCH_NATIVE)
+        set(NATIVE_FLAG -march=native)
+    else()
+        check_cxx_compiler_flag(-mcpu=native SUBLIME_HAS_MCPU_NATIVE)
+        if (SUBLIME_HAS_MCPU_NATIVE)
+            set(NATIVE_FLAG -mcpu=native)
+        endif()
+    endif()
+endif()
+
 if (CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${NATIVE_FLAG}")
 else()
     set(USE_MULTI_THREADED OFF)
 endif ()
 
-set(BITHACKING_COMPILE_FLAGS -Ofast -march=native)
+if (MSVC)
+    set(BITHACKING_COMPILE_FLAGS /O2 /fp:fast)
+else()
+    set(BITHACKING_COMPILE_FLAGS -Ofast ${NATIVE_FLAG})
+endif()
 #set(BITHACKING_COMPILE_FLAGS -Ofast -mbmi2 -msse4.2 -D__SSE4_2_)
 
 add_library(CMSLib STATIC ./include/CMS.hpp)
@@ -97,6 +121,11 @@ add_library(MGLib STATIC ./include/MG.hpp)
 set_target_properties(MGLib PROPERTIES LINKER_LANGUAGE CXX)
 target_include_directories(MGLib PUBLIC ./include)
 target_compile_options(MGLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
+
+add_library(MGHeapLib STATIC ./include/MGHeap.hpp)
+set_target_properties(MGHeapLib PROPERTIES LINKER_LANGUAGE CXX)
+target_include_directories(MGHeapLib PUBLIC ./include)
+target_compile_options(MGHeapLib PUBLIC ${BITHACKING_COMPILE_FLAGS})
 
 
 add_library(SpaceSavingLib STATIC ./include/SpaceSaving.hpp)

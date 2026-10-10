@@ -12,7 +12,6 @@
 #include <iostream>
 #include "MurmurHash.h"
 #include <random>
-#include <mmintrin.h>
 #include "time.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -37,6 +37,8 @@
 #include <cstring>
 #include <string_view>
 
+#include "portability.hpp"
+
 /**
  * This file contains some utility functions and data structures used in the benchmarks.
  */
@@ -44,14 +46,14 @@
 #define TO_BPK(x, n) ((double)(x * 8) / n)
 
 inline std::string uint64ToString(uint64_t key) {
-    uint64_t endian_swapped_key = __builtin_bswap64(key);
+    uint64_t endian_swapped_key = byteswap64(key);
     return std::string(reinterpret_cast<const char *>(&endian_swapped_key), 8);
 }
 
 inline uint64_t stringToUint64(const std::string_view str_key) {
     uint64_t int_key = 0;
     memcpy(reinterpret_cast<char *>(&int_key), str_key.data(), 8);
-    return __builtin_bswap64(int_key);
+    return byteswap64(int_key);
 }
 
 inline bool has_suffix(const std::string_view str, const std::string_view suffix) {
@@ -206,6 +208,130 @@ inline std::vector<uint64_t> read_data_text(const std::string &filename) {
         data.emplace_back(key);
     in.close();
     return data;
+}
+
+/** How a text stream file is cut into keys. */
+enum class TextSplit {
+    Tokens,     ///< Every whitespace-separated token is a key (kosarak, webdocs).
+    Lines       ///< Every non-empty line is a key, spaces and all.
+};
+
+/**
+ * The keys of a text stream file, in file order. If every key is an unsigned
+ * 64-bit integer written the plain way -- decimal digits, no sign, no leading
+ * zero -- they are integers; otherwise every key is kept as the exact bytes it
+ * was written as, so `007` and `7` stay two keys rather than collapsing into one.
+ */
+struct TextKeys {
+    bool integer = true;
+    std::vector<uint64_t> ints;         ///< The keys, while `integer`.
+    std::vector<std::string> strings;   ///< The keys, once any of them is not an integer.
+
+    size_t size() const {
+        return integer ? ints.size() : strings.size();
+    }
+};
+
+/** Parses `s` as a plain unsigned 64-bit decimal, rejecting anything else. */
+inline bool parse_plain_uint64(std::string_view s, uint64_t& out) {
+    if (s.empty() || s.size() > 20 || (s.size() > 1 && s[0] == '0'))
+        return false;
+    uint64_t value = 0;
+    for (char c : s) {
+        if (c < '0' || c > '9')
+            return false;
+        const uint64_t digit = static_cast<uint64_t>(c - '0');
+        if (value > (std::numeric_limits<uint64_t>::max() - digit) / 10)
+            return false;                               // Overflows 64 bits.
+        value = value * 10 + digit;
+    }
+    out = value;
+    return true;
+}
+
+/**
+ * Reads a text stream file into its keys. Read as bytes, so a file written on
+ * Windows (CRLF) reads the same as one written anywhere else. Integer keys are
+ * kept as integers until the first key that is not one, at which point every key
+ * so far is turned back into the text it was read from -- exactly, since only
+ * plainly-written integers were ever parsed -- and the rest are kept as text.
+ *
+ * Throws if the file cannot be opened or holds no keys: a typo in a path should
+ * not quietly produce an empty workload.
+ */
+inline TextKeys read_text_keys(const std::string& filename, TextSplit split = TextSplit::Tokens) {
+    std::ifstream in(filename, std::ios::in | std::ios::binary);
+    if (!in)
+        throw std::runtime_error("Cannot open the stream file " + filename);
+
+    TextKeys res;
+    std::string key;
+    const auto finish_key = [&]() {
+        if (split == TextSplit::Lines && !key.empty() && key.back() == '\r')
+            key.pop_back();
+        if (key.empty())
+            return;
+        uint64_t value;
+        if (res.integer && parse_plain_uint64(key, value)) {
+            res.ints.push_back(value);
+        }
+        else {
+            if (res.integer) {
+                res.integer = false;
+                res.strings.reserve(res.ints.size() + 1);
+                for (uint64_t v : res.ints)
+                    res.strings.push_back(std::to_string(v));
+                res.ints = std::vector<uint64_t>();
+            }
+            res.strings.push_back(key);
+        }
+        key.clear();
+    };
+    const auto is_separator = [split](char c) {
+        if (split == TextSplit::Lines)
+            return c == '\n';
+        return c == ' ' || c == '\n' || c == '\t' || c == '\r' || c == '\v' || c == '\f';
+    };
+
+    std::vector<char> buf(1 << 20);
+    while (in) {
+        in.read(buf.data(), buf.size());
+        const std::streamsize got = in.gcount();
+        for (std::streamsize i = 0; i < got; i++) {
+            if (is_separator(buf[i]))
+                finish_key();
+            else
+                key.push_back(buf[i]);
+        }
+    }
+    finish_key();
+    if (res.size() == 0)
+        throw std::runtime_error("The stream file " + filename + " holds no keys");
+    return res;
+}
+
+/** `keys` as byte strings, for a workload of string keys. */
+inline std::vector<ByteString> to_byte_strings(const std::vector<std::string>& keys) {
+    std::vector<ByteString> res;
+    res.reserve(keys.size());
+    for (const std::string& k : keys) {
+        if (k.size() > std::numeric_limits<uint16_t>::max())   // `ByteString::length` is 16 bits.
+            throw std::runtime_error("A key of " + std::to_string(k.size()) + " bytes is longer than the "
+                                     "65535 a workload can hold");
+        res.push_back({reinterpret_cast<const uint8_t *>(k.data()), static_cast<uint32_t>(k.size())});
+    }
+    return res;
+}
+
+/** Integer keys as byte strings of their decimal text, for a workload of string keys. */
+inline std::vector<ByteString> to_byte_strings(const std::vector<uint64_t>& keys) {
+    std::vector<ByteString> res;
+    res.reserve(keys.size());
+    for (uint64_t v : keys) {
+        const std::string k = std::to_string(v);
+        res.push_back({reinterpret_cast<const uint8_t *>(k.data()), static_cast<uint32_t>(k.size())});
+    }
+    return res;
 }
 
 inline std::vector<std::string> read_data_text_string(const std::string &filename) {

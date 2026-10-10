@@ -18,9 +18,9 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 
-FIGURE_OPTIONS=("accuracy" "skew" "vale_tuning" "expansion" "contraction" "accuracy_unbiased" "l2_size_function" "join_size" "mg_accuracy" "mg_tail_latency" "mg_expansion")
+FIGURE_OPTIONS=("accuracy" "skew" "vale_tuning" "expansion" "contraction" "accuracy_unbiased" "l2_size_function" "join_size" "mg_accuracy" "mg_tail_latency" "mg_expansion" "mg_join_size")
 
-FIGURES="accuracy,skew,vale_tuning,expansion,contraction,accuracy_unbiased,l2_size_function,join_size,mg_accuracy,mg_tail_latency,mg_expansion"
+FIGURES="accuracy,skew,vale_tuning,expansion,contraction,accuracy_unbiased,l2_size_function,join_size,mg_accuracy,mg_tail_latency,mg_expansion,mg_join_size"
 
 function print_help_message_exit() {
     echo "Usage: generate_datasets.sh <build_path> <real_datasets_path> [-f|--figures ${FIGURES}]"
@@ -37,21 +37,31 @@ function print_help_message_exit() {
     exit $1
 }
 
+# An absolute path, for macOS releases before 13, which have no `realpath`. The
+# last component need not exist yet; everything above it must.
+abspath() {
+    if [ -d "$1" ]; then
+        (cd "$1" && pwd)
+    else
+        echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+    fi
+}
+
 if [[ "$#" -lt 2 ]]; then
     echo "Too few parameters"
     print_help_message_exit 1
 fi
-BUILD_PATH=$(realpath $1)
+BUILD_PATH=$(abspath "$1")
 if [ ! -d "$BUILD_PATH" ]; then
     echo "Sublime build path does not exist"
     exit 1
 fi
-WORKLOAD_GEN_PATH=$(realpath $BUILD_PATH/bench/workload_gen)
+WORKLOAD_GEN_PATH=$(abspath "$BUILD_PATH/bench/workload_gen")
 if [ ! -f "$WORKLOAD_GEN_PATH" ]; then
     echo "Workload generator does not exist"
     exit 1
 fi
-REAL_DATASETS_PATH=$(realpath $2)
+REAL_DATASETS_PATH=$(abspath "$2")
 if [ ! -d "$REAL_DATASETS_PATH" ]; then
     echo "Real datasets path does not exist"
     exit 1
@@ -84,7 +94,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-OUT_PATH=$(realpath ./workloads)
+OUT_PATH=$(abspath ./workloads)
 
 # `evaluate.sh --quick` exports SUBLIME_QUICK=1. Quick runs generate only the
 # small kosarak-derived workloads and two of the synthetic ones -- enough to

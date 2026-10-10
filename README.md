@@ -11,6 +11,7 @@ It also proves a memory footprint lower bound for sketches that adapt to the str
 # Reproducing the Paper's Results
 
 Building the project, fetching datasets, running benchmarks, and generating all figures and tables can be done with a single command.
+This command also produces a new PDF of the paper that includes the newly generated figures.
 
 There are two ways to run this command:
 1. using Docker, which avoids polluting the host machine with dependencies, or
@@ -38,6 +39,9 @@ docker run --user "$(id -u):$(id -g)" \
 The generated figures and tables are saved on the host machine under `paper_results/figures/<timestamp>/` and numbered to match their corresponding figures and tables in the paper.
 
 Sublime is intentionally compiled when the container runs rather than when the image is built, allowing `-march=native` to optimize for the host CPU.
+The image is built natively for the host's architecture, so the same commands work on x86-64 and ARM64 machines, including Apple Silicon Macs.
+On Windows, the same commands work under Docker Desktop.
+*We note that Sublime relies on efficient implementations of rank and select using Intel's BMI2 instructions, and as such, may not perform as well on platform lacking these instructions.*
 
 ## Natively
 
@@ -88,26 +92,51 @@ The file `example.cpp` in the `examples` directory illustrates the usage of
 these APIs. All other operations such as auto-tuning VALE are transparently
 handled by Sublime and therefore do not have APIs.
 
+# Platform Support
+
+**Sublime.**
+The headers in `include` compile with GCC and Clang, including Apple Clang, on Linux and macOS, on both x86-64 and ARM64 machines such as Apple Silicon Macs.
+They also compile for Windows with MinGW-w64.
+Code paths for MSVC are included as well, but we have not tested them.
+Sublime uses BMI2 for rank and select, LZCNT and BMI for bit scans, and AVX-512 for Sublime_CS's l2-norm estimator where the CPU supports them, and falls back to portable code everywhere else.
+These fallbacks may slightly reduce performance.
+
+**The benchmark suite.**
+The `evaluate.sh` script and the scripts it calls run on Linux and macOS, on both x86-64 and ARM64 machines.
+On Windows, they run under Docker or the Windows Subsystem for Linux.
+
+**Baselines.**
+Every baseline we compare against builds on every platform above, except SALSA, whose implementation uses the x86 timestamp counter and AVX2 instructions.
+SALSA is therefore built only on x86-64 machines that support AVX2.
+Elsewhere, the build skips it with a message, the benchmarks skip it, and the figures are drawn without it.
+Every version of Sublime runs on every platform.
+On machines other than the one we used, which supports BMI2 and AVX-512, the timings are not comparable to the paper's.
+
 # Reproducibility in Detail
 
 The `evaluate.sh` script compiles every version of Sublime and the baselines, runs the unit tests, downloads the datasets, generates the workloads, runs the benchmarks and draws the figures and tables.
 The Dockerfile installs the dependencies and then runs that same script.
 
 **Hardware.** 
-Any x86-64 machine.
-We use Intel's BMI2 instruction for implementing rank and select, as well as AVX-512 for implementing Sublime_CS's l2-norm estimator where they are available.
-We have also included fall-backs to portable code where these instructions are unavailable.
-Using these fall-backs may result in timings that are not comparable to the paper's, since our machine supported both BMI2 and AVX-512.
+Any 64-bit x86 or ARM machine running Linux or macOS, or Windows through Docker or the Windows Subsystem for Linux.
+"Platform Support" above lists which baselines each platform runs.
+Our results were produced on an x86-64 machine supporting BMI2 and AVX-512; Sublime falls back to portable code where these are unavailable, at the cost of timings that are not comparable to the paper's.
 Because the container compiles Sublime at run time rather than at image build time, it picks up whichever of these the machine's CPU supports.
 
 **Dependencies for a Native Run.**
 The `evaluate.sh` script checks for the following dependencies before it starts and names any that are missing:
-- CMake 3.5 or later, GNU Make, and GCC 11 or later
-- Git, wget, curl, and Bash 4.4 or later
+- CMake 3.5 or later, Make, and GCC 11 or later or Clang (on macOS, Apple Clang from the Xcode command-line tools)
+- Git, curl, and Bash 3.2 or later, which is the version macOS ships
 - Python 3.8 or later, with the `venv` module (`python3-venv` on Debian and Ubuntu).
   The `evaluate.sh` script creates a virtual environment and installs matplotlib onto it, unless matplotlib is already importable.
 - A LaTeX installation, used to typeset the figures' text.
   The packages `texlive-latex-base`, `texlive-latex-recommended` and `texlive-fonts-recommended` are sufficient on Debian and Ubuntu.
+
+On macOS, the compiler comes with the Xcode command-line tools (`xcode-select --install`), and the rest can be installed with [Homebrew](https://brew.sh):
+```Bash
+brew install cmake python git curl
+brew install --cask mactex-no-gui    # The full TeX distribution, about 5 GB.
+```
 
 **Datasets.**
 The datasets are downloaded to `paper_results/real_datasets` and checked against recorded SHA-256 checksums.
@@ -117,6 +146,37 @@ They are fetched once and reused by later runs.
 We exclude the full CAIDA 2018 dataset used in our evaluation and only use a 10% slice of it, because the full dataset requires approval for use in research projects.
 We repeat this slice 10 times to create a workload of the same size as when using the full dataset.
 It is still possible to reproduce the exact results in our paper by adding the remaining 90%, i.e. the files `1.dat` to `10.dat`, to the `paper_results/real_datasets` directory before running `evaluate.sh`, in either the Dockerized or the native version.
+
+## Benchmarking Your Own Stream
+
+Any stream stored as a text file can be replayed through every sketch in the suite.
+The workload generator turns the file into a workload, and each sketch's benchmark replays the workload, reporting the error of the sketch against the exact frequencies along with its size and update and query times as JSON.
+From the `build` directory:
+```Bash
+./bench/workload_gen -t standard --fdist real my_stream.txt --key-len-binary 0 -o my_stream
+./bench/bench_SublimeCMS 1048576 -w my_stream     # A memory budget of 1 MB.
+./bench/bench_CMS 1048576 -w my_stream
+```
+By default, every whitespace-separated token of the file is a key.
+With `--text-keys lines`, every non-empty line is a key instead, which suits keys containing spaces such as flow identifiers.
+If every key is an unsigned 64-bit integer written without a sign or leading zeros, the workload uses integer keys; otherwise, every key is kept as the exact bytes it was written as.
+Files with Windows line endings are read the same way as any other.
+
+The `-t` option selects the kind of workload, all of which accept text files:
+- `standard`: inserts the whole stream, then measures every sketch once.
+- `standard_string`: the same, with the keys always treated as strings.
+- `expand`: inserts the stream in periods of `--measurement-period` keys, measuring after each, for sketches that grow with the stream, e.g., `bench_SublimeCMS` with `--size-function-power` and `--size-function-mult`. Keys past the last full period are not replayed.
+- `delete`: inserts the stream, then deletes up to `--n-deletes` of its keys in periods of `--measurement-period`, measuring after each, for sketches that support deletions.
+
+Several files given as `--fdist real a.txt real b.txt` are treated as one stream.
+Binary streams of fixed-length keys are read with `--key-len-binary` set to the key length in bytes.
+By default, the order of the stream is shuffled with the seed given by `--seed`, which is how every workload in the paper was generated.
+To replay the stream in the order the file holds it instead, e.g., to study the effects of temporal locality, add `--no-shuffle`:
+```Bash
+./bench/workload_gen -t expand --fdist real my_stream.txt --key-len-binary 0 --measurement-period 100000 --no-shuffle -o my_stream_ordered
+```
+Several files given as `--fdist real a.txt real b.txt` are then replayed one after the other, in the order they are given.
+With `-t delete`, the keys are deleted starting from the end of the stream.
 
 ## Sublime_MG, the Journal Extension
 

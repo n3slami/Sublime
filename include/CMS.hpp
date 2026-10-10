@@ -27,8 +27,8 @@ public:
         n = 0;
         col_count = init_col_count;
         expansion_lim = expansion_f(col_count);
-        contraction_lim = (__builtin_popcountll(init_col_count) > 1 ? 0 : expansion_f(col_count / 2.0));
-        init_col_count_lg = highbit_pos(init_col_count) + (__builtin_popcountll(init_col_count) > 1);
+        contraction_lim = (popcount64(init_col_count) > 1 ? 0 : expansion_f(col_count / 2.0));
+        init_col_count_lg = highbit_pos(init_col_count) + (popcount64(init_col_count) > 1);
         col_count_lg = init_col_count_lg;
         init_counter_count = row_count * col_count;
         if (using_tof_hashing) {
@@ -36,7 +36,7 @@ public:
                 init_counter_count = (1ULL << highbit_pos(init_counter_count));
         }
         counter_count = init_counter_count;
-        init_counter_count_lg = highbit_pos(counter_count) + (__builtin_popcountll(counter_count) > 1);
+        init_counter_count_lg = highbit_pos(counter_count) + (popcount64(counter_count) > 1);
         counter_count_lg = init_counter_count_lg;
 
         // Setup Tof Hashing

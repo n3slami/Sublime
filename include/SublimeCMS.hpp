@@ -146,6 +146,13 @@ public:
     // General cache line information.
     static constexpr uint32_t cache_line_size = 512;
     static constexpr uint32_t cache_line_size_bytes = cache_line_size / 8;
+    /**
+     * The most words an extension pool can span: it lives inside one chunk, so
+     * a chunk's worth. The pool's actual width is a runtime tuning; this bound
+     * is what sizes the arrays holding a copy of it where variable-length
+     * arrays are not available (see `SUBLIME_STACK_ARRAY`).
+     */
+    static constexpr uint32_t max_extension_words = cache_line_size / 64;
     static constexpr uint32_t cache_line_size_words = cache_line_size_bytes / sizeof(uint64_t);
 
     // VALE's default counter per chunk size and the constraints enforced on it
@@ -334,7 +341,7 @@ private:
      * must be set.
      * @param state The value the overflows bit must be set to.
      */
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     inline void set_overflowing(uint64_t words[], const uint32_t pos, const bool state) {
         words[pos / 64] = state ? words[pos / 64] | (1ULL << (pos % 64))
                                 : words[pos / 64] & ~(1ULL << (pos % 64));
@@ -354,7 +361,7 @@ private:
      * modification is carried out if `bit_value=1` and it is not if
      * `bit_value=0`.
      */
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     inline void set_overflowing_to_0(uint64_t words[], const uint32_t pos, const uint64_t bit_value=1) {
         words[pos / 64] &= ~(bit_value << (pos % 64));
     }
@@ -374,19 +381,19 @@ private:
      * modification is carried out if `bit_value=1` and it is not if
      * `bit_value=0`.
      */
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     inline void set_overflowing_to_1(uint64_t words[], const uint32_t pos, const uint64_t bit_value=1) {
         words[pos / 64] |= bit_value << (pos % 64);
     }
     
 
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     inline bool is_overflowing(const uint64_t words[], const uint32_t pos) const {
         return (words[pos / 64] >> (pos % 64)) & 1ULL;
     }
 
 
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     inline uint64_t get_delimiters_bitmap_word(const uint64_t val) const {
         return (val & (val >> 1)) & select_mask;
     }
@@ -592,7 +599,7 @@ private:
      * @param chunk_words A pointer to the chunk's contents.
      * @return True if the chunk has a tails array and false otherwise.
      */
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     inline bool has_tails_array(const Sketch *sketch, const uint64_t *chunk_words) const {
         return chunk_words[cache_line_size_words - sketch->num_extension_words] >> 63;
     }
@@ -731,7 +738,7 @@ inline SublimeCMS::SublimeCMS(size_t init_col_count, size_t init_row_count,
             seed_gen_seed(seed_gen_seed) {
     n = 0;
     col_count = init_col_count;
-    init_col_count_lg = highbit_pos(init_col_count) + (__builtin_popcountll(init_col_count) > 1);
+    init_col_count_lg = highbit_pos(init_col_count) + (popcount64(init_col_count) > 1);
     col_count_lg = init_col_count_lg;
 
     init_counter_count = row_count * col_count;
@@ -740,7 +747,7 @@ inline SublimeCMS::SublimeCMS(size_t init_col_count, size_t init_row_count,
             init_counter_count = (1ULL << highbit_pos(init_counter_count));
     }
     counter_count = init_counter_count;
-    init_counter_count_lg = highbit_pos(counter_count) + (__builtin_popcountll(counter_count) > 1);
+    init_counter_count_lg = highbit_pos(counter_count) + (popcount64(counter_count) > 1);
     counter_count_lg = init_counter_count_lg;
 
     // Setup expansion and contraction triggers.
@@ -748,7 +755,7 @@ inline SublimeCMS::SublimeCMS(size_t init_col_count, size_t init_row_count,
     // Disable contracting below the filter's initial size if the number of
     // counters is not a power of two. This is to avoid having to deal with
     // inconsistent hashing when the sketch contracts below its initial size.
-    contraction_lim = (__builtin_popcountll(init_counter_count) > 1 ? 0 : expansion_f(col_count / 2.0));
+    contraction_lim = (popcount64(init_counter_count) > 1 ? 0 : expansion_f(col_count / 2.0));
 
     // Setup prefetching queue.
     std::fill(prefetch_queue_op, prefetch_queue_op + prefetch_queue_len, OpType::None);
@@ -920,24 +927,24 @@ inline void SublimeCMS::setup_lookup_tables(SublimeCMS::Sketch *sketch) {
 }
 
 
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 inline void SublimeCMS::push_prefetch_request(SublimeCMS::Sketch *sketch,
                                               const uint32_t pos, const OpType op) {
     if constexpr (using_tof_hashing) {
         prefetch_queue_cache_line[prefetch_clock] = get_cache_line_ind(sketch, pos);
         prefetch_queue_cache_line_offset[prefetch_clock] = pos - sketch->counter_per_cache_line * prefetch_queue_cache_line[prefetch_clock];
-        __builtin_prefetch(sketch + prefetch_queue_cache_line[prefetch_clock] * cache_line_size_bytes);
+        SUBLIME_PREFETCH(sketch + prefetch_queue_cache_line[prefetch_clock] * cache_line_size_bytes);
     }
     else {
         prefetch_queue[prefetch_clock] = pos;
-        __builtin_prefetch(sketch + get_cache_line_ind(sketch, pos) * cache_line_size_bytes);
+        SUBLIME_PREFETCH(sketch + get_cache_line_ind(sketch, pos) * cache_line_size_bytes);
     }
     prefetch_queue_op[prefetch_clock] = op;
     prefetch_clock = (prefetch_clock + 1) % prefetch_queue_len;
 }
 
 
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 inline void SublimeCMS::handle_last_prefetch_request(SublimeCMS::Sketch *sketch) {
     if constexpr (using_tof_hashing) {
         switch (prefetch_queue_op[prefetch_clock]) {
@@ -968,43 +975,43 @@ inline void SublimeCMS::handle_last_prefetch_request(SublimeCMS::Sketch *sketch)
 }
 
 
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 inline uint32_t SublimeCMS::get_extension_rank(const uint64_t words[],
                                                const uint32_t pos) const {
     uint32_t res = 0;
     for (uint32_t i = 0; i < pos / 64; i++)
-        res += __builtin_popcountll(words[i]);
+        res += popcount64(words[i]);
     res += bit_rank(words[pos / 64], pos % 64);
     return res;
 }
 
 
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 inline uint32_t SublimeCMS::get_extension_pos(const SublimeCMS::Sketch *sketch,
                                               const uint64_t extensions[],
                                               const uint32_t rank) const {
-    uint64_t delimiters[sketch->num_extension_words];
+    SUBLIME_STACK_ARRAY(uint64_t, delimiters, sketch->num_extension_words, max_extension_words);
     for (uint32_t i = 0; i < sketch->num_extension_words; i++)
         delimiters[i] = get_delimiters_bitmap_word(extensions[i]);
     int extension_pos = (rank == 0 ? -2 : bit_select(delimiters[0], rank - 1));
     if (sketch->num_extension_words == 2) {
-        const int32_t other_attempt = bit_select(delimiters[1], rank - 1 - __builtin_popcountll(delimiters[0]));
+        const int32_t other_attempt = bit_select(delimiters[1], rank - 1 - popcount64(delimiters[0]));
         extension_pos = (extension_pos >= 64 ? other_attempt + 64 : extension_pos);
     }
     else if (sketch->num_extension_words > 2) {
         extension_pos = (extension_pos < 64 ? extension_pos : -3);
-        uint32_t running_rank = rank - __builtin_popcountll(delimiters[0]);
+        uint32_t running_rank = rank - popcount64(delimiters[0]);
         for (uint32_t i = 1; i < sketch->num_extension_words; i++) {
             const uint32_t select_result = running_rank > 64 ? 64 : bit_select(delimiters[i], running_rank - 1);
             extension_pos = ((extension_pos == -3 && select_result < 64) ? select_result + i * 64 : extension_pos);
-            running_rank -= __builtin_popcountll(delimiters[i]);
+            running_rank -= popcount64(delimiters[i]);
         }
     }
     return extension_pos + 2;
 }
 
 
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 inline uint32_t SublimeCMS::get_extension_length(const SublimeCMS::Sketch *sketch,
                                                  uint64_t extensions[]) const {
     if (sketch->num_extension_words == 1)
@@ -1117,7 +1124,7 @@ inline uint64_t SublimeCMS::get_counter(const SublimeCMS::Sketch *sketch, const 
     const bool has_extension = is_overflowing(words, inter_cache_line_ind);
     if (has_extension) {
         const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
-        uint64_t extension_bitmap[sketch->num_extension_words];
+        SUBLIME_STACK_ARRAY(uint64_t, extension_bitmap, sketch->num_extension_words, max_extension_words);
         for (uint32_t i = 0; i < sketch->num_extension_words - 1; i++)
             extension_bitmap[i] = words[cache_line_size_words - i - 1];
         extension_bitmap[sketch->num_extension_words - 1] = words[cache_line_size_words - sketch->num_extension_words] 
@@ -1161,7 +1168,7 @@ inline void SublimeCMS::set_counter(SublimeCMS::Sketch *sketch, const uint32_t p
     const int update_state = static_cast<int>(old_has_extension) * 2 + static_cast<int>(new_has_extension);
     if (update_state) {
         const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
-        uint64_t extension_bitmap[sketch->num_extension_words];
+        SUBLIME_STACK_ARRAY(uint64_t, extension_bitmap, sketch->num_extension_words, max_extension_words);
         for (uint32_t i = 0; i < sketch->num_extension_words - 1; i++)
             extension_bitmap[i] = words[cache_line_size_words - i - 1];
         extension_bitmap[sketch->num_extension_words - 1] = words[cache_line_size_words - sketch->num_extension_words] 
@@ -1261,7 +1268,7 @@ inline void SublimeCMS::increment_counter(SublimeCMS::Sketch *sketch,
     uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
     const bool has_extension = is_overflowing(words, inter_cache_line_ind);
     const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
-    uint64_t extension_bitmap[sketch->num_extension_words];
+    SUBLIME_STACK_ARRAY(uint64_t, extension_bitmap, sketch->num_extension_words, max_extension_words);
     for (uint32_t i = 0; i < sketch->num_extension_words - 1; i++)
         extension_bitmap[i] = words[cache_line_size_words - i - 1];
     extension_bitmap[sketch->num_extension_words - 1] = words[cache_line_size_words - sketch->num_extension_words] 
@@ -1345,7 +1352,7 @@ inline void SublimeCMS::decrement_counter(SublimeCMS::Sketch *sketch,
     uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
     const bool has_extension = is_overflowing(words, inter_cache_line_ind);
     const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
-    uint64_t extension_bitmap[sketch->num_extension_words];
+    SUBLIME_STACK_ARRAY(uint64_t, extension_bitmap, sketch->num_extension_words, max_extension_words);
     for (uint32_t i = 0; i < sketch->num_extension_words - 1; i++)
         extension_bitmap[i] = words[cache_line_size_words - i - 1];
     extension_bitmap[sketch->num_extension_words - 1] = words[cache_line_size_words - sketch->num_extension_words] 
@@ -1405,7 +1412,7 @@ inline uint32_t *SublimeCMS::setup_tails_array(SublimeCMS::Sketch *sketch,
             // Compute the offset of the corresponding tail.
             uint32_t ptr_pos = bit_select(overflows_bitmap[overflows_pos], running_rank - running_overflows_count);
             while (ptr_pos == 64) {
-                running_overflows_count += __builtin_popcountll(overflows_bitmap[overflows_pos]);
+                running_overflows_count += popcount64(overflows_bitmap[overflows_pos]);
                 overflows_pos++;
                 ptr_pos = bit_select(overflows_bitmap[overflows_pos], running_rank - running_overflows_count);
             }
@@ -1499,6 +1506,7 @@ inline SublimeCMS::Sketch *SublimeCMS::allocate_sketch(const uint32_t rows,
     res->stub_mask = BITMASK(stub_size);
     res->num_extension = (cache_line_size - 1 - counter_per_cache_line * (stub_size + 1)) / extension_size;
     res->num_extension_words = extension_size * res->num_extension / 64 + 1;
+    assert(res->num_extension_words <= max_extension_words);
     res->last_extension_word_bit_count = extension_size * res->num_extension + 1 - 64 * (res->num_extension_words - 1);
     setup_lookup_tables(res);
     return res;
@@ -1530,6 +1538,7 @@ inline void SublimeCMS::reallocate_sketch(SublimeCMS::Sketch *&sketch, bool decr
     res->stub_mask = BITMASK(stub_size);
     res->num_extension = (cache_line_size - 1 - counter_per_cache_line * (stub_size + 1)) / extension_size;
     res->num_extension_words = extension_size * res->num_extension / 64 + 1;
+    assert(res->num_extension_words <= max_extension_words);
     res->last_extension_word_bit_count = extension_size * res->num_extension + 1 - 64 * (res->num_extension_words - 1);
     setup_lookup_tables(res);
 
@@ -1574,7 +1583,7 @@ inline uint32_t SublimeCMS::hash_tof(const uint64_t original_hash) const {
 inline void SublimeCMS::free_tails(SublimeCMS::Sketch *sketch) {
     for (uint32_t chunk = 0; chunk < sketch->cache_line_count; chunk++) {
         uint64_t *words = reinterpret_cast<uint64_t *>(sketch->sketch + cache_line_size_bytes * chunk);
-        uint64_t extension_bitmap[sketch->num_extension_words];
+        SUBLIME_STACK_ARRAY(uint64_t, extension_bitmap, sketch->num_extension_words, max_extension_words);
         for (uint32_t i = 0; i < sketch->num_extension_words - 1; i++)
             extension_bitmap[i] = words[cache_line_size_words - i - 1];
         extension_bitmap[sketch->num_extension_words - 1] = words[cache_line_size_words - sketch->num_extension_words] 
@@ -1637,9 +1646,9 @@ inline void SublimeCMS::contract() {
     if (sketches.empty()) {
         // Only allow contractions beyond the initial size if the initial size was a power of two
         if constexpr (using_tof_hashing)
-            assert(__builtin_popcountll(init_counter_count) == 1);
+            assert(popcount64(init_counter_count) == 1);
         else 
-            assert(__builtin_popcountll(init_col_count) == 1);
+            assert(popcount64(init_col_count) == 1);
         sketches.push_back(allocate_sketch(row_count, col_count / 2));
     }
     Sketch *old_sketch = sketches.back();

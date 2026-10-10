@@ -3,6 +3,7 @@
 #include <doctest/doctest.h>
 
 #include <cstdint>
+#include <vector>
 #include <iostream>
 #include <assert.h>
 
@@ -10,6 +11,84 @@
 #include "CS.hpp"
 
 class SublimeCSTest {
+public:
+    /**
+     * Grows the sketch through several expansions, then deletes every
+     * occurrence, and checks every contraction decision on the way down: a
+     * delete contracts exactly when its measure -- the key count, or the l2
+     * estimate on a query period -- has fallen below `contraction_lim`.
+     *
+     * The l2 variant used to test `expansion_lim` instead, the threshold for
+     * growing *again*, which nearly every estimate is under, so it contracted
+     * on almost any delete; and a contraction at the initial generation popped
+     * the only sketch and read past the vector's end (run under ASan to see it).
+     *
+     * Every key reads zero again only once the sketch is back at its initial
+     * generation: an expansion copies each counter into both halves, and the
+     * copy a deletion does not touch stays until the contraction that folds the
+     * halves back. The l2 variant re-tests only once a query period, so it can
+     * run out of deletes a generation or two short of the start.
+     */
+    /**
+     * Deletes before the sketch has ever expanded. At a power-of-two size the
+     * constructor used to start `contraction_lim` above zero -- copied from
+     * SublimeCMS, which can shrink below its initial size where this sketch
+     * cannot -- so the first deletes contracted the only generation.
+     */
+    template <bool l2>
+    static void DeleteBeforeExpanding(uint64_t init_cols) {
+        const auto f = [](double cols) { return static_cast<uint64_t>(cols * 6); };
+        SublimeCS<l2> s(init_cols, 4, f, 7);
+        for (uint64_t k = 0; k < 600; k++)
+            s.Insert(reinterpret_cast<const char *>(&k), sizeof(k));
+        for (uint64_t k = 0; k < 600; k++)
+            s.Delete(reinterpret_cast<const char *>(&k), sizeof(k));
+        s.FlushPrefetchQueue();
+        REQUIRE_EQ(s.sketches.size(), 1);
+        REQUIRE_EQ(s.col_count, init_cols);
+        for (uint64_t k = 0; k < 600; k++)
+            REQUIRE_EQ(s.Query(reinterpret_cast<const char *>(&k), sizeof(k)), 0);
+    }
+
+    template <bool l2>
+    static void DeleteEverything(uint64_t init_cols) {
+        const auto f = [](double cols) { return static_cast<uint64_t>(cols * 6); };
+        SublimeCS<l2> s(init_cols, 5, f, 7);
+        constexpr uint64_t universe = 4000;
+        std::vector<uint64_t> stream;
+        for (uint64_t t = 0; t < 60000; t++)
+            stream.push_back((t * 2654435761ULL) % universe % (1 + t % 97));    // Skewed, repeating.
+        for (uint64_t k : stream)
+            s.Insert(reinterpret_cast<const char *>(&k), sizeof(k));
+        s.FlushPrefetchQueue();
+        const size_t grown = s.sketches.size();
+        REQUIRE_GT(grown, 1);                               // It expanded.
+
+        uint64_t contractions = 0;
+        for (uint64_t k : stream) {
+            const size_t before = s.sketches.size();
+            const uint64_t limit = s.contraction_lim;
+            s.Delete(reinterpret_cast<const char *>(&k), sizeof(k));
+            const bool contracted = s.sketches.size() < before;
+            contractions += contracted;
+            REQUIRE_GE(s.sketches.size(), 1);
+            REQUIRE_GE(s.sketches.size(), before - 1);      // At most one at a time.
+            bool should;
+            if constexpr (l2)
+                should = s.n % s.ams_sketch_query_period == 0 && s.get_l2_estimate() < limit;
+            else
+                should = s.n < limit;
+            REQUIRE_EQ(contracted, should && before > 1);
+        }
+        s.FlushPrefetchQueue();
+        REQUIRE_GT(contractions, 0);
+        if (s.sketches.size() == 1)
+            for (uint64_t k = 0; k < universe; k++)
+                REQUIRE_EQ(s.Query(reinterpret_cast<const char *>(&k), sizeof(k)), 0);
+        if constexpr (!l2)
+            REQUIRE_EQ(s.sketches.size(), 1);               // The key count gets all the way back.
+    }
+
 public:
     static void CounterRW1() {
         auto f = [](double x) { return static_cast<uint64_t>(x * x); };
@@ -405,6 +484,16 @@ TEST_SUITE("SublimeCS") {
 
     TEST_CASE("monte carlo") {
         SublimeCSTest::MonteCarlo();
+    }
+
+    TEST_CASE("deleting everything contracts safely") {
+        for (uint64_t cols : {512, 500}) {
+            CAPTURE(cols);
+            SublimeCSTest::DeleteEverything<false>(cols);
+            SublimeCSTest::DeleteEverything<true>(cols);
+            SublimeCSTest::DeleteBeforeExpanding<false>(cols);
+            SublimeCSTest::DeleteBeforeExpanding<true>(cols);
+        }
     }
 }
 

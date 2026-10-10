@@ -357,5 +357,30 @@ TEST_SUITE("SublimeCMS") {
     TEST_CASE("monte carlo") {
         SublimeCMSTest::MonteCarlo();
     }
+
+    TEST_CASE("bit_select answers 64 past the last set bit") {
+        // Every rank the word cannot answer -- including the wrapped-around
+        // "negative" ones `get_extension_pos` asks of the pool's second word --
+        // must come back as 64. The broadword fallback, which every build
+        // without BMI2 takes, used to index its lookup table out of bounds for
+        // the wrapped ones. Ranks of 64 and up are the fallback's alone: the
+        // BMI2 path shifts by the rank, which is undefined there, and the one
+        // caller that asks discards whatever comes back.
+        std::mt19937_64 rng(5);
+        for (int trial = 0; trial < 2000; trial++) {
+            const uint64_t word = rng() & rng();
+            const uint32_t ones = popcount64(word);
+            for (uint32_t k = 0; k < ones; k++) {
+                const uint32_t pos = bit_select(word, k);
+                REQUIRE_LT(pos, 64);
+                REQUIRE_EQ((word >> pos) & 1, 1);
+                REQUIRE_EQ(bit_rank(word, pos), k);
+            }
+            for (uint32_t k = ones; k < 64; k++)
+                REQUIRE_EQ(bit_select(word, k), 64);
+            for (uint32_t back = 1; back <= 64; back++)
+                REQUIRE_EQ(_select64(word, static_cast<uint32_t>(0) - back), 64);
+        }
+    }
 }
 

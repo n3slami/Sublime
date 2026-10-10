@@ -8,6 +8,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+// `random()` and `srandom()` are POSIX; Windows has neither, so it takes the
+// generator below. Its sequence differs from the C library's, so a Windows
+// machine generates different zipf workloads from the same seed.
+#if defined(_WIN32) && !defined(USE_MYRANDOM)
+#define USE_MYRANDOM
+#endif
 #ifndef  USE_MYRANDOM
 #define RFUN random
 #define RSEED srandom

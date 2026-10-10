@@ -692,13 +692,13 @@ private:
      * finding the fingerprint absent and reading the second, serialises them.
      * Issuing both prefetches first lets the two go out together.
      */
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     void prefetch_bucket(uint64_t bucket) const {
         const uint64_t first_bit = bucket * depth_ * bits_per_slot_;
         const uint64_t last_bit = first_bit + depth_ * bits_per_slot_ - 1;
-        __builtin_prefetch(words_.data() + (first_bit >> 6));
+        SUBLIME_PREFETCH(words_.data() + (first_bit >> 6));
         if ((last_bit >> 6) != (first_bit >> 6))
-            __builtin_prefetch(words_.data() + (last_bit >> 6));
+            SUBLIME_PREFETCH(words_.data() + (last_bit >> 6));
     }
 
     uint64_t fingerprint_of(uint64_t stored) const {

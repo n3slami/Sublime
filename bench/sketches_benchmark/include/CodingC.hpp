@@ -6,7 +6,6 @@
 #include "MurmurHash.h"
 #include "params/coding.h"
 #include <random>
-#include <mmintrin.h>
 #include <algorithm>
 #define Min(a,b) 	((a) < (b) ? (a) : (b))
 #define THR		(0x0f)

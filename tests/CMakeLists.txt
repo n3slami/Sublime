@@ -45,6 +45,10 @@ add_executable(MGTests ./MGTests.cpp)
 target_link_libraries(MGTests MGLib doctest)
 add_test(NAME mg COMMAND MGTests)
 
+add_executable(MGHeapTests ./MGHeapTests.cpp)
+target_link_libraries(MGHeapTests MGHeapLib doctest)
+add_test(NAME mg_heap COMMAND MGHeapTests)
+
 add_executable(SpaceSavingTests ./SpaceSavingTests.cpp)
 target_link_libraries(SpaceSavingTests SpaceSavingLib doctest)
 add_test(NAME space_saving COMMAND SpaceSavingTests)
@@ -54,5 +58,5 @@ add_test(NAME space_saving COMMAND SpaceSavingTests)
 add_test(NAME all COMMAND CMSTests SublimeCMSTests
                           CSTests  SublimeCSTests
                           VALECountersTests SublimeMGTests
-                          MGTests SpaceSavingTests CuckooTableTests)
+                          MGTests MGHeapTests SpaceSavingTests CuckooTableTests)
 

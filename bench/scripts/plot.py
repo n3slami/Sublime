@@ -42,17 +42,18 @@ SKETCHES_STYLE_KWARGS = {"SublimeCMS": {"marker": 'v', "color": "fuchsia", "zord
                          "NoTuning": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Fixed", "linestyle": ":"},
                          "l1SizeFunction": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "No. of Keys"},
                          "l2SizeFunction": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Variance", "linestyle": ":"},
-                         "SublimeMG": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{MG}"},
                          "SublimeMG_error_0.50": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{MG}", "linestyle": "-"},
                          "SublimeMG_error_0.75": {"marker": 'v', "color": "fuchsia", "zorder": 12, "linestyle": "--"},
                          "SublimeMG_error_1.00": {"marker": 'v', "color": "fuchsia", "zorder": 12, "linestyle": ":"},
                          "SublimeMG_total_0.50": {"marker": '^', "color": "purple", "zorder": 11, "label": "Sublime\\textsubscript{MG} (Stream Length)", "linestyle": "-"},
                          "SublimeMG_total_0.75": {"marker": '^', "color": "purple", "zorder": 11, "linestyle": "--"},
                          "SublimeMG_total_1.00": {"marker": '^', "color": "purple", "zorder": 11, "linestyle": ":"},
-                         # Sublime_MG's two ways of applying the decrement: the sweep solid,
-                         # the min tree dashed.
-                         "SublimeMG_tree": {"marker": '^', "color": "purple", "zorder": 11, "label": "Sublime\\textsubscript{MG} (Segment Tree)"},
+                         # Sublime_MG's two ways of applying the decrement: the min tree is the
+                         # default and drawn solid, the sweep dotted in the same colour.
+                         "SublimeMG_tree": {"marker": 'v', "color": "fuchsia", "zorder": 12, "label": "Sublime\\textsubscript{MG}"},
+                         "SublimeMG": {"marker": 'v', "color": "fuchsia", "zorder": 11, "label": "Sublime\\textsubscript{MG} (Scan)", "linestyle": ":"},
                          "MG": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "MG"},
+                         "MGHeap": {"marker": '+', "color": "C1", "zorder": 10, "label": "MG (Heap)"},
                          "SpaceSaving": {"marker": 's', "color": "C2", "zorder": 9, "label": "Space-Saving"},
                          "CMS": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CMS"},
                          "CMS_Over": {"marker": 'x', "color": "dimgray", "zorder": 10, "label": "CMS (Overestimated)", "linestyle": ":"},
@@ -851,7 +852,7 @@ def plot_mg_accuracy(result_dir, output_dir):
     workload_subdir = Path("mg_accuracy_bench")
     # Sublime_MG's two configurations and the three baselines. The min tree is
     # the same sketch with a different decrement, so it rides beside it.
-    sketches = ["SublimeMG", "SublimeMG_tree", "MG", "SpaceSaving", "Waving"]
+    sketches = ["SublimeMG_tree", "SublimeMG", "MG", "MGHeap", "SpaceSaving", "Waving"]
     memory_powers = {"caida": range(17, 23), "kosarak": range(14, 19), "webdocs": range(17, 23)}
     memory_footprints = {w: [2 ** i for i in memory_powers[w]] for w in workloads}
 
@@ -929,7 +930,7 @@ def plot_mg_accuracy(result_dir, output_dir):
     axes[2][0].set_ylim(bottom=0)                       # Shared -> applies across the insert row.
     axes[3][0].set_ylim(bottom=0)                       # Shared -> applies across the query row.
     axes[0][0].set_ylabel("AAE", fontsize=LABEL_FONT_SIZE)
-    axes[1][0].set_ylabel("Top-$k$ AAE", fontsize=LABEL_FONT_SIZE)
+    axes[1][0].set_ylabel("Top-$w$ AAE", fontsize=LABEL_FONT_SIZE)
     axes[2][0].set_ylabel("Insert Latency [ns]", fontsize=LABEL_FONT_SIZE)
     axes[3][0].set_ylabel("Query Latency [ns]", fontsize=LABEL_FONT_SIZE)
     fig.subplots_adjust(hspace=0.12, wspace=0.25)
@@ -1015,7 +1016,7 @@ def _plot_mg_tail_row(result_dir, output_dir, metric, y_label, file_name):
 
     workloads = ["kosarak", "webdocs", "caida"]
     workload_subdir = Path("mg_tail_latency_bench")
-    sketches = ["SublimeMG", "SublimeMG_tree", "MG", "SpaceSaving", "Waving"]
+    sketches = ["SublimeMG_tree", "SublimeMG", "MG", "MGHeap", "SpaceSaving", "Waving"]
     memory_powers = {"caida": range(17, 23), "kosarak": range(14, 19), "webdocs": range(17, 23)}
     memory_footprints = {w: [2 ** i for i in memory_powers[w]] for w in workloads}
 

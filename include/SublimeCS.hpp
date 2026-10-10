@@ -5,9 +5,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <cstring>
 #include <functional>
-#include <immintrin.h>
 #include <limits>
 #include <random>
 #include <vector>
@@ -147,6 +147,13 @@ public:
     // General cache line information.
     static constexpr uint32_t cache_line_size = 512;
     static constexpr uint32_t cache_line_size_bytes = cache_line_size / 8;
+    /**
+     * The most words an extension pool can span: it lives inside one chunk, so
+     * a chunk's worth. The pool's actual width is a runtime tuning; this bound
+     * is what sizes the arrays holding a copy of it where variable-length
+     * arrays are not available (see `SUBLIME_STACK_ARRAY`).
+     */
+    static constexpr uint32_t max_extension_words = cache_line_size / 64;
     static constexpr uint32_t cache_line_size_words = cache_line_size_bytes / sizeof(uint64_t);
 
     // VALE's default counter per chunk size and the constraints enforced on it
@@ -218,7 +225,7 @@ private:
     uint64_t n;
 
     // Vector of AMS sketches to estimate the stream's l_2-norm
-#ifdef __AVX512F__
+#ifdef SUBLIME_HAS_AVX512F
     __m512i ams = {};
     const __m512i twos = _mm512_set1_epi32(2);
     const __m512i ones = _mm512_set1_epi32(1);
@@ -350,7 +357,7 @@ private:
      * must be set.
      * @param state The value the overflows bit must be set to.
      */
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     inline void set_overflowing(uint64_t words[], const uint32_t pos, const bool state) {
         words[pos / 64] = state ? words[pos / 64] | (1ULL << (pos % 64))
                                 : words[pos / 64] & ~(1ULL << (pos % 64));
@@ -370,7 +377,7 @@ private:
      * modification is carried out if `bit_value=1` and it is not if
      * `bit_value=0`.
      */
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     inline void set_overflowing_to_0(uint64_t words[], const uint32_t pos, const uint64_t bit_value=1) {
         words[pos / 64] &= ~(bit_value << (pos % 64));
     }
@@ -390,19 +397,19 @@ private:
      * modification is carried out if `bit_value=1` and it is not if
      * `bit_value=0`.
      */
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     inline void set_overflowing_to_1(uint64_t words[], const uint32_t pos, const uint64_t bit_value=1) {
         words[pos / 64] |= bit_value << (pos % 64);
     }
     
 
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     inline bool is_overflowing(const uint64_t words[], const uint32_t pos) const {
         return (words[pos / 64] >> (pos % 64)) & 1ULL;
     }
 
 
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     inline uint64_t get_delimiters_bitmap_word(const uint64_t val) const {
         return (val & (val >> 1)) & select_mask;
     }
@@ -597,7 +604,7 @@ private:
      * @param chunk_words A pointer to the chunk's contents.
      * @return True if the chunk has a tails array and false otherwise.
      */
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     inline bool has_tails_array(const Sketch *sketch, const uint64_t *chunk_words) const {
         return chunk_words[cache_line_size_words - sketch->num_extension_words] >> 63;
     }
@@ -759,16 +766,20 @@ inline SublimeCS<l2_size_function>::SublimeCS(size_t init_col_count, size_t init
             seed_gen_seed(seed_gen_seed) {
     n = 0;
     col_count = init_col_count;
-    init_col_count_lg = highbit_pos(init_col_count) + (__builtin_popcountll(init_col_count) > 1);
+    init_col_count_lg = highbit_pos(init_col_count) + (popcount64(init_col_count) > 1);
     col_count_lg = init_col_count_lg;
 
     init_counter_count = row_count * col_count;
     counter_count = init_counter_count;
-    init_counter_count_lg = highbit_pos(counter_count) + (__builtin_popcountll(counter_count) > 1);
+    init_counter_count_lg = highbit_pos(counter_count) + (popcount64(counter_count) > 1);
     counter_count_lg = init_counter_count_lg;
 
     expansion_lim = expansion_f(col_count);
-    contraction_lim = (__builtin_popcountll(init_counter_count) > 1 ? 0 : expansion_f(col_count / 2.0));
+    // Nothing below the initial size to contract to; see `contract()`. (Copied
+    // from SublimeCMS, this used to be nonzero for a power-of-two counter
+    // count, which SublimeCMS can shrink below and this sketch cannot. The
+    // fixed-tuning clone already had 0.)
+    contraction_lim = 0;
 
     // Setup Prefetching
     std::fill(prefetch_queue_op, prefetch_queue_op + prefetch_queue_len, OpType::None);
@@ -873,7 +884,11 @@ inline void SublimeCS<l2_size_function>::Delete(const char *elem, const uint32_t
         update_l2_estimate(elem, length, true);
 
     if constexpr (l2_size_function) {
-        if (n % ams_sketch_query_period == 0 && get_l2_estimate() < expansion_lim)
+        // Against the threshold for shrinking back, as the key-count path
+        // does. This used to test `expansion_lim` -- the threshold for growing
+        // again -- which nearly every estimate is under, so almost any delete
+        // on a query period contracted, down to and past the initial size.
+        if (n % ams_sketch_query_period == 0 && get_l2_estimate() < contraction_lim)
             contract();
     }
     else {
@@ -891,7 +906,21 @@ inline void SublimeCS<l2_size_function>::Delete(const char *elem, const uint32_t
 
 template <bool l2_size_function>
 inline int64_t SublimeCS<l2_size_function>::Query(const char *elem, const uint32_t length) const {
+    // One estimate a row. A variable-length array where the compiler has them,
+    // as this always was; elsewhere on the stack for any realistic row count,
+    // and on the heap past that.
+#if defined(SUBLIME_GNU_BUILTINS)
     int64_t res[row_count];
+#else
+    constexpr size_t max_stack_rows = 64;
+    int64_t stack_res[max_stack_rows];
+    std::unique_ptr<int64_t[]> heap_res;
+    int64_t *res = stack_res;
+    if (row_count > max_stack_rows) {
+        heap_res.reset(new int64_t[row_count]);
+        res = heap_res.get();
+    }
+#endif
     const Sketch *sketch = sketches.back();
     if constexpr (using_tof_hashing) {
         uint64_t hash_value = MurmurHash64B(elem, length, seeds[0]);
@@ -978,7 +1007,7 @@ inline void SublimeCS<l2_size_function>::setup_lookup_tables(SublimeCS::Sketch *
 
 
 template <bool l2_size_function>
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 inline void SublimeCS<l2_size_function>::push_prefetch_request(SublimeCS::Sketch *sketch,
                                                                const uint32_t pos, 
                                                                const bool sign,
@@ -986,11 +1015,11 @@ inline void SublimeCS<l2_size_function>::push_prefetch_request(SublimeCS::Sketch
     if constexpr (using_tof_hashing) {
         prefetch_queue_cache_line[prefetch_clock] = get_cache_line_ind(sketch, pos);
         prefetch_queue_cache_line_offset[prefetch_clock] = pos - sketch->counter_per_cache_line * prefetch_queue_cache_line[prefetch_clock];
-        __builtin_prefetch(sketch + prefetch_queue_cache_line[prefetch_clock] * cache_line_size_bytes);
+        SUBLIME_PREFETCH(sketch + prefetch_queue_cache_line[prefetch_clock] * cache_line_size_bytes);
     }
     else {
         prefetch_queue[prefetch_clock] = pos;
-        __builtin_prefetch(sketch + get_cache_line_ind(sketch, pos) * cache_line_size_bytes);
+        SUBLIME_PREFETCH(sketch + get_cache_line_ind(sketch, pos) * cache_line_size_bytes);
     }
     prefetch_queue_sign[prefetch_clock] = sign;
     prefetch_queue_op[prefetch_clock] = op;
@@ -999,7 +1028,7 @@ inline void SublimeCS<l2_size_function>::push_prefetch_request(SublimeCS::Sketch
 
 
 template <bool l2_size_function>
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 inline void SublimeCS<l2_size_function>::handle_last_prefetch_request(SublimeCS::Sketch *sketch) {
     if constexpr (using_tof_hashing) {
         switch (prefetch_queue_op[prefetch_clock]) {
@@ -1035,37 +1064,37 @@ inline void SublimeCS<l2_size_function>::handle_last_prefetch_request(SublimeCS:
 
 
 template <bool l2_size_function>
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 inline uint32_t SublimeCS<l2_size_function>::get_extension_rank(const uint64_t words[],
                                                                 const uint32_t pos) const {
     uint32_t res = 0;
     for (uint32_t i = 0; i < pos / 64; i++)
-        res += __builtin_popcountll(words[i]);
+        res += popcount64(words[i]);
     res += bit_rank(words[pos / 64], pos % 64);
     return res;
 }
 
 
 template <bool l2_size_function>
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 inline uint32_t SublimeCS<l2_size_function>::get_extension_pos(const SublimeCS::Sketch *sketch,
                                                                const uint64_t extensions[],
                                                                const uint32_t rank) const {
-    uint64_t masks[sketch->num_extension_words];
+    SUBLIME_STACK_ARRAY(uint64_t, masks, sketch->num_extension_words, max_extension_words);
     for (uint32_t i = 0; i < sketch->num_extension_words; i++)
         masks[i] = get_delimiters_bitmap_word(extensions[i]);
     int extension_pos = (rank == 0 ? -2 : bit_select(masks[0], rank - 1));
     if (sketch->num_extension_words == 2) {
-        const int32_t other_attempt = bit_select(masks[1], rank - 1 - __builtin_popcountll(masks[0]));
+        const int32_t other_attempt = bit_select(masks[1], rank - 1 - popcount64(masks[0]));
         extension_pos = (extension_pos >= 64 ? other_attempt + 64 : extension_pos);
     }
     else if (sketch->num_extension_words > 2) {
         extension_pos = (extension_pos < 64 ? extension_pos : -3);
-        uint32_t running_rank = rank - __builtin_popcountll(masks[0]);
+        uint32_t running_rank = rank - popcount64(masks[0]);
         for (uint32_t i = 1; i < sketch->num_extension_words; i++) {
             const uint32_t select_result = running_rank > 64 ? 64 : bit_select(masks[i], running_rank - 1);
             extension_pos = ((extension_pos == -3 && select_result < 64) ? select_result + i * 64 : extension_pos);
-            running_rank -= __builtin_popcountll(masks[i]);
+            running_rank -= popcount64(masks[i]);
         }
     }
     return extension_pos + 2;
@@ -1073,7 +1102,7 @@ inline uint32_t SublimeCS<l2_size_function>::get_extension_pos(const SublimeCS::
 
 
 template <bool l2_size_function>
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 inline uint32_t SublimeCS<l2_size_function>::get_extension_length(const SublimeCS::Sketch *sketch,
                                                                   uint64_t extensions[]) const {
     if (sketch->num_extension_words == 1)
@@ -1190,7 +1219,7 @@ inline int64_t SublimeCS<l2_size_function>::get_counter(const SublimeCS::Sketch 
     const bool has_extension = is_overflowing(words, inter_cache_line_ind);
     if (has_extension) {
         const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
-        uint64_t extension_bitmap[sketch->num_extension_words];
+        SUBLIME_STACK_ARRAY(uint64_t, extension_bitmap, sketch->num_extension_words, max_extension_words);
         for (uint32_t i = 0; i < sketch->num_extension_words - 1; i++)
             extension_bitmap[i] = words[cache_line_size_words - i - 1];
         extension_bitmap[sketch->num_extension_words - 1] = words[cache_line_size_words - sketch->num_extension_words] 
@@ -1241,7 +1270,7 @@ inline void SublimeCS<l2_size_function>::set_counter(SublimeCS::Sketch *sketch,
     const int update_state = static_cast<int>(old_has_extension) * 2 + static_cast<int>(new_has_extension);
     if (update_state) {
         const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
-        uint64_t extension_bitmap[sketch->num_extension_words];
+        SUBLIME_STACK_ARRAY(uint64_t, extension_bitmap, sketch->num_extension_words, max_extension_words);
         for (uint32_t i = 0; i < sketch->num_extension_words - 1; i++)
             extension_bitmap[i] = words[cache_line_size_words - i - 1];
         extension_bitmap[sketch->num_extension_words - 1] = words[cache_line_size_words - sketch->num_extension_words] 
@@ -1346,7 +1375,7 @@ inline void SublimeCS<l2_size_function>::incdec_counter(SublimeCS::Sketch *sketc
         uint64_t *words = reinterpret_cast<uint64_t *>(cache_line_ptr);
         const bool has_extension = is_overflowing(words, inter_cache_line_ind);
         const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
-        uint64_t extension_bitmap[sketch->num_extension_words];
+        SUBLIME_STACK_ARRAY(uint64_t, extension_bitmap, sketch->num_extension_words, max_extension_words);
         for (uint32_t i = 0; i < sketch->num_extension_words - 1; i++)
             extension_bitmap[i] = words[cache_line_size_words - i - 1];
         extension_bitmap[sketch->num_extension_words - 1] = words[cache_line_size_words - sketch->num_extension_words] 
@@ -1424,7 +1453,7 @@ inline void SublimeCS<l2_size_function>::incdec_counter(SublimeCS::Sketch *sketc
 
         // Handle the carry and extensions
         const uint32_t extension_rank = get_extension_rank(words, inter_cache_line_ind);
-        uint64_t extension_bitmap[sketch->num_extension_words];
+        SUBLIME_STACK_ARRAY(uint64_t, extension_bitmap, sketch->num_extension_words, max_extension_words);
         for (uint32_t i = 0; i < sketch->num_extension_words - 1; i++)
             extension_bitmap[i] = words[cache_line_size_words - i - 1];
         extension_bitmap[sketch->num_extension_words - 1] = words[cache_line_size_words - sketch->num_extension_words] 
@@ -1482,7 +1511,7 @@ inline uint32_t *SublimeCS<l2_size_function>::setup_tails_array(SublimeCS::Sketc
         if (fragment == MAX_VALUE(extension_size)) {
             uint32_t ptr_pos = bit_select(overflows_bitmap[overflows_pos], cnt - running_overflows_count);
             while (ptr_pos == 64) {
-                running_overflows_count += __builtin_popcountll(overflows_bitmap[overflows_pos]);
+                running_overflows_count += popcount64(overflows_bitmap[overflows_pos]);
                 overflows_pos++;
                 ptr_pos = bit_select(overflows_bitmap[overflows_pos], cnt - running_overflows_count);
             }
@@ -1574,6 +1603,7 @@ inline typename SublimeCS<l2_size_function>::Sketch *SublimeCS<l2_size_function>
     res->stub_mask = BITMASK(stub_size);
     res->num_extension = (cache_line_size - 1 - counter_per_cache_line * (stub_size + 1)) / extension_size;
     res->num_extension_words = extension_size * res->num_extension / 64 + 1;
+    assert(res->num_extension_words <= max_extension_words);
     res->last_extension_word_bit_count = extension_size * res->num_extension + 1 - 64 * (res->num_extension_words - 1);
     setup_lookup_tables(res);
     return res;
@@ -1606,6 +1636,7 @@ inline void SublimeCS<l2_size_function>::reallocate_sketch(SublimeCS::Sketch *&s
     res->stub_mask = BITMASK(stub_size);
     res->num_extension = (cache_line_size - 1 - counter_per_cache_line * (stub_size + 1)) / extension_size;
     res->num_extension_words = extension_size * res->num_extension / 64 + 1;
+    assert(res->num_extension_words <= max_extension_words);
     res->last_extension_word_bit_count = extension_size * res->num_extension + 1 - 64 * (res->num_extension_words - 1);
     setup_lookup_tables(res);
 
@@ -1648,7 +1679,7 @@ template <bool l2_size_function>
 inline void SublimeCS<l2_size_function>::free_tails(SublimeCS::Sketch *sketch) {
     for (uint32_t chunk = 0; chunk < sketch->cache_line_count; chunk++) {
         uint64_t *words = reinterpret_cast<uint64_t *>(sketch->sketch + cache_line_size_bytes * chunk);
-        uint64_t extension_bitmap[sketch->num_extension_words];
+        SUBLIME_STACK_ARRAY(uint64_t, extension_bitmap, sketch->num_extension_words, max_extension_words);
         for (uint32_t i = 0; i < sketch->num_extension_words - 1; i++)
             extension_bitmap[i] = words[cache_line_size_words - i - 1];
         extension_bitmap[sketch->num_extension_words - 1] = words[cache_line_size_words - sketch->num_extension_words] 
@@ -1706,8 +1737,26 @@ inline void SublimeCS<l2_size_function>::contract() {
     // Measure contraction time
     std::chrono::high_resolution_clock::time_point time_point = std::chrono::high_resolution_clock::now();
 
+    // Never below the initial size. Unlike SublimeCMS, this sketch's hashing is
+    // fixed at construction (`index_range`, `bias_range`), so a sketch smaller
+    // than the first has positions it cannot address -- and there is no earlier
+    // generation to fold into. Popping the only one used to read
+    // `sketches.back()` of an empty vector.
+    if (sketches.size() <= 1) {
+        contraction_lim = 0;
+        return;
+    }
+
     expansion_lim = contraction_lim;
-    contraction_lim = (n <= expansion_f(init_col_count) ? 0 : expansion_f(col_count / 4.0));
+    if constexpr (l2_size_function) {
+        // `expansion_f` speaks in l2 estimates here, so the key-count test the
+        // other branch makes would compare two different units. Back at the
+        // initial generation there is nothing left to contract to.
+        contraction_lim = (sketches.size() <= 2 ? 0 : expansion_f(col_count / 4.0));
+    }
+    else {
+        contraction_lim = (n <= expansion_f(init_col_count) ? 0 : expansion_f(col_count / 4.0));
+    }
 
     Sketch *new_sketch = sketches.back();
     sketches.pop_back();
@@ -1747,7 +1796,7 @@ inline void SublimeCS<l2_size_function>::update_l2_estimate(const char *elem,
                                                             bool del) {
     const uint64_t ams_hashes = MurmurHash64B(elem, length,
             seed_gen_seed + row_count + 1);
-#ifdef __AVX512F__
+#ifdef SUBLIME_HAS_AVX512F
     __mmask16 add_mask = (-static_cast<int64_t>(del) ^ ams_hashes) & BITMASK(16);
     __m512i ams_update = _mm512_mask_sub_epi32(ones, add_mask, ones, twos);
     ams = _mm512_add_epi32(ams, ams_update);
@@ -1764,8 +1813,8 @@ inline uint64_t SublimeCS<l2_size_function>::get_l2_estimate() {
     constexpr uint32_t num_to_average = 4;
     constexpr uint32_t num_ams_squared = num_ams_sketches / num_to_average;
     uint64_t ams_squared[num_ams_sketches] = {};
-#ifdef __AVX512F__
-    static_assert(__builtin_popcount(num_to_average) == 1);
+#ifdef SUBLIME_HAS_AVX512F
+    static_assert((num_to_average & (num_to_average - 1)) == 0);
     __m512i mul_1 = _mm512_mul_epi32(ams, ams);
     __m512i ams_shifted = _mm512_shuffle_epi32(ams, (_MM_PERM_ENUM) _MM_SHUFFLE(1, 0, 3, 2));
     __m512i mul_2 = _mm512_mul_epi32(ams_shifted, ams_shifted);

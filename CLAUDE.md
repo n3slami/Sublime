@@ -29,8 +29,69 @@ the configure fails inside `_deps/doctest-src`, not in any file of this repo. On
 `BUILD_TESTS` is on.
 
 - Release adds `-march=native`; every sketch library is compiled with `-Ofast -march=native`
-  (`BITHACKING_COMPILE_FLAGS`). The code relies on BMI2/AVX-512 intrinsics (`_pdep_u64`,
-  `_mm512_*` in `SublimeCS`'s AMS estimator), so it will not run on machines lacking them.
+  (`BITHACKING_COMPILE_FLAGS`). CMake probes for the flag (`-mcpu=native` is the fallback some
+  ARM Clangs need) and uses `/O2 /fp:fast` under MSVC; on GCC and Clang the flags are unchanged.
+- **Every compiler- and ISA-specific spelling in Sublime goes through `include/portability.hpp`**
+  -- `SUBLIME_ALWAYS_INLINE`, `SUBLIME_PREFETCH`, `popcount64`, and `SUBLIME_HAS_BMI` / `BMI2` /
+  `LZCNT` / `AVX512F` guarding the x86 paths, each with a fallback, and `SUBLIME_STACK_ARRAY`,
+  a variable-length array on GCC/Clang and a fixed bound elsewhere. Don't write `__builtin_*`,
+  `__attribute__`, a raw `__AVX512F__` or a bare VLA into a Sublime header; MSVC and ARM reject
+  them. `-DSUBLIME_PORTABLE` forces the non-x86 paths and `-DSUBLIME_NO_BUILTINS` the plain-C++
+  ones (fixed-bound arrays included), which is how the fallbacks are tested here: all suites pass
+  under both. **On x86 Linux with GCC the generated code is unchanged**: all eight Sublime bench
+  binaries' `.text` sections are byte-identical to the pre-portability headers'. That is why the
+  VLAs stay VLAs there -- replacing them with fixed bounds grew `SublimeCMS::increment_counter` by
+  30% -- so check `.text` the same way before changing anything in this layer.
+  Cross-compiles (zig's clang) are clean for Apple Silicon, Intel macOS, ARM Linux and
+  Windows-MinGW -- the Sublime headers, `CS.hpp`, the harness (`bench_template.hpp`,
+  `bench_utils.hpp`) and `workload_gen` alike; native MSVC has never been compiled. The harness
+  includes `portability.hpp` too, which is why `bench/CMakeLists.txt` puts `include/` on every
+  bench target's path (`bench/` declares its own `project()`, so not `PROJECT_SOURCE_DIR`).
+  `workload_gen` writes byte-identical workloads to the pre-portability sources.
+- **SALSA is the one baseline tied to x86**, and the one `bench/CMakeLists.txt` drops: it uses
+  `__rdtsc` and AVX2, so it is skipped off x86, and on x86 when a compile probe under the native
+  flags finds no AVX2. It is a pinned submodule and stays untouched. `run_benchmarks.py` skips any
+  bench that was not built and every plotter skips a missing result file, so the figures are drawn
+  without it: checked by plotting all eleven figures from the 2026-09-30 results with its files
+  (and, at the time, six more baselines') removed. **Stingy, Coding and Tailored Sketch** (CM and
+  CS, and O-Tailored) used to be dropped too, but only because each included `<mmintrin.h>` --
+  x86-only -- without using anything from it. Those headers are this repo's own, not a
+  submodule, so the include was deleted on 2026-10-10: their x86 `.text` is byte-identical before
+  and after (checked on all six rebuilt binaries), and they now build for ARM64. **WavingSketch**
+  calls `std::random_shuffle`, which libc++ (macOS, and Clang elsewhere) removes in C++17, so
+  `WavingLib` defines `_LIBCPP_ENABLE_CXX17_REMOVED_RANDOM_SHUFFLE` -- no effect under libstdc++.
+  Verified by full CMake cross-builds with zig: ARM64 Linux and Apple Silicon build 20 benches (all
+  but SALSA), every test suite and `workload_gen` with no errors; Intel macOS builds all 21.
+- `zipf.c` uses `random()`, which Windows lacks, so there it takes the file's own
+  `USE_MYRANDOM` generator -- **Windows generates different zipf workloads from the same seed**.
+- **The scripts run on macOS**: written for bash 3.2 (what `/bin/bash` is there) and the BSD
+  userland -- no `declare -A` (per-dataset `case` lookups instead), `curl` rather than `wget`,
+  `sha256sum`/`shasum`/`openssl` whichever exists, `df -P -k`, `getconf _NPROCESSORS_ONLN`, an
+  `abspath` helper for pre-13 macOS without `realpath`. Checked by running them under the
+  `bash:3.2` container image: `generate_datasets.sh` issues byte-identical `workload_gen`
+  commands to the old script under bash 5. Native Windows still needs WSL (`run_benchmarks.py`
+  pipes through `tee`; the scripts are bash).
+- `SublimeCS<true>`'s ℓ2 estimate differs between its AVX-512 and scalar paths (the same stream
+  expands at different times), which predates the portability work: the committed headers at
+  `-march=x86-64-v3` already disagree with `-march=native`. Not fixed.
+- **`SublimeCS` contraction was fixed on 2026-10-10**, and is not `SublimeCMS`'s: `SublimeCS`
+  never contracts below its initial size, because its hashing (`index_range`, `bias_range`) is
+  fixed at construction. Three bugs, each a read past `sketches`' end or worse: the l2 `Delete`
+  tested `expansion_lim` (the threshold for growing *again*) instead of `contraction_lim`; the
+  constructor, copied from `SublimeCMS`, started `contraction_lim` nonzero at a power-of-two size;
+  and `contract()` never checked there was a generation to fall back to. The l2 threshold after a
+  contraction now counts generations rather than comparing `n` with an l2-unit threshold.
+  `SublimeCSTest::DeleteEverything` checks every contraction decision; `DeleteBeforeExpanding` the
+  initial-size case. Every key reads 0 after deleting everything only back at the initial
+  generation -- an expansion copies each counter into both halves, and the untouched copy stays
+  until the contraction folds them -- and the l2 variant re-tests once a query period, so it can
+  stop a generation short.
+- **Known, unfixed: `shift_extensions_right_from_pos` reads one word past the extension array**
+  in `SublimeCMS`, `SublimeCS` and the three fixed-tuning clones: in the `>= 3`-word branch the
+  guard `i < num_extension_words` repeats the loop condition, so `extensions[i + 1]` is read on the
+  last iteration (it should be `i + 1 < ...`). ASan flags it in `SublimeCSTests`' existing
+  `reallocate` case on the committed code too. It is left alone because fixing it changes the
+  generated code of the binaries the results came from.
 - `-DBUILD_BENCHMARKS=1` (default) runs `bench/scripts/setup_includes.sh` at configure time,
   which inits the `waving_sketch` and `salsa` submodules and **`sed`-patches**
   `waving_sketch/include/Waving.h` to add `#include <unistd.h>`. The patch is not idempotent —
@@ -44,7 +105,7 @@ lives in the top-level `CMakeLists.txt`, so `CTestTestfile.cmake` is generated t
 ```bash
 ctest -VV                 # all suites
 ctest -R sublime_cms      # one suite: cms | sublime_cms | cs | sublime_cs | cuckoo_table |
-                          #            vale_counters | sublime_mg | mg | space_saving | all
+                          #            vale_counters | sublime_mg | mg | mg_heap | space_saving | all
 ./tests/SublimeCMSTests --test-case="monte carlo"        # one doctest case
 ```
 
@@ -473,7 +534,9 @@ The glue and two experiments are implemented: `bench/sketches_benchmark/bench_Su
 fixed-size `CuckooTable` (32-bit fingerprints by default) with a plain 32-bit counter array, and
 whose decrement is the same sweep Sublime_MG does, with no heap or bucket list anywhere; and
 `SpaceSaving` — a textbook Stream-Summary storing full 64-bit keys, deliberately pointer-heavy.
-Plus `Waving`. All fixed-size. See the `MG` / `SpaceSaving` rows in the architecture table.
+Plus `Waving`, and `MGHeap` -- the textbook heap-based Misra-Gries over the same table, which
+answers exactly as `MG` does and differs only in how a decrement finds its victims. All
+fixed-size. See the `MG` / `MGHeap` / `SpaceSaving` rows in the architecture table.
 The figure plots Sublime_MG twice, `SublimeMG` and `SublimeMG_tree`, which is the sweep against
 the min tree; `run_benchmarks.py`'s `mg_accuracy_bench` names the configurations and the `label`
 argument is what keeps two runs of one binary in separate files. **Both of those lines come from
@@ -578,7 +641,7 @@ benchmark because it needs separate runs**: `--tail-latency` times every single 
 costs about as much as a cuckoo-table insertion itself, so the average latency such a run reports
 is meaningless and must never be read as Fig. 17's. The tail is unharmed -- microseconds of
 eviction sweep against tens of nanoseconds of two clock reads -- which is what makes the split
-work. All five MG-family benches take the flag; `bench_template.hpp` keeps the histogram (16
+work. All six MG-family benches take the flag; `bench_template.hpp` keeps the histogram (16
 buckets an octave) and emits `max_i`, `p99_i`, `p999_i` and `p9999_i` in nanoseconds.
 
 **The figure is the max, and `plot_mg_tail_latency` emits `mg_tail_latency_p9999.pdf` beside it**
@@ -613,7 +676,7 @@ column count, Sublime_MG a monitored-key `Capacity()`. The shared `--size-functi
 ### State of play
 
 Everything above is implemented and tested: 34 `sublime_mg` cases, 13 `vale_counters`, 10 `mg`,
-6 `cuckoo_table`, all green under `ctest`, under an assert-enabled build, and under ASan.
+10 `mg_heap`, 6 `cuckoo_table`, all green under `ctest`, under an assert-enabled build, and under ASan.
 
 **How the rewritten min tree was checked**, because it is the part where a wrong answer is
 silent. `VALECountersTest::CheckMinTree` re-derives, by scanning, what *every* internal node ought
@@ -723,6 +786,7 @@ One bench target serves both builds: `bench_SublimeMGNoTuning` compiles
 | `SublimeMGNoTuning.hpp.in` | The same idea for Sublime_MG, done the other way: four lines that `#define` the tuning and include `SublimeMG.hpp`, because the tuning lives in `VALECounters` rather than in the sketch. Nothing is duplicated. See "Compile-time tuning knobs". |
 | `CMS.hpp`, `CS.hpp` | Plain Count-Min / Count Sketch baselines. |
 | `MG.hpp` | Textbook Misra-Gries baseline: a fixed-size `CuckooTable` (no expansion) with a plain 32-bit counter array that a `CuckooTable::SlotMirror` sidecar keeps aligned as kicks relocate entries. Case 3 is the same sweep `SublimeMG` does — decrement every entry, evict what reaches zero, admit into a slot it freed — with no heap and no bucket list. At a fixed size it is `SublimeMG` minus VALE, and the two agree key for key. |
+| `MGHeap.hpp` | Heap-based Misra-Gries baseline over the same fixed-size `CuckooTable`: a lazy decrement `L`, and a binary min-heap holding each entry's count plus `L`, so a decrement is `L++` and what it emptied sits at the root. **The links are offsets, not pointers**: a heap node holds its entry's slot (`ceil(log2 nslots)` bits, packed beside its 32-bit count) and a slot its node's heap position (`ceil(log2 Capacity())` bits, packed), and the counts live in the heap alone. Kicks keep both links right through the `SlotMirror` callbacks; an admission pushes its node *before* `InsertAt`, so the kick path has the arrival's position to carry, and a tenant the kick path drops has its node removed. **Eviction is drained, as in Sublime_MG's min tree**: an emptied entry (stored at exactly `L`) stays, answering zero, and every insertion evicts at most `drain_batch = 2` of them on its way out. Evicting everything a decrement empties at once was the first version, and its worst insertion was `O(w log w)` -- worse than `MG`'s `O(w)` sweep, ~30 ms at webdocs 4 MB. It holds the same keys at the same counts as `MG`, but in different slots, so the two agree exactly only until either table first gives up on a kick path; `MGHeapTest::AgreesWithMG` follows `MG` in lockstep up to there. `CountMonitored` counts stored entries, emptied ones included (that is what decides room); `CountLive` is `MG`'s sense. |
 | `SpaceSaving.hpp` | Space-Saving baseline over the Stream-Summary structure (sorted doubly-linked bucket list + per-bucket monitor lists), pointer-heavy by design. Its **index is a `CuckooTable`**, not a hash map: the same fingerprints the MG family uses, with a monitor pointer beside each slot kept aligned by a `SlotMirror`. No key is stored anywhere — a monitor holds the *slot* that names it, which kicks move — so eviction removes a slot rather than a key. Two consequences it now shares with `MG`: keys whose fingerprint and bucket pair agree share a monitor, and a kick path that gives up drops one. **Its index runs at `index_load_factor = 0.5`**, far below what a cuckoo filter can reach, and that is not a knob to tighten: Space-Saving deletes and re-inserts on *every* miss, so at a full table's load factor the kick paths fail constantly and each failure drops a monitor with a large count on it — 99% of the counted mass, measured. Slack costs it almost nothing next to a 40-byte monitor and a 32-byte bucket, and buys back zero losses. `CountDroppedInsertions` and `CountLostMass` account for every occurrence the monitors do not, which is how the suite keeps "counts sum to N" an equality. |
 | `VALECounters.hpp` | A flat VALE counter array (chunk = cache line: overflows bitmap + stubs + extension pool, spilling to a heap tails array), extracted from `SublimeCMS`'s sketch layout. **The range-moving routines are gone** — `ShiftLeft/RightAndClear`, the `repair_range` behind them, and `MinInRange`: they were the quotient filter's, and a cuckoo table moves one counter at a time, so porting them to the rewritten tree would have been real work for capability nothing uses. `git log` has them. Optionally maintains a **min segment tree** over the counters (`VALECounters(n, with_min_tree)`) as a separate packed bit array of within-subtree offsets, 2.29 bits a counter, with the root in a member — so `MinValue()` is the smallest non-empty counter's value and `MinSlot()` a position holding it, each one read; a *stored* zero means *empty*, not a value of zero. With the tree it also owns Misra-Gries' lazy decrement: `IncrementLazy` lowers every count without touching memory, `Get`/`Set` speak counts-plus-`L`, and `MaybeFlushGroup`/`FlushAllGroups` subtract `L` from the counters a group of 32 at a time. See "Insertion: the min segment tree" above, which is where all of that is explained. `MaybeRetune` mirrors `SublimeCMS`'s tails-fraction trigger and needs no tree rebuild, and `RetuneIfNarrower` is the other direction, for counters that have *shrunk* — which spills no chunk and so fires no tails trigger; `ShrinkRetuneInterval()` says how often asking is worth the pass it costs. `DecrementIsZero` decrements and reports emptiness from the overflow bit and the stub alone, without decoding an extension, which is what makes a Misra-Gries decrement sweep affordable. A counter tops out at `2^(32+stub_size)` (tails are `uint32_t`). |
 | `SublimeMG.hpp` | Sublime_MG: a `CuckooTable` with counters enabled, so counter `i` is the count of the fingerprint in slot `i`. `Insert` applies all three Misra-Gries cases and `Query` is the matching entry's counter — one entry per key, since every fingerprint is of the same length. `template <bool expand_on_error_inducing_insertions, bool use_min_tree, typename Table>`: with the tree off (the default), case 3 is one sweep that decrements every entry and evicts what it empties; with it on, a lazy decrement `L` and a min tree over the counters make an eviction `O(log w)`, and `drain_emptied` clears two emptied entries on the way out of every insertion. `SetVALERetuning(false)` pins VALE to the tuning it was built with, for measuring what the tuning is worth. Expansion is driven by the size function `expansion_f` handed to the constructor, as in the other Sublime sketches; `template <bool expand_on_error_inducing_insertions = true>` picks whether that size function is read against the insertions that matched nothing or against every insertion — the two Sublime_MG "versions". See the Sublime_MG section above. |
@@ -769,6 +833,22 @@ frequency checkpoints in a hash map, once to drive the sketch, emitting one JSON
 `Flush` opcode with `aae`, `are`, over/underestimation, `size`, and `time_<c>` timers. Workloads
 are opcode streams (`Insert`/`Delete`/`Timer`/`Flush`/`SwitchTable`) produced by
 `workload_gen` (`bench/workload_gen.cpp`, `WorkloadIO` in `bench_utils.hpp`).
+
+**Any text file is a valid stream** for `standard`, `standard_string`, `expand` and `delete`
+(`--fdist real <file> --key-len-binary 0`; `join_size` keeps its TPC-H-only reader). One reader,
+`read_text_keys`, serves all four: whitespace tokens, or lines with `--text-keys lines` (CRLF
+stripped); keys that are all plain unsigned 64-bit decimals (no sign, no leading zero) make an
+integer workload, anything else a string workload of the exact bytes, so `007` and `7` stay
+distinct. A missing or keyless file is an error and exit status 1 -- the old `in >> uint64_t`
+reader stopped silently at the first non-numeric token and returned an empty stream for a bad
+path. **Every existing workload is byte-identical** to the old generator's (kosarak standard and
+expand, CAIDA standard_string/expand/delete, and webdocs' parsed keys), because the integer and
+binary branches and their RNG calls were left in place; keep it that way. `expand` replays only
+whole measurement periods, dropping the tail -- as it always has. `--no-shuffle` replays every stream (all five types,
+`join_size` included) in file order: every shuffle goes through `shuffle_stream`, and
+`append_keys` keeps file order when a stream's files mix integer and string keys. It is off by
+default, which is what keeps the existing workloads byte-identical. The README's "Benchmarking Your
+Own Stream" section is the user-facing description.
 
 ### `bench/scripts/` — reproduction pipeline
 

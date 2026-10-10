@@ -29,7 +29,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <sys/types.h>
 #include <system_error>
 #include <unordered_map>
 #include <vector>
@@ -37,7 +36,6 @@
 #include "bench_utils.hpp"
 #include "zipf/zipf.h"
 #include <argparse/argparse.hpp>
-#include <x86intrin.h>
 
 static const std::vector<std::string> fdist_names = {"unif", "norm", "zipf", "real"};
 static const std::vector<std::string> fdist_default = {"zipf"};
@@ -95,8 +93,8 @@ std::vector<uint64_t> generate_int_keys_normal(uint64_t n_keys, uint64_t univers
     std::normal_distribution<long double> dist(static_cast<double>(universe_size) / 2.0, std);
     std::cout << "Generating keys..." << std::endl;;
     while (keys.size() < n_keys) {
-        const uint64_t value = std::clamp(static_cast<int64_t>(dist(rng)),
-                                          0L, static_cast<int64_t>(universe_size));
+        const uint64_t value = std::clamp<int64_t>(static_cast<int64_t>(dist(rng)),
+                                                   0, static_cast<int64_t>(universe_size));
         keys.push_back(value);
         print_progress(1.0 * keys.size() / n_keys);
     }
@@ -109,6 +107,72 @@ std::vector<uint64_t> generate_int_keys_zipf(uint64_t n_keys, uint64_t universe_
     keys.resize(n_keys);
     generate_random_keys(keys.data(), universe_size, n_keys, char_exp);
     return keys;
+}
+
+
+/** Set by `--no-shuffle`: replay every stream in the order it was given. */
+bool keep_stream_order = false;
+
+/**
+ * Shuffles a stream -- the default, which every workload of the paper was
+ * generated with -- unless `--no-shuffle` asked for it to be replayed in the
+ * order its file holds it. The keys themselves are the same either way.
+ */
+template <typename Iterator>
+void shuffle_stream(Iterator first, Iterator last, std::mt19937_64& rng) {
+    if (!keep_stream_order)
+        std::shuffle(first, last, rng);
+}
+
+/** How `--text-keys` says to cut a text stream file into keys. */
+TextSplit text_split(argparse::ArgumentParser& parser) {
+    const std::string mode = parser.get<std::string>("--text-keys");
+    if (mode == "tokens")
+        return TextSplit::Tokens;
+    if (mode == "lines")
+        return TextSplit::Lines;
+    throw std::runtime_error("--text-keys must be 'tokens' or 'lines', not '" + mode + "'");
+}
+
+/**
+ * The keys of one `--fdist real <file>`. With `--key-len-binary N > 0` the file
+ * is binary records of N bytes each, which are string keys; with
+ * `--key-len-binary 0` it is a text stream file (see `read_text_keys`), whose
+ * keys are integers if every one of them is a plain unsigned 64-bit decimal and
+ * strings otherwise. Exactly one of the two vectors comes back non-empty.
+ */
+void load_real_keys(argparse::ArgumentParser& parser, const std::string& key_file,
+                    std::vector<uint64_t>& ints, std::vector<ByteString>& strings) {
+    const uint32_t key_len_binary = parser.get<uint32_t>("--key-len-binary");
+    if (key_len_binary > 0) {
+        strings = read_data_binary(key_file, key_len_binary);
+        return;
+    }
+    TextKeys text = read_text_keys(key_file, text_split(parser));
+    if (text.integer)
+        ints = std::move(text.ints);
+    else
+        strings = to_byte_strings(text.strings);
+}
+
+/**
+ * Appends one file's keys to the stream built so far, keeping file order --
+ * which `--no-shuffle` replays. Several files may make up one stream; once any
+ * of them gives string keys, the stream is strings, and integer keys join it as
+ * their decimal text, wherever in the stream they fall.
+ */
+void append_keys(std::vector<uint64_t>& ints, std::vector<ByteString>& strings,
+                 std::vector<uint64_t>& new_ints, std::vector<ByteString>& new_strings) {
+    if (!new_strings.empty() && !ints.empty()) {
+        strings = to_byte_strings(ints);                // Everything so far was integers.
+        ints.clear();
+    }
+    if (!new_ints.empty() && !strings.empty()) {
+        new_strings = to_byte_strings(new_ints);        // The stream is already strings.
+        new_ints.clear();
+    }
+    ints.insert(ints.end(), new_ints.begin(), new_ints.end());
+    strings.insert(strings.end(), new_strings.begin(), new_strings.end());
 }
 
 
@@ -142,7 +206,6 @@ std::tuple<std::string, long double, long double, std::string> get_fdist(argpars
 
 
 void standard_int_bench(argparse::ArgumentParser& parser) {
-    WorkloadIO wio(parser.get<std::string>("--output-file"), WorkloadIO::iomode::Write, false);
     uint32_t fdist_ind = 0;
     auto [freq_dist, freq_dist_std, freq_dist_char_exp, key_file] = get_fdist(parser, fdist_ind);
 
@@ -159,18 +222,35 @@ void standard_int_bench(argparse::ArgumentParser& parser) {
     else if (freq_dist == "zipf")
         keys = generate_int_keys_zipf(n_keys, universe_size, freq_dist_char_exp, rng);
     else {
-        if (parser.get<uint32_t>("--key-len-binary") > 0)
+        if (parser.get<uint32_t>("--key-len-binary") > 0) {
             keys = read_data_binary<uint64_t>(key_file);
-        else
-            keys = read_data_text(key_file);
+        }
+        else {
+            TextKeys text = read_text_keys(key_file, text_split(parser));
+            if (!text.integer) {
+                // Keys that are not integers: a workload of string keys, which
+                // every bench replays through its string path.
+                std::vector<ByteString> string_keys = to_byte_strings(text.strings);
+                shuffle_stream(string_keys.begin(), string_keys.end(), rng);
+                WorkloadIO wio(parser.get<std::string>("--output-file"), WorkloadIO::iomode::Write, true);
+                wio.Timer('i');
+                for (const ByteString& key : string_keys)
+                    wio.Insert(key);
+                wio.Timer('i');
+                wio.Flush();
+                return;
+            }
+            keys = std::move(text.ints);
+        }
     }
 
     std::set<uint64_t> key_set = {keys.begin(), keys.end()};
     std::unordered_map<uint64_t, uint64_t> alias;
     for (uint64_t key : key_set)
         alias[key] = rng();
-    std::shuffle(keys.begin(), keys.end(), rng);
+    shuffle_stream(keys.begin(), keys.end(), rng);
 
+    WorkloadIO wio(parser.get<std::string>("--output-file"), WorkloadIO::iomode::Write, false);
     wio.Timer('i');
     for (uint64_t key : keys)
         wio.Insert(alias[key]);
@@ -192,11 +272,14 @@ void standard_string_bench(argparse::ArgumentParser& parser) {
     while (fdist_ind != std::numeric_limits<uint32_t>::max()) {
         auto [freq_dist, freq_dist_std, freq_dist_char_exp, key_file] = get_fdist(parser, fdist_ind);
 
+        std::vector<uint64_t> new_ints;
         std::vector<ByteString> new_keys;
-        new_keys = read_data_binary(key_file, key_len_binary);
+        load_real_keys(parser, key_file, new_ints, new_keys);
+        if (!new_ints.empty())
+            new_keys = to_byte_strings(new_ints);       // This workload is strings by definition.
         keys.insert(keys.end(), new_keys.begin(), new_keys.end());
     }
-    std::shuffle(keys.begin(), keys.end(), rng);
+    shuffle_stream(keys.begin(), keys.end(), rng);
 
     wio.Timer('i');
     for (ByteString key : keys)
@@ -215,23 +298,17 @@ void expand_bench(argparse::ArgumentParser& parser) {
     uint32_t fdist_ind = 0;
     std::vector<ByteString> keys;
     std::vector<uint64_t> int_keys;
-    bool is_string = true;
     while (fdist_ind != std::numeric_limits<uint32_t>::max()) {
         auto [freq_dist, freq_dist_std, freq_dist_char_exp, key_file] = get_fdist(parser, fdist_ind);
 
-        const uint32_t key_len_binary = parser.get<uint32_t>("--key-len-binary");
-        if (key_len_binary > 0) {
-            std::vector<ByteString> new_keys = read_data_binary(key_file, key_len_binary);
-            keys.insert(keys.end(), new_keys.begin(), new_keys.end());
-        }
-        else {
-            std::vector<uint64_t> new_keys = read_data_text(key_file);
-            int_keys.insert(int_keys.end(), new_keys.begin(), new_keys.end());
-            is_string = false;
-        }
+        std::vector<uint64_t> new_ints;
+        std::vector<ByteString> new_keys;
+        load_real_keys(parser, key_file, new_ints, new_keys);
+        append_keys(int_keys, keys, new_ints, new_keys);
     }
-    std::shuffle(keys.begin(), keys.end(), rng);
-    std::shuffle(int_keys.begin(), int_keys.end(), rng);
+    const bool is_string = int_keys.empty();
+    shuffle_stream(keys.begin(), keys.end(), rng);
+    shuffle_stream(int_keys.begin(), int_keys.end(), rng);
 
     WorkloadIO wio(parser.get<std::string>("--output-file"), WorkloadIO::iomode::Write, is_string);
     const uint64_t measurement_period = parser.get<uint64_t>("--measurement-period");
@@ -274,39 +351,49 @@ void expand_bench(argparse::ArgumentParser& parser) {
 
 
 void delete_bench(argparse::ArgumentParser& parser) {
-    WorkloadIO wio(parser.get<std::string>("--output-file"), WorkloadIO::iomode::Write, true);
     const uint32_t n_keys = parser.get<uint64_t>("--n-keys");
     const uint64_t universe_size = parser.get<uint64_t>("--universe-size");
     const uint64_t seed = parser.get<uint64_t>("--seed");
     std::mt19937_64 rng(seed);
 
     uint32_t fdist_ind = 0;
-    std::vector<ByteString> keys;
+    std::vector<ByteString> string_keys;
+    std::vector<uint64_t> int_keys;
     while (fdist_ind != std::numeric_limits<uint32_t>::max()) {
         auto [freq_dist, freq_dist_std, freq_dist_char_exp, key_file] = get_fdist(parser, fdist_ind);
 
-        const uint32_t key_len_binary = parser.get<uint32_t>("--key-len-binary");
-        std::vector<ByteString> new_keys = read_data_binary(key_file, key_len_binary);
-        keys.insert(keys.end(), new_keys.begin(), new_keys.end());
+        std::vector<uint64_t> new_ints;
+        std::vector<ByteString> new_keys;
+        load_real_keys(parser, key_file, new_ints, new_keys);
+        append_keys(int_keys, string_keys, new_ints, new_keys);
     }
-    std::shuffle(keys.begin(), keys.end(), rng);
+    const bool is_string = int_keys.empty();
+    WorkloadIO wio(parser.get<std::string>("--output-file"), WorkloadIO::iomode::Write, is_string);
 
-    wio.Timer('i');
-    for (ByteString key : keys)
-        wio.Insert(key);
-    wio.Timer('i');
-    wio.Flush();
+    // Every key inserted, then the most recent ones deleted a period at a time.
+    const auto write = [&](auto& keys) {
+        shuffle_stream(keys.begin(), keys.end(), rng);
 
-    //std::shuffle(keys.begin(), keys.end(), rng);
-    const uint32_t n_deletes = std::min(keys.size(), parser.get<uint64_t>("--n-deletes"));
-    const uint32_t measurement_period = parser.get<uint64_t>("--measurement-period");
-    for (uint32_t i = 0; i < std::min<uint32_t>(keys.size(), n_deletes); i += measurement_period) {
-        wio.Timer('d');
-        for (uint32_t j = i; j < std::min<uint32_t>(keys.size(), i + measurement_period); j++)
-            wio.Delete(keys[keys.size() - j - 1]);
-        wio.Timer('d');
+        wio.Timer('i');
+        for (auto& key : keys)
+            wio.Insert(key);
+        wio.Timer('i');
         wio.Flush();
-    }
+
+        const uint32_t n_deletes = std::min<uint64_t>(keys.size(), parser.get<uint64_t>("--n-deletes"));
+        const uint32_t measurement_period = parser.get<uint64_t>("--measurement-period");
+        for (uint32_t i = 0; i < std::min<uint32_t>(keys.size(), n_deletes); i += measurement_period) {
+            wio.Timer('d');
+            for (uint32_t j = i; j < std::min<uint32_t>(keys.size(), i + measurement_period); j++)
+                wio.Delete(keys[keys.size() - j - 1]);
+            wio.Timer('d');
+            wio.Flush();
+        }
+    };
+    if (is_string)
+        write(string_keys);
+    else
+        write(int_keys);
 }
 
 
@@ -339,7 +426,7 @@ void join_size_bench(argparse::ArgumentParser& parser) {
     for (auto& key_file : key_files) {
         keys.push_back(read_data_text_string(key_file));
         n_keys += keys.back().size();
-        std::shuffle(keys.back().begin(), keys.back().end(), rng);
+        shuffle_stream(keys.back().begin(), keys.back().end(), rng);
     }
     uint64_t measurement_period = parser.get<uint64_t>("--measurement-period");
     for (int64_t i = 0; i < n_keys; i += measurement_period) {
@@ -396,7 +483,9 @@ int main(int argc, char const *argv[]) {
             .nargs(1);
 
     parser.add_argument("--fdist")
-            .help("The (possibly multiple, for different phases) frequency distributions")
+            .help("The (possibly multiple, for different phases) frequency distributions: 'unif', "
+                  "'norm <sigma>', 'zipf <exponent>', or 'real <file>' to replay a stream file -- binary "
+                  "records with --key-len-binary N, or any text file with --key-len-binary 0")
             .nargs(argparse::nargs_pattern::at_least_one)
             .required()
             .default_value(fdist_default);
@@ -431,11 +520,24 @@ int main(int argc, char const *argv[]) {
             .nargs(1);
 
     parser.add_argument("--key-len-binary")
-            .help("The length of the keys in the binary file if they all share the same length, in bytes")
+            .help("The length of the keys in the binary file if they all share the same length, in bytes; "
+                  "0 reads the file as text instead (see --text-keys)")
             .required()
             .default_value(static_cast<uint32_t>(13))
             .scan<'u', uint32_t>()
             .nargs(1);
+
+    parser.add_argument("--text-keys")
+            .help("How a text stream file (--key-len-binary 0) is cut into keys: 'tokens', every "
+                  "whitespace-separated token, or 'lines', every non-empty line. Keys that are all "
+                  "plain unsigned 64-bit integers make an integer workload; anything else, a string one")
+            .default_value(std::string("tokens"))
+            .nargs(1);
+
+    parser.add_argument("--no-shuffle")
+            .help("Replay a stream in the order its file holds it, rather than shuffled with --seed")
+            .default_value(false)
+            .implicit_value(true);
 
     parser.add_argument("--dense-start")
             .help("For expand workloads: add geometrically-spaced early checkpoints so a growing "
@@ -465,14 +567,23 @@ int main(int argc, char const *argv[]) {
         std::exit(1);
     }
 
+    keep_stream_order = parser.get<bool>("--no-shuffle");
     std::string bench_type = parser.get<std::string>("--type");
-    if (benches.find(bench_type) != benches.end())
-        benches[bench_type](parser);
-    else {
-        std::string msg = "Error: Invalid benchmark type. Valid benchmarks: ";
+    if (benches.find(bench_type) == benches.end()) {
+        std::cerr << "Error: Invalid benchmark type. Valid benchmarks:";
         for (auto bench : benches)
-            msg += bench.first + " ";
-        throw std::runtime_error(msg);
+            std::cerr << " " << bench.first;
+        std::cerr << std::endl;
+        return 1;
+    }
+    // A bad stream file -- a missing path, no keys, a key too long -- is a
+    // message and an exit status, not an abort.
+    try {
+        benches[bench_type](parser);
+    }
+    catch (const std::exception& err) {
+        std::cerr << "Error: " << err.what() << std::endl;
+        return 1;
     }
 
     return 0;

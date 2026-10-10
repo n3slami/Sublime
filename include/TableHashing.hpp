@@ -80,7 +80,7 @@ inline uint64_t hash_64(uint64_t key, uint64_t mask) {
 namespace fpt {
 
 /** `BITMASK` from `util.hpp` as a function, to keep macros out of this file. */
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 static constexpr inline uint64_t bitmask(uint32_t nbits) {
     return nbits >= 64 ? 0xFFFFFFFFFFFFFFFFULL : ((1ULL << nbits) - 1);
 }

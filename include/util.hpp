@@ -2,14 +2,16 @@
 
 #include <array>
 #include <cstdint>
-#include <immintrin.h>
+#include <type_traits>
+
+#include "portability.hpp"
 
 #define MAX_VALUE(nbits) ((1ULL << (nbits)) - 1)
 #define BITMASK(nbits)                                    \
   ((nbits) == 64 ? 0xffffffffffffffff : MAX_VALUE(nbits))
 
 
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 static inline uint32_t fast_reduce(uint32_t hash, uint32_t n) {
     // http://lemire.me/blog/2016/06/27/a-fast-alternative-to-the-modulo-reduction/
     return (uint32_t) (((uint64_t) hash * n) >> 32);
@@ -115,9 +117,16 @@ const uint8_t kSelectInByte[2048] = {
 	8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 7
 };
 
-static inline uint64_t _select64(uint64_t x, int k)
+// `k` is unsigned: a caller asking past the last set bit with a rank that has
+// wrapped below zero -- `get_extension_pos` computes such a rank for the second
+// word on every call and discards the answer -- must get 64 back, as it does for
+// any other rank too large. Taken as an `int` it went negative, slipped past the
+// check below and indexed `kSelectInByte` out of bounds, which is how every build
+// without BMI2 (any ARM machine, any x86 below `-march=x86-64-v3`) read memory it
+// did not own.
+static inline uint64_t _select64(uint64_t x, uint32_t k)
 {
-	if (k >= __builtin_popcountll(x)) { return 64; }
+	if (k >= popcount64(x)) { return 64; }
 
 	const uint64_t kOnesStep4  = 0x1111111111111111ULL;
 	const uint64_t kOnesStep8  = 0x0101010101010101ULL;
@@ -131,27 +140,30 @@ static inline uint64_t _select64(uint64_t x, int k)
 
 	uint64_t kStep8 = k * kOnesStep8;
 	uint64_t geqKStep8 = (((kStep8 | kMSBsStep8) - byteSums) & kMSBsStep8);
-	uint64_t place = __builtin_popcountll(geqKStep8) * 8;
+	uint64_t place = popcount64(geqKStep8) * 8;
 	uint64_t byteRank = k - (((byteSums << 8) >> place) & (uint64_t)(0xFF));
 	return place + kSelectInByte[((x >> place) & 0xFF) | (byteRank << 8)];
 }
 
+static inline uint32_t lowbit_pos(uint64_t val);
+
 // Returns the position of the rank'th 1.  (rank = 0 returns the first 1)
 // Returns 64 if there are fewer than rank+1 1s.
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 static inline uint32_t bit_select(uint64_t val, uint32_t i) {
-#ifdef __BMI2__
+#ifdef SUBLIME_HAS_BMI2
     uint64_t tmp = 1ULL << i;
     tmp = _pdep_u64(tmp, val);
-    return __builtin_ia32_tzcnt_u64(tmp);
-#endif
+    return lowbit_pos(tmp);
+#else
     return _select64(val, i);
+#endif
 }
 
 
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 static inline uint32_t bit_rank(uint64_t val, uint32_t i) {
-    return __builtin_popcountll(val & BITMASK(i));
+    return popcount64(val & BITMASK(i));
 }
 
 
@@ -167,42 +179,65 @@ static inline uint32_t bit_rank(uint64_t val, uint32_t i) {
  * builtin.
  */
 
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 static inline uint32_t lowbit_pos(uint64_t val) {
-#ifdef __BMI__
+#ifdef SUBLIME_HAS_BMI
     return __builtin_ia32_tzcnt_u64(val);
 #else
-    return val ? __builtin_ctzll(val) : 8 * sizeof(val);
+    return val ? ctz64_nonzero(val) : 64;
 #endif
 }
 
 
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 static inline uint32_t lowbit_pos(uint32_t val) {
-#ifdef __BMI__
+#ifdef SUBLIME_HAS_BMI
     return __builtin_ia32_tzcnt_u32(val);
 #else
-    return val ? __builtin_ctz(val) : 8 * sizeof(val);
+    return val ? ctz64_nonzero(val) : 32;
 #endif
 }
 
 
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 static inline uint32_t highbit_pos(uint64_t val) {
-#ifdef __LZCNT__
-    return 8 * sizeof(val) - __builtin_ia32_lzcnt_u64(val) - 1;
+#ifdef SUBLIME_HAS_LZCNT
+    return 64 - __builtin_ia32_lzcnt_u64(val) - 1;
 #else
-    return val ? 8 * sizeof(val) - __builtin_clzll(val) - 1 : static_cast<uint32_t>(-1);
+    return val ? msb64_nonzero(val) : static_cast<uint32_t>(-1);
 #endif
 }
 
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 static inline uint32_t highbit_pos(uint32_t val) {
-#ifdef __LZCNT__
-    return 8 * sizeof(val) - __builtin_ia32_lzcnt_u32(val) - 1;
+#ifdef SUBLIME_HAS_LZCNT
+    return 32 - __builtin_ia32_lzcnt_u32(val) - 1;
 #else
-    return val ? 8 * sizeof(val) - __builtin_clz(val) - 1 : static_cast<uint32_t>(-1);
+    return val ? msb64_nonzero(val) : static_cast<uint32_t>(-1);
 #endif
+}
+
+/*
+ * The two overloads above take `uint32_t` and `uint64_t`, which leaves every
+ * other unsigned type ambiguous between them -- and `size_t` is one: it is
+ * `unsigned long` on macOS, where `uint64_t` is `unsigned long long`, so
+ * `highbit_pos(size_t)` did not compile there at all. These route any other
+ * 32- or 64-bit unsigned type to the overload of its width.
+ */
+template <typename T, typename = std::enable_if_t<std::is_unsigned_v<T>
+        && !std::is_same_v<T, uint32_t> && !std::is_same_v<T, uint64_t>>>
+SUBLIME_ALWAYS_INLINE
+static inline uint32_t lowbit_pos(T val) {
+    static_assert(sizeof(T) == 4 || sizeof(T) == 8);
+    return lowbit_pos(static_cast<std::conditional_t<sizeof(T) == 8, uint64_t, uint32_t>>(val));
+}
+
+template <typename T, typename = std::enable_if_t<std::is_unsigned_v<T>
+        && !std::is_same_v<T, uint32_t> && !std::is_same_v<T, uint64_t>>>
+SUBLIME_ALWAYS_INLINE
+static inline uint32_t highbit_pos(T val) {
+    static_assert(sizeof(T) == 4 || sizeof(T) == 8);
+    return highbit_pos(static_cast<std::conditional_t<sizeof(T) == 8, uint64_t, uint32_t>>(val));
 }
 
 

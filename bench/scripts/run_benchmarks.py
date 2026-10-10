@@ -36,6 +36,12 @@ def execute_benchmark(build_dir, output_base, workload_subdir, workload, sketch,
     # configurations -- `SublimeMG --cuckoo --min-tree` is still bench_SublimeMG,
     # but its results have to land somewhere the plotter can tell apart.
     file_to_execute = f"bench/bench_{sketch}"
+    if not Path(f"{build_dir}/{file_to_execute}").exists():
+        # A baseline this platform cannot build -- SALSA, off x86 -- is left out
+        # by bench/CMakeLists.txt. Skip it rather than let `tee` leave an empty
+        # result behind for the plotter.
+        print(f"[ Skipping {sketch}: {file_to_execute} was not built on this platform ]")
+        return
     size_function_power_option = f"--size-function-power {size_function_power}" if size_function_power != None else ""
     size_function_mult_option = f"--size-function-mult {size_function_mult}" if size_function_mult != None else ""
     counter_count_option = f"--counter-count {force_counter_count}" if force_counter_count != None else ""
@@ -64,6 +70,12 @@ def rebuild_execute_benchmark(build_dir, output_base, c, s, p, workload_subdir, 
     subprocess.run(rebuild_command, shell=True)
 
     file_to_execute = f"bench/bench_{sketch}"
+    if not Path(f"{build_dir}/{file_to_execute}").exists():
+        # A baseline this platform cannot build -- SALSA, off x86 -- is left out
+        # by bench/CMakeLists.txt. Skip it rather than let `tee` leave an empty
+        # result behind for the plotter.
+        print(f"[ Skipping {sketch}: {file_to_execute} was not built on this platform ]")
+        return
     size_function_power_option = f"--size-function-power {size_function_power}" if size_function_power != None else ""
     size_function_mult_option = f"--size-function-mult {size_function_mult}" if size_function_mult != None else ""
     counter_count_option = f"--counter-count {force_counter_count}" if force_counter_count != None else ""
@@ -271,6 +283,7 @@ def mg_accuracy_bench():
     SEED = 12345                            # Fixed for the sketches that support it (reproducibility).
     # The baselines, which tune nothing: (binary, result label, extra flags).
     baselines = [("MG", "MG", f"--seed {SEED}"),
+                 ("MGHeap", "MGHeap", f"--seed {SEED}"),
                  ("SpaceSaving", "SpaceSaving", ""),
                  ("Waving", "Waving", "")]
     # Sublime_MG runs in both of its configurations -- the decrement sweep and
@@ -336,6 +349,7 @@ def mg_tail_latency_bench():
     """
     SEED = 12345
     baselines = [("MG", "MG", f"--seed {SEED}"),
+                 ("MGHeap", "MGHeap", f"--seed {SEED}"),
                  ("SpaceSaving", "SpaceSaving", ""),
                  ("Waving", "Waving", "")]
     vale_params = {

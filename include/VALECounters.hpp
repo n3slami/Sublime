@@ -464,9 +464,9 @@ public:
      * the caller is still walking the structure the counters mirror, so that
      * the counter is there by the time the walk lands on it.
      */
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     void Prefetch(uint64_t pos) const {
-        __builtin_prefetch(chunks_ + (pos / counters_per_chunk_) * cache_line_size_bytes);
+        SUBLIME_PREFETCH(chunks_ + (pos / counters_per_chunk_) * cache_line_size_bytes);
     }
 
     /*
@@ -1213,7 +1213,7 @@ private:
      * `provably_differs`.
      */
     template <bool rose>
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     void fold_sibling(uint64_t pos, uint32_t l, uint64_t old_value,
                       uint64_t& best_pos, uint64_t& best_value) const {
         const uint64_t sibling = (pos >> (l - 1)) ^ 1;
@@ -1338,20 +1338,20 @@ private:
         setup_lookup_tables();
     }
 
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     void set_overflowing(uint64_t words[], uint32_t pos, bool state) const {
         words[pos / 64] = state ? words[pos / 64] | (1ULL << (pos % 64))
                                 : words[pos / 64] & ~(1ULL << (pos % 64));
     }
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     void set_overflowing_to_0(uint64_t words[], uint32_t pos, uint64_t bit_value = 1) const {
         words[pos / 64] &= ~(bit_value << (pos % 64));
     }
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     void set_overflowing_to_1(uint64_t words[], uint32_t pos, uint64_t bit_value = 1) const {
         words[pos / 64] |= bit_value << (pos % 64);
     }
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     /**
      * @returns Whether the counter at `inter_chunk` of `chunk` holds zero,
      * read from its overflow bit and its stub alone.
@@ -1369,7 +1369,7 @@ private:
     bool is_overflowing(const uint64_t words[], uint32_t pos) const {
         return (words[pos / 64] >> (pos % 64)) & 1ULL;
     }
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     uint64_t get_delimiters_bitmap_word(uint64_t val) const {
         return (val & (val >> 1)) & select_mask;
     }
@@ -1378,7 +1378,7 @@ private:
     uint32_t get_extension_rank(const uint64_t words[], uint32_t pos) const {
         uint32_t res = 0;
         for (uint32_t i = 0; i < pos / 64; i++)
-            res += __builtin_popcountll(words[i]);
+            res += popcount64(words[i]);
         return res + bit_rank(words[pos / 64], pos % 64);
     }
 
@@ -1395,7 +1395,7 @@ private:
     void shift_extensions_right_from_pos(uint64_t extensions[], uint32_t pos, uint32_t shamt) const;
 
     /** Unpacks a chunk's extension pool out of the top of its cache line. */
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     void read_extensions(const uint64_t *words, uint64_t extensions[]) const {
         for (uint32_t i = 0; i < num_extension_words_ - 1; i++)
             extensions[i] = words[cache_line_size_words - i - 1];
@@ -1415,7 +1415,7 @@ private:
         words[cache_line_size_words - num_extension_words_] = extensions[num_extension_words_ - 1];
     }
 
-    __attribute__((always_inline))
+    SUBLIME_ALWAYS_INLINE
     bool has_tails_array(const uint64_t *words) const {
         return words[cache_line_size_words - num_extension_words_] >> 63;
     }
@@ -1674,30 +1674,30 @@ inline bool VALECounters::RetuneIfNarrower() {
  * Extension pool primitives, adapted from `SublimeCMS`.          *
  ******************************************************************/
 
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 inline uint32_t VALECounters::get_extension_pos(const uint64_t extensions[], uint32_t rank) const {
     uint64_t delimiters[max_extension_words];
     for (uint32_t i = 0; i < num_extension_words_; i++)
         delimiters[i] = get_delimiters_bitmap_word(extensions[i]);
     int extension_pos = (rank == 0 ? -2 : static_cast<int>(bit_select(delimiters[0], rank - 1)));
     if (num_extension_words_ == 2) {
-        const int32_t other_attempt = bit_select(delimiters[1], rank - 1 - __builtin_popcountll(delimiters[0]));
+        const int32_t other_attempt = bit_select(delimiters[1], rank - 1 - popcount64(delimiters[0]));
         extension_pos = (extension_pos >= 64 ? other_attempt + 64 : extension_pos);
     }
     else if (num_extension_words_ > 2) {
         extension_pos = (extension_pos < 64 ? extension_pos : -3);
-        uint32_t running_rank = rank - __builtin_popcountll(delimiters[0]);
+        uint32_t running_rank = rank - popcount64(delimiters[0]);
         for (uint32_t i = 1; i < num_extension_words_; i++) {
             const uint32_t select_result = running_rank > 64 ? 64 : bit_select(delimiters[i], running_rank - 1);
             extension_pos = ((extension_pos == -3 && select_result < 64) ? select_result + i * 64 : extension_pos);
-            running_rank -= __builtin_popcountll(delimiters[i]);
+            running_rank -= popcount64(delimiters[i]);
         }
     }
     return extension_pos + 2;
 }
 
 
-__attribute__((always_inline))
+SUBLIME_ALWAYS_INLINE
 inline uint32_t VALECounters::get_extension_length(const uint64_t extensions[]) const {
     if (num_extension_words_ == 1)
         return highbit_pos(extensions[0]) + 1;
@@ -1806,7 +1806,7 @@ inline uint32_t *VALECounters::setup_tails_array(const uint64_t *overflows_bitma
         if (fragment == MAX_VALUE(extension_size)) {    // A terminator: store the extension in its tail.
             uint32_t ptr_pos = bit_select(overflows_bitmap[overflows_pos], running_rank - running_overflows_count);
             while (ptr_pos == 64) {
-                running_overflows_count += __builtin_popcountll(overflows_bitmap[overflows_pos]);
+                running_overflows_count += popcount64(overflows_bitmap[overflows_pos]);
                 overflows_pos++;
                 ptr_pos = bit_select(overflows_bitmap[overflows_pos], running_rank - running_overflows_count);
             }

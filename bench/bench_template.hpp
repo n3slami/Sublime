@@ -80,7 +80,7 @@ private:
     static uint32_t bucket_of(uint64_t ns) {
         if (ns < (1ULL << mantissa_bits))
             return static_cast<uint32_t>(ns);
-        const uint32_t octave = 63 - __builtin_clzll(ns);
+        const uint32_t octave = msb64_nonzero(ns);
         const uint32_t mantissa = (ns >> (octave - mantissa_bits)) & ((1U << mantissa_bits) - 1);
         return ((octave - mantissa_bits + 1) << mantissa_bits) | mantissa;
     }
@@ -195,13 +195,13 @@ void experiment(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, QueryFun
 
                     aae += dist;
                     are += dist / real_val;
-                    total_overestimation += std::max(diff, 0L);
-                    total_underestimation -= std::min(diff, 0L);
+                    total_overestimation += std::max<int64_t>(diff, 0);
+                    total_underestimation -= std::min<int64_t>(diff, 0);
                     con += est_val != real_val;
                 }
                 auto current_time = timer::now();
                 timer_results['q'] = std::chrono::duration_cast<std::chrono::microseconds>(current_time - time_points['q']).count();
-                timer_results['q'] += n_distinct_keys * std::max(std::chrono::duration_cast<std::chrono::microseconds>(decompression_time_point - time_points['q']).count(), 0L);
+                timer_results['q'] += n_distinct_keys * std::max<int64_t>(std::chrono::duration_cast<std::chrono::microseconds>(decompression_time_point - time_points['q']).count(), 0);
 
                 aae /= n_distinct_keys;
                 are /= n_distinct_keys;
@@ -402,14 +402,14 @@ void experiment_string(Sketch *sketch, InsertFun insert_f, DeleteFun delete_f, Q
 
                     aae += dist;
                     are += dist / real_val;
-                    total_overestimation += std::max(diff, 0L);
-                    total_underestimation -= std::min(diff, 0L);
+                    total_overestimation += std::max<int64_t>(diff, 0);
+                    total_underestimation -= std::min<int64_t>(diff, 0);
                     con += est_val != real_val;
                 }
                 auto current_time = timer::now();
                 timer_results['q'] = std::chrono::duration_cast<std::chrono::microseconds>(current_time - time_points['q']).count();
                 const uint32_t n_distinct_keys = freq_checkpoints[checkpoint_ind].size();
-                timer_results['q'] += n_distinct_keys * std::max(std::chrono::duration_cast<std::chrono::microseconds>(decompression_time_point - time_points['q']).count(), 0L);
+                timer_results['q'] += n_distinct_keys * std::max<int64_t>(std::chrono::duration_cast<std::chrono::microseconds>(decompression_time_point - time_points['q']).count(), 0);
                 aae /= n_distinct_keys;
                 are /= n_distinct_keys;
                 con /= n_distinct_keys;
@@ -637,14 +637,14 @@ void experiment_join_string(std::vector<Sketch *> sketches, InsertFun insert_f, 
 
                         aae += dist;
                         are += dist / real_val;
-                        total_overestimation += std::max(diff, 0L);
-                        total_underestimation -= std::min(diff, 0L);
+                        total_overestimation += std::max<int64_t>(diff, 0);
+                        total_underestimation -= std::min<int64_t>(diff, 0);
                         con += est_val != real_val;
                     }
                     auto current_time = timer::now();
                     timer_results['q'] = std::chrono::duration_cast<std::chrono::microseconds>(current_time - time_points['q']).count();
                     const uint32_t n_distinct_keys = freq_checkpoints[checkpoint_ind][i].size();
-                    timer_results['q'] += n_distinct_keys * std::max(std::chrono::duration_cast<std::chrono::microseconds>(decompression_time_point - time_points['q']).count(), 0L);
+                    timer_results['q'] += n_distinct_keys * std::max<int64_t>(std::chrono::duration_cast<std::chrono::microseconds>(decompression_time_point - time_points['q']).count(), 0);
                     aae /= n_distinct_keys;
                     are /= n_distinct_keys;
                     con /= n_distinct_keys;
@@ -678,14 +678,14 @@ void experiment_join_string(std::vector<Sketch *> sketches, InsertFun insert_f, 
 
                     aae += dist;
                     are += dist / real_val;
-                    total_overestimation += std::max(diff, 0L);
-                    total_underestimation -= std::min(diff, 0L);
+                    total_overestimation += std::max<int64_t>(diff, 0);
+                    total_underestimation -= std::min<int64_t>(diff, 0);
                     con += est_val != real_val;
                 }
                 auto current_time = timer::now();
                 timer_results['q'] = std::chrono::duration_cast<std::chrono::microseconds>(current_time - time_points['q']).count();
                 const uint32_t n_distinct_keys = join_result.size();
-                timer_results['q'] += n_distinct_keys * std::max(std::chrono::duration_cast<std::chrono::microseconds>(decompression_time_point - time_points['q']).count(), 0L);
+                timer_results['q'] += n_distinct_keys * std::max<int64_t>(std::chrono::duration_cast<std::chrono::microseconds>(decompression_time_point - time_points['q']).count(), 0);
                 aae /= n_distinct_keys;
                 are /= n_distinct_keys;
                 con /= n_distinct_keys;
